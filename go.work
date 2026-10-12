@@ -1,0 +1,21 @@
+go 1.21
+
+use (
+	./app
+	./app-runtime
+	./app-web-hertz
+	./app-observe-webhertz
+	./app-log-zap
+	./config
+	./config-consul
+	./config-nacos
+	./errcode
+	./examples
+	./ioc
+	./log
+	./hlog-zap
+	./log-zap
+	./util
+	./web
+	./web-hertz
+)
