@@ -1,0 +1,9 @@
+service:
+  name: "from-file"
+  address: ":18080"
+
+worker:
+  concurrency: 8
+
+feature:
+  enable_cache: false

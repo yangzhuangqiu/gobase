@@ -1,0 +1,31 @@
+service:
+  name: quickstart-from-file
+  address: ":19090"
+  timeout: 5s
+worker:
+  concurrency: 12
+  max_queue: 256
+
+# 远端 bootstrap 示例（默认注释，防止本地无环境时运行失败）
+# bootstrap:
+#   mockdemo:
+#     enabled: true
+#   nacos:
+#     address: "127.0.0.1:8848"
+#     namespace: "public"
+#     username: "nacos"
+#     password: "nacos"
+#     sources:
+#       - groupId: "DEFAULT_GROUP"
+#         dataId: "quickstart.yaml"
+#         priority: 20
+#   consul:
+#     address: "127.0.0.1:8500"
+#     scheme: "http"
+#     token: ""
+#     datacenter: "dc1"
+#     sources:
+#       - name: "quickstart"
+#         groupId: "quickstart"
+#         dataId: "config.yaml"
+#         priority: 20

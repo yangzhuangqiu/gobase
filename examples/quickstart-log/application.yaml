@@ -1,0 +1,16 @@
+service:
+  name: quickstart-log-from-file
+  address: ":19090"
+
+log:
+  level: warn
+  mode: console
+  format: text
+
+# 文件日志示例（取消注释后可观察落盘）：
+# log:
+#   level: info
+#   mode: file
+#   format: json
+#   rotate:
+#     filename: "./quickstart-log/quickstart.log"
