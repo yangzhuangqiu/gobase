@@ -72,6 +72,10 @@ type Bootstrap struct {
 	// 默认值：os.TempDir()/nacos/cache。
 	// 说明：默认目录未按集群隔离，多集群场景应显式配置独立目录。
 	CacheDir string
+	// DisableUseSnapshot 控制远程读取失败时是否禁止使用本地快照。
+	// 必填：否。
+	// 默认值：false（允许从 CacheDir 回退读取快照）。
+	DisableUseSnapshot bool
 	// LogLevel 是高级 SDK 配置，控制进程级 Nacos SDK 日志级别。
 	// 必填：否。
 	// 默认值：warn。

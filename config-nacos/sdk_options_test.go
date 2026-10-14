@@ -233,6 +233,20 @@ func TestChooseNacosSDKOptionDefaults(t *testing.T) {
 	}
 }
 
+// TestBuildNacosClientConfigMapsSnapshotPolicy 验证适配层的规范字段会映射到 SDK 的 DisableUseSnapShot 字段。
+// 测试方法：分别使用默认值和显式 true 构造 SDK 配置，断言快照回退策略保持原值且默认行为兼容 SDK。
+func TestBuildNacosClientConfigMapsSnapshotPolicy(t *testing.T) {
+	defaultConfig := buildNacosClientConfig(ClientOptions{}, "warn")
+	if defaultConfig.DisableUseSnapShot {
+		t.Fatalf("expected snapshot fallback to remain enabled by default")
+	}
+
+	disabledConfig := buildNacosClientConfig(ClientOptions{DisableUseSnapshot: true}, "warn")
+	if !disabledConfig.DisableUseSnapShot {
+		t.Fatalf("expected snapshot fallback to be disabled in sdk config")
+	}
+}
+
 // TestChooseServerSchemeRejectsUnsupported 验证节点协议只接受小写 http/https。
 // 测试方法：输入未知协议与大小写变体，断言 SDK 创建前返回稳定参数错误。
 func TestChooseServerSchemeRejectsUnsupported(t *testing.T) {

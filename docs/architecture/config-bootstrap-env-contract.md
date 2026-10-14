@@ -78,6 +78,7 @@ Runtime Snapshot 的 `default/file/remote/pinned` 合并优先级不属于环境
 | `APP_NACOS_TIMEOUT_MS` | `nacos.timeoutMs` | `uint64` |
 | `APP_NACOS_LOG_DIR` | `nacos.logDir` | `string` |
 | `APP_NACOS_CACHE_DIR` | `nacos.cacheDir` | `string` |
+| `APP_NACOS_DISABLE_USE_SNAPSHOT` | `nacos.disableUseSnapshot` | `bool` |
 | `APP_NACOS_LOG_LEVEL` | `nacos.logLevel` | `string` |
 | `APP_NACOS_SOURCES` | `nacos.sources` | YAML/JSON `list` |
 
@@ -87,8 +88,9 @@ Runtime Snapshot 的 `default/file/remote/pinned` 合并优先级不属于环境
 2. server 节点 `host` 必填；`port`、`scheme`、`contextPath` 默认分别为 `8848`、`http`、`/nacos`，`grpcPort` 省略时按节点 `port + 1000` 推导。
 3. `timeoutMs` 是常规请求超时配置，默认 `10000ms`。
 4. `logDir`、`cacheDir`、`logLevel` 是高级 SDK 配置；默认依次为 `<系统临时目录>/nacos/log`、`<系统临时目录>/nacos/cache`、`warn`。
-5. `logLevel` 仅允许 `debug/info/warn/error`；`logDir/logLevel` 受 SDK 全局 logger 约束，进程内 first-client-wins。
-6. SDK 快照缓存键不包含集群地址；多应用或多集群不得共享 `cacheDir`，避免远端失败时读取错误快照。
+5. `disableUseSnapshot` 默认 `false`，允许远程读取失败时回退本地快照；设为 `true` 时直接返回错误，但不会禁止 SDK 写入缓存。
+6. `logLevel` 仅允许 `debug/info/warn/error`；`logDir/logLevel` 受 SDK 全局 logger 约束，进程内 first-client-wins。
+7. SDK 快照缓存键不包含集群地址；多应用或多集群不得共享 `cacheDir`，避免远端失败时读取错误快照。
 
 ### 4.3 Nacos（`BootstrapEnvLoader` 扩展）
 

@@ -15,6 +15,7 @@ var (
 	bootstrapFieldNacosTO     = bootstrapLeafKey(BootstrapKeyNacosTimeoutMs)
 	bootstrapFieldNacosLogDir = bootstrapLeafKey(BootstrapKeyNacosLogDir)
 	bootstrapFieldNacosCache  = bootstrapLeafKey(BootstrapKeyNacosCacheDir)
+	bootstrapFieldNacosNoSnap = bootstrapLeafKey(BootstrapKeyNacosDisableUseSnapshot)
 	bootstrapFieldNacosLevel  = bootstrapLeafKey(BootstrapKeyNacosLogLevel)
 )
 
@@ -51,6 +52,7 @@ func (this *bootstrapCodec) Decode(values map[string]any) (*Bootstrap, error) {
 		bootstrapFieldNacosTO:     {},
 		bootstrapFieldNacosLogDir: {},
 		bootstrapFieldNacosCache:  {},
+		bootstrapFieldNacosNoSnap: {},
 		bootstrapFieldNacosLevel:  {},
 	}
 	for key := range nacosMap {
@@ -89,6 +91,11 @@ func (this *bootstrapCodec) Decode(values map[string]any) (*Bootstrap, error) {
 		return nil, err
 	}
 	spec.TimeoutMs = timeoutMs
+	disableUseSnapshot, err := readBoolFromMap(nacosMap, bootstrapFieldNacosNoSnap)
+	if err != nil {
+		return nil, err
+	}
+	spec.DisableUseSnapshot = disableUseSnapshot
 
 	// 阶段三：结构化列表独立解析，错误保留节点索引。
 	if rawServers, exists := nacosMap[bootstrapFieldNacosServer]; exists {
@@ -127,15 +134,16 @@ func (this *bootstrapCodec) toBinding(spec *Bootstrap) *binding {
 	}
 	if this.hasSDKOptions(spec) {
 		binding.ClientOptions = &ClientOptions{
-			Address:     strings.TrimSpace(spec.Address),
-			Servers:     append([]Server{}, spec.Servers...),
-			NamespaceID: strings.TrimSpace(spec.NamespaceID),
-			Username:    strings.TrimSpace(spec.Username),
-			Password:    strings.TrimSpace(spec.Password),
-			TimeoutMs:   spec.TimeoutMs,
-			LogDir:      strings.TrimSpace(spec.LogDir),
-			CacheDir:    strings.TrimSpace(spec.CacheDir),
-			LogLevel:    strings.TrimSpace(spec.LogLevel),
+			Address:            strings.TrimSpace(spec.Address),
+			Servers:            append([]Server{}, spec.Servers...),
+			NamespaceID:        strings.TrimSpace(spec.NamespaceID),
+			Username:           strings.TrimSpace(spec.Username),
+			Password:           strings.TrimSpace(spec.Password),
+			TimeoutMs:          spec.TimeoutMs,
+			LogDir:             strings.TrimSpace(spec.LogDir),
+			CacheDir:           strings.TrimSpace(spec.CacheDir),
+			DisableUseSnapshot: spec.DisableUseSnapshot,
+			LogLevel:           strings.TrimSpace(spec.LogLevel),
 		}
 	}
 	return binding
@@ -161,6 +169,9 @@ func (this *bootstrapCodec) Encode(spec Bootstrap) map[string]any {
 	}
 	putIfNotEmpty(specMap, bootstrapFieldNacosLogDir, spec.LogDir)
 	putIfNotEmpty(specMap, bootstrapFieldNacosCache, spec.CacheDir)
+	if spec.DisableUseSnapshot {
+		specMap[bootstrapFieldNacosNoSnap] = true
+	}
 	putIfNotEmpty(specMap, bootstrapFieldNacosLevel, spec.LogLevel)
 
 	// 阶段二：过滤不完整 Source，构造器校验仍负责向调用方报告声明错误。
@@ -208,6 +219,7 @@ func (this *bootstrapCodec) hasSDKOptions(spec *Bootstrap) bool {
 		spec.TimeoutMs > 0 ||
 		strings.TrimSpace(spec.LogDir) != "" ||
 		strings.TrimSpace(spec.CacheDir) != "" ||
+		spec.DisableUseSnapshot ||
 		strings.TrimSpace(spec.LogLevel) != ""
 }
 

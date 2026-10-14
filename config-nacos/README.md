@@ -77,6 +77,7 @@ func run(ctx context.Context) (err error) {
 | `timeoutMs` | 常规配置 | `10000` | SDK 请求超时，单位毫秒；`0` 使用默认值，正数直接传给 SDK |
 | `logDir` | 高级 SDK 配置 | `<系统临时目录>/nacos/log` | SDK 自有日志目录；进程级 first-client-wins |
 | `cacheDir` | 高级 SDK 配置 | `<系统临时目录>/nacos/cache` | SDK 快照缓存目录；默认路径不按集群隔离 |
+| `disableUseSnapshot` | 失败策略 | `false` | `false` 时远程读取失败可回退本地快照；`true` 时直接返回错误 |
 | `logLevel` | 高级 SDK 配置 | `warn` | 仅允许 `debug/info/warn/error`；进程级 first-client-wins |
 
 `BootstrapSchema.DefaultValue` 用于可发现性说明，不会由 schema mapper 自动写入 bootstrap。上述默认值在 SDK client 创建阶段生效。
@@ -85,7 +86,7 @@ func run(ctx context.Context) (err error) {
 
 `logDir` 与 `logLevel` 最终初始化 Nacos SDK 的全局 logger。SDK 只接受进程内第一个 Client 的 logger 配置，后续 Client 即使声明不同值也不会重新初始化，因此这两个字段不是可靠的 per-client 隔离配置。
 
-当前适配器保留 SDK 默认的本地快照降级能力：远端读取失败时可能从 `cacheDir` 读取旧值。SDK 缓存键只包含 `dataId/group/namespace`，不包含集群地址；多个应用或集群共用目录且 Source 定位相同时存在读到错误快照的风险。单进程多集群或同一宿主运行多个应用时，应显式配置互不共享的 `cacheDir`。
+`disableUseSnapshot=false` 保留 SDK 默认的本地快照降级能力：远端读取失败时可能从 `cacheDir` 读取旧值；设为 `true` 后远程读取失败会直接返回错误。该字段只控制失败后的快照读取，不阻止 SDK 将成功获取的配置写入缓存。SDK 缓存键只包含 `dataId/group/namespace`，不包含集群地址；多个应用或集群共用目录且 Source 定位相同时存在读到错误快照的风险。单进程多集群或同一宿主运行多个应用时，应显式配置互不共享的 `cacheDir`。
 
 ### Sources
 
@@ -97,7 +98,7 @@ func run(ctx context.Context) (err error) {
 
 ### 环境变量
 
-schema 自动映射标量和完整列表，例如 `APP_NACOS_ADDRESS`、`APP_NACOS_SERVERS`、`APP_NACOS_TIMEOUT_MS`、`APP_NACOS_SOURCES`；Sources 也可使用更便于逐项注入的 `APP_NACOS_SOURCE_<N>_*` 扩展协议。完整键表见 [Bootstrap 环境变量契约](../docs/architecture/config-bootstrap-env-contract.md)。
+schema 自动映射标量和完整列表，例如 `APP_NACOS_ADDRESS`、`APP_NACOS_SERVERS`、`APP_NACOS_TIMEOUT_MS`、`APP_NACOS_DISABLE_USE_SNAPSHOT`、`APP_NACOS_SOURCES`；Sources 也可使用更便于逐项注入的 `APP_NACOS_SOURCE_<N>_*` 扩展协议。完整键表见 [Bootstrap 环境变量契约](../docs/architecture/config-bootstrap-env-contract.md)。
 
 ### 真实集成测试
 

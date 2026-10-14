@@ -27,6 +27,8 @@ worker:
 #     # 高级 SDK 配置，普通应用可省略；多应用或多集群部署时建议显式隔离目录
 #     # logDir: "./.runtime/quickstart-app/nacos/log"
 #     # cacheDir: "./.runtime/quickstart-app/nacos/cache"
+#     # 远程读取失败时是否禁止使用本地快照；默认 false
+#     # disableUseSnapshot: false
 #     # logLevel: "warn"
 #     sources:
 #       - groupId: "DEFAULT_GROUP"

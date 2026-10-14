@@ -43,6 +43,8 @@ type ClientOptions struct {
 	LogDir string
 	// CacheDir 是高级 SDK 配置，控制 SDK 快照缓存目录；为空时默认 os.TempDir()/nacos/cache。
 	CacheDir string
+	// DisableUseSnapshot 控制远程读取失败时是否禁止使用本地快照；默认 false，保留 SDK 的快照回退行为。
+	DisableUseSnapshot bool
 	// LogLevel 是高级 SDK 配置，控制进程级 SDK logger；为空时默认 warn。
 	// 约束：仅允许 debug、info、warn、error；SDK 首个 Client 的配置在进程内生效。
 	LogLevel string
@@ -72,16 +74,7 @@ func NewClient(options ClientOptions) (Client, error) {
 		return nil, err
 	}
 
-	clientConfig := constant.ClientConfig{
-		NamespaceId:         strings.TrimSpace(options.NamespaceID),
-		TimeoutMs:           chooseTimeout(options.TimeoutMs),
-		Username:            strings.TrimSpace(options.Username),
-		Password:            strings.TrimSpace(options.Password),
-		NotLoadCacheAtStart: true,
-		LogDir:              chooseLogDir(options.LogDir),
-		CacheDir:            chooseCacheDir(options.CacheDir),
-		LogLevel:            logLevel,
-	}
+	clientConfig := buildNacosClientConfig(options, logLevel)
 
 	// 阶段三：校验完成后才创建真实 SDK client，避免非法配置产生后台资源。
 	configClient, err := clients.NewConfigClient(vo.NacosClientParam{
@@ -93,6 +86,22 @@ func NewClient(options ClientOptions) (Client, error) {
 	}
 
 	return &nacosSDKClient{client: configClient}, nil
+}
+
+// buildNacosClientConfig 将适配层选项映射为 SDK ClientConfig。
+// 阶段角色：参数校验完成后集中落实默认值与上游字段名，供真实 Client 创建使用。
+func buildNacosClientConfig(options ClientOptions, logLevel string) constant.ClientConfig {
+	return constant.ClientConfig{
+		NamespaceId:         strings.TrimSpace(options.NamespaceID),
+		TimeoutMs:           chooseTimeout(options.TimeoutMs),
+		Username:            strings.TrimSpace(options.Username),
+		Password:            strings.TrimSpace(options.Password),
+		NotLoadCacheAtStart: true,
+		LogDir:              chooseLogDir(options.LogDir),
+		CacheDir:            chooseCacheDir(options.CacheDir),
+		DisableUseSnapShot:  options.DisableUseSnapshot,
+		LogLevel:            logLevel,
+	}
 }
 
 // nacosSDKClient 把 nacos-sdk-go/v2 适配为 Nacos Client 接口。

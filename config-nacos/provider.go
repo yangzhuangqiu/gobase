@@ -32,6 +32,8 @@ const (
 	BootstrapKeyNacosLogDir = "nacos.logDir"
 	// BootstrapKeyNacosCacheDir 是高级 Nacos SDK 快照缓存目录 key。
 	BootstrapKeyNacosCacheDir = "nacos.cacheDir"
+	// BootstrapKeyNacosDisableUseSnapshot 是 Nacos 远程失败时禁用本地快照回退的策略 key。
+	BootstrapKeyNacosDisableUseSnapshot = "nacos.disableUseSnapshot"
 	// BootstrapKeyNacosLogLevel 是高级 Nacos SDK 日志级别 key。
 	BootstrapKeyNacosLogLevel = "nacos.logLevel"
 )
@@ -178,6 +180,7 @@ func (this *Provider) BootstrapSchema() []provider.BootstrapKey {
 		{Key: BootstrapKeyNacosTimeoutMs, Type: provider.BootstrapSchemaTypeUint64, Required: false, DefaultValue: "10000", Description: "Common client request timeout in milliseconds."},
 		{Key: BootstrapKeyNacosLogDir, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "<system-temp>/nacos/log", Description: "Advanced SDK log directory; process-wide first client wins."},
 		{Key: BootstrapKeyNacosCacheDir, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "<system-temp>/nacos/cache", Description: "Advanced SDK snapshot cache directory."},
+		{Key: BootstrapKeyNacosDisableUseSnapshot, Type: provider.BootstrapSchemaTypeBool, Required: false, DefaultValue: "false", Description: "Disable local snapshot fallback when remote config retrieval fails."},
 		{Key: BootstrapKeyNacosLogLevel, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "warn", Description: "Advanced SDK log level: debug, info, warn, or error; process-wide first client wins."},
 		{Key: BootstrapKeyNacosSources, Type: provider.BootstrapSchemaTypeList, Required: false, DefaultValue: "[]", Description: "Remote source list."},
 		{Key: "nacos.sources[].groupId", Type: provider.BootstrapSchemaTypeString, Required: true, DefaultValue: "", Description: "Source group id."},
@@ -493,6 +496,15 @@ func readUint64FromMap(values map[string]any, key string) (uint64, error) {
 		return 0, nil
 	}
 	return parseUint64Value(raw)
+}
+
+// readBoolFromMap 读取可选 bool 字段；缺失时返回 false，声明时执行严格布尔解析。
+func readBoolFromMap(values map[string]any, key string) (bool, error) {
+	raw, ok := values[key]
+	if !ok || raw == nil {
+		return false, nil
+	}
+	return parseBoolValue(raw)
 }
 
 // parseIntValue 解析任意输入为 int。

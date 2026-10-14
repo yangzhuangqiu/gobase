@@ -231,6 +231,7 @@ strict 校验只统一检查 root：允许 `config` 和已注册 provider 名；
 |---|---|---|
 | 连接器 | Nacos SDK options；`address` 支持逗号分隔标准节点，非空 `servers` 以结构化节点整体覆盖 `address` | Consul API options；地址可携带 scheme/path prefix |
 | Source 映射 | Nacos Source 私有持有 `groupId/dataId` | Consul Source 私有持有 `prefix/key`，trim `/` 后映射为 KV path |
+| 远程读取失败 | `disableUseSnapshot=false` 时允许 SDK 回退本地快照，`true` 时直接失败 | 返回 Consul API 错误，由 Source optional 语义决定是否跳过 |
 | Watch | SDK `ListenConfig`，context 取消时注销 | 每 Source 一个 blocking query goroutine |
 | 首次 Watch 事件 | 由 Nacos SDK 决定 | 首次成功查询只建立基线，不回调 |
 | Watch 错误 | SDK 内部语义 | 固定 `500ms` 退避并重试，不向 Manager 报告 |

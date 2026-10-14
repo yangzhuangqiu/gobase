@@ -15,7 +15,8 @@ func TestParseBootstrapSupportsStructuredServersAndSources(t *testing.T) {
 	// 同时声明两种连接入口，验证 codec 保留输入并交由 SDK 层执行 servers 优先级。
 	binding, err := runtimeProvider.parseBootstrap(map[string]any{
 		"nacos": map[string]any{
-			"address": "ignored:8848",
+			"address":            "ignored:8848",
+			"disableUseSnapshot": true,
 			"servers": []any{
 				map[string]any{"host": "127.0.0.1", "port": uint64(18848), "grpcPort": uint64(19848)},
 			},
@@ -32,6 +33,9 @@ func TestParseBootstrapSupportsStructuredServersAndSources(t *testing.T) {
 	}
 	if binding.ClientOptions == nil || binding.ClientOptions.Address != "ignored:8848" || len(binding.ClientOptions.Servers) != 1 {
 		t.Fatalf("expected sdk address and servers, got: %#v", binding.ClientOptions)
+	}
+	if !binding.ClientOptions.DisableUseSnapshot {
+		t.Fatalf("expected snapshot fallback to be disabled")
 	}
 	server := binding.ClientOptions.Servers[0]
 	if server.Host != "127.0.0.1" || server.Port != 18848 || server.GrpcPort != 19848 {
@@ -168,6 +172,7 @@ func TestLoadBootstrapFromEnvBySchemaLoadsNacosFields(t *testing.T) {
 	t.Setenv("APP_NACOS_ADDRESS", "127.0.0.1:8848")
 	t.Setenv("APP_NACOS_SERVERS", `[{"host":"nacos-a","port":18848,"grpcPort":19848}]`)
 	t.Setenv("APP_NACOS_TIMEOUT_MS", "10001")
+	t.Setenv("APP_NACOS_DISABLE_USE_SNAPSHOT", "true")
 	t.Setenv("APP_NACOS_LOG_LEVEL", "info")
 
 	runtimeProvider := New()
@@ -182,6 +187,9 @@ func TestLoadBootstrapFromEnvBySchemaLoadsNacosFields(t *testing.T) {
 	}
 	if nacosBlock["timeoutMs"] != uint64(10001) {
 		t.Fatalf("expected timeoutMs uint64 value, got: %#v", nacosBlock["timeoutMs"])
+	}
+	if nacosBlock["disableUseSnapshot"] != true {
+		t.Fatalf("expected disableUseSnapshot bool value, got: %#v", nacosBlock["disableUseSnapshot"])
 	}
 	servers, ok := nacosBlock["servers"].([]any)
 	if !ok || len(servers) != 1 {

@@ -13,8 +13,9 @@ func TestBootstrapEncodeFromSchema(t *testing.T) {
 		Servers: []Server{
 			{Host: "nacos-a", Port: 18848, Scheme: "https", ContextPath: "/custom", GrpcPort: 19848},
 		},
-		NamespaceID: "public",
-		TimeoutMs:   3000,
+		NamespaceID:        "public",
+		TimeoutMs:          3000,
+		DisableUseSnapshot: true,
 		Sources: []BootstrapSource{
 			{GroupID: "g1", DataID: "d1.yaml", Priority: 20, Optional: true},
 			{GroupID: "g2", DataID: "d2.yaml"},
@@ -26,7 +27,7 @@ func TestBootstrapEncodeFromSchema(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected nacos block, got: %#v", got[ProviderName])
 	}
-	if nacos["address"] != "127.0.0.1:8848" || nacos["namespace"] != "public" || nacos["timeoutMs"] != uint64(3000) {
+	if nacos["address"] != "127.0.0.1:8848" || nacos["namespace"] != "public" || nacos["timeoutMs"] != uint64(3000) || nacos["disableUseSnapshot"] != true {
 		t.Fatalf("unexpected sdk options map: %#v", nacos)
 	}
 	wantServers := []any{map[string]any{"host": "nacos-a", "port": uint64(18848), "scheme": "https", "contextPath": "/custom", "grpcPort": uint64(19848)}}
@@ -100,6 +101,7 @@ func TestBootstrapDecodeRejectsLossyTypes(t *testing.T) {
 		{name: "priority_fraction", values: map[string]any{ProviderName: map[string]any{"sources": []any{map[string]any{"groupId": "g", "dataId": "d", "priority": 1.5}}}}},
 		{name: "optional_number", values: map[string]any{ProviderName: map[string]any{"sources": []any{map[string]any{"groupId": "g", "dataId": "d", "optional": 1}}}}},
 		{name: "timeout_fraction", values: map[string]any{ProviderName: map[string]any{"timeoutMs": 1.5}}},
+		{name: "disable_snapshot_number", values: map[string]any{ProviderName: map[string]any{"disableUseSnapshot": 1}}},
 		{name: "server_grpc_port_fraction", values: map[string]any{ProviderName: map[string]any{"servers": []any{map[string]any{"host": "127.0.0.1", "grpcPort": 1.5}}}}},
 	}
 	for _, item := range tests {
