@@ -7,13 +7,12 @@ type bootstrapCodec struct{}
 var (
 	bootstrapNacosRootKey     = bootstrapRootKey(BootstrapKeyNacosAddress)
 	bootstrapFieldNacosAddr   = bootstrapLeafKey(BootstrapKeyNacosAddress)
+	bootstrapFieldNacosServer = bootstrapLeafKey(BootstrapKeyNacosServers)
 	bootstrapFieldNacosNS     = bootstrapLeafKey(BootstrapKeyNacosNamespace)
 	bootstrapFieldNacosUser   = bootstrapLeafKey(BootstrapKeyNacosUsername)
 	bootstrapFieldNacosPass   = bootstrapLeafKey(BootstrapKeyNacosPassword)
 	bootstrapFieldNacosSource = bootstrapLeafKey(BootstrapKeyNacosSources)
 	bootstrapFieldNacosTO     = bootstrapLeafKey(BootstrapKeyNacosTimeoutMs)
-	bootstrapFieldNacosScheme = bootstrapLeafKey(BootstrapKeyNacosScheme)
-	bootstrapFieldNacosCtx    = bootstrapLeafKey(BootstrapKeyNacosContextPath)
 	bootstrapFieldNacosLogDir = bootstrapLeafKey(BootstrapKeyNacosLogDir)
 	bootstrapFieldNacosCache  = bootstrapLeafKey(BootstrapKeyNacosCacheDir)
 	bootstrapFieldNacosLevel  = bootstrapLeafKey(BootstrapKeyNacosLogLevel)
@@ -30,6 +29,7 @@ func newBootstrapCodec() *bootstrapCodec {
 // 2. 对未知字段 fail-fast，避免静默吞错；
 // 3. 仅当存在有效 connector 或 sources 时返回非 nil 结果。
 func (this *bootstrapCodec) Decode(values map[string]any) (*Bootstrap, error) {
+	// 阶段一：定位并归一化 nacos 根块，未声明时直接退出。
 	raw, ok := lookupByDottedKey(values, bootstrapNacosRootKey)
 	if !ok || raw == nil {
 		return nil, nil
@@ -40,15 +40,15 @@ func (this *bootstrapCodec) Decode(values map[string]any) (*Bootstrap, error) {
 		return nil, errorForNacosInvalidBootstrap(messagef("invalid nacos bootstrap block"))
 	}
 
+	// 阶段二：先拒绝未知顶层字段，再做叶子类型和值域校验。
 	allowed := map[string]struct{}{
 		bootstrapFieldNacosAddr:   {},
+		bootstrapFieldNacosServer: {},
 		bootstrapFieldNacosNS:     {},
 		bootstrapFieldNacosUser:   {},
 		bootstrapFieldNacosPass:   {},
 		bootstrapFieldNacosSource: {},
 		bootstrapFieldNacosTO:     {},
-		bootstrapFieldNacosScheme: {},
-		bootstrapFieldNacosCtx:    {},
 		bootstrapFieldNacosLogDir: {},
 		bootstrapFieldNacosCache:  {},
 		bootstrapFieldNacosLevel:  {},
@@ -63,8 +63,6 @@ func (this *bootstrapCodec) Decode(values map[string]any) (*Bootstrap, error) {
 		bootstrapFieldNacosNS,
 		bootstrapFieldNacosUser,
 		bootstrapFieldNacosPass,
-		bootstrapFieldNacosScheme,
-		bootstrapFieldNacosCtx,
 		bootstrapFieldNacosLogDir,
 		bootstrapFieldNacosCache,
 		bootstrapFieldNacosLevel,
@@ -72,22 +70,34 @@ func (this *bootstrapCodec) Decode(values map[string]any) (*Bootstrap, error) {
 		return nil, err
 	}
 
+	logLevel := readStringFromMap(nacosMap, bootstrapFieldNacosLevel)
+	if logLevel != "" && !isSupportedNacosLogLevel(logLevel) {
+		return nil, errorForNacosInvalidBootstrap(messagef("invalid nacos logLevel %q: expected debug|info|warn|error", logLevel))
+	}
+
 	spec := &Bootstrap{
 		Address:     readStringFromMap(nacosMap, bootstrapFieldNacosAddr),
 		NamespaceID: readStringFromMap(nacosMap, bootstrapFieldNacosNS),
 		Username:    readStringFromMap(nacosMap, bootstrapFieldNacosUser),
 		Password:    readStringFromMap(nacosMap, bootstrapFieldNacosPass),
-		Scheme:      readStringFromMap(nacosMap, bootstrapFieldNacosScheme),
-		ContextPath: readStringFromMap(nacosMap, bootstrapFieldNacosCtx),
 		LogDir:      readStringFromMap(nacosMap, bootstrapFieldNacosLogDir),
 		CacheDir:    readStringFromMap(nacosMap, bootstrapFieldNacosCache),
-		LogLevel:    readStringFromMap(nacosMap, bootstrapFieldNacosLevel),
+		LogLevel:    logLevel,
 	}
 	timeoutMs, err := readUint64FromMap(nacosMap, bootstrapFieldNacosTO)
 	if err != nil {
 		return nil, err
 	}
 	spec.TimeoutMs = timeoutMs
+
+	// 阶段三：结构化列表独立解析，错误保留节点索引。
+	if rawServers, exists := nacosMap[bootstrapFieldNacosServer]; exists {
+		servers, err := parseServersValue(rawServers)
+		if err != nil {
+			return nil, err
+		}
+		spec.Servers = servers
+	}
 
 	if rawSources, exists := nacosMap[bootstrapFieldNacosSource]; exists {
 		sources, err := parseSourcesValue(rawSources)
@@ -118,12 +128,11 @@ func (this *bootstrapCodec) toBinding(spec *Bootstrap) *binding {
 	if this.hasSDKOptions(spec) {
 		binding.ClientOptions = &ClientOptions{
 			Address:     strings.TrimSpace(spec.Address),
+			Servers:     append([]Server{}, spec.Servers...),
 			NamespaceID: strings.TrimSpace(spec.NamespaceID),
 			Username:    strings.TrimSpace(spec.Username),
 			Password:    strings.TrimSpace(spec.Password),
 			TimeoutMs:   spec.TimeoutMs,
-			Scheme:      strings.TrimSpace(spec.Scheme),
-			ContextPath: strings.TrimSpace(spec.ContextPath),
 			LogDir:      strings.TrimSpace(spec.LogDir),
 			CacheDir:    strings.TrimSpace(spec.CacheDir),
 			LogLevel:    strings.TrimSpace(spec.LogLevel),
@@ -139,19 +148,22 @@ func (this *bootstrapCodec) toBinding(spec *Bootstrap) *binding {
 // 2. Provider.New 已对不完整 Source fail-fast；此处只做防御性过滤。
 func (this *bootstrapCodec) Encode(spec Bootstrap) map[string]any {
 	specMap := map[string]any{}
+	// 阶段一：编码 connector 字段；servers 保持完整列表以实现整体覆盖。
 	putIfNotEmpty(specMap, bootstrapFieldNacosAddr, spec.Address)
+	if len(spec.Servers) > 0 {
+		specMap[bootstrapFieldNacosServer] = encodeServers(spec.Servers)
+	}
 	putIfNotEmpty(specMap, bootstrapFieldNacosNS, spec.NamespaceID)
 	putIfNotEmpty(specMap, bootstrapFieldNacosUser, spec.Username)
 	putIfNotEmpty(specMap, bootstrapFieldNacosPass, spec.Password)
 	if spec.TimeoutMs > 0 {
 		specMap[bootstrapFieldNacosTO] = spec.TimeoutMs
 	}
-	putIfNotEmpty(specMap, bootstrapFieldNacosScheme, spec.Scheme)
-	putIfNotEmpty(specMap, bootstrapFieldNacosCtx, spec.ContextPath)
 	putIfNotEmpty(specMap, bootstrapFieldNacosLogDir, spec.LogDir)
 	putIfNotEmpty(specMap, bootstrapFieldNacosCache, spec.CacheDir)
 	putIfNotEmpty(specMap, bootstrapFieldNacosLevel, spec.LogLevel)
 
+	// 阶段二：过滤不完整 Source，构造器校验仍负责向调用方报告声明错误。
 	if len(spec.Sources) > 0 {
 		items := make([]any, 0, len(spec.Sources))
 		for _, source := range spec.Sources {
@@ -189,12 +201,11 @@ func (this *bootstrapCodec) hasSDKOptions(spec *Bootstrap) bool {
 		return false
 	}
 	return strings.TrimSpace(spec.Address) != "" ||
+		len(spec.Servers) > 0 ||
 		strings.TrimSpace(spec.NamespaceID) != "" ||
 		strings.TrimSpace(spec.Username) != "" ||
 		strings.TrimSpace(spec.Password) != "" ||
 		spec.TimeoutMs > 0 ||
-		strings.TrimSpace(spec.Scheme) != "" ||
-		strings.TrimSpace(spec.ContextPath) != "" ||
 		strings.TrimSpace(spec.LogDir) != "" ||
 		strings.TrimSpace(spec.CacheDir) != "" ||
 		strings.TrimSpace(spec.LogLevel) != ""

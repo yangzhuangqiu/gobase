@@ -13,6 +13,6 @@ type Client interface {
 	GetConfig(ctx context.Context, groupID, dataID string) ([]byte, error)
 	// WatchConfig 监听指定 groupId/dataId，内容变化时回调最新原始值。
 	WatchConfig(ctx context.Context, groupID, dataID string, onChange func(content []byte)) (io.Closer, error)
-	// Close 释放 Client 级资源；底层 SDK 不支持整体关闭时应提供明确的幂等 no-op。
+	// Close 释放 Client 级资源；实现必须提供可重复调用的幂等关闭语义。
 	Close() error
 }

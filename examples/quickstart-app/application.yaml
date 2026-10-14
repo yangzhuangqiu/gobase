@@ -12,9 +12,22 @@ worker:
 #     enabled: true
 #   nacos:
 #     address: "127.0.0.1:8848"
+#     # 非标准部署或节点端口不一致时使用 servers；非空列表整体覆盖 address
+#     # servers:
+#     #   - host: "127.0.0.1"
+#     #     port: 8848
+#     #     scheme: "https"
+#     #     contextPath: "/nacos"
+#     #     grpcPort: 9848
 #     namespace: "public"
 #     username: "nacos"
 #     password: "nacos"
+#     # 常规请求超时，单位为毫秒；默认值为 10000
+#     timeoutMs: 10000
+#     # 高级 SDK 配置，普通应用可省略；多应用或多集群部署时建议显式隔离目录
+#     # logDir: "./.runtime/quickstart-app/nacos/log"
+#     # cacheDir: "./.runtime/quickstart-app/nacos/cache"
+#     # logLevel: "warn"
 #     sources:
 #       - groupId: "DEFAULT_GROUP"
 #         dataId: "quickstart.yaml"

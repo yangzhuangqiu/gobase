@@ -229,7 +229,7 @@ strict 校验只统一检查 root：允许 `config` 和已注册 provider 名；
 
 | 行为 | config-nacos | config-consul |
 |---|---|---|
-| 连接器 | Nacos SDK options；支持逗号分隔多地址 | Consul API options；地址可携带 scheme/path prefix |
+| 连接器 | Nacos SDK options；`address` 支持逗号分隔标准节点，非空 `servers` 以结构化节点整体覆盖 `address` | Consul API options；地址可携带 scheme/path prefix |
 | Source 映射 | Nacos Source 私有持有 `groupId/dataId` | Consul Source 私有持有 `prefix/key`，trim `/` 后映射为 KV path |
 | Watch | SDK `ListenConfig`，context 取消时注销 | 每 Source 一个 blocking query goroutine |
 | 首次 Watch 事件 | 由 Nacos SDK 决定 | 首次成功查询只建立基线，不回调 |
@@ -388,7 +388,7 @@ typed getter 当前行为：
 6. 缺少 config 自有的 refresh duration、累计失败次数和 subscriber latency 指标；`Status.Refresh().ConsecutiveFailures` 只表达当前连续失败状态，不是 metrics 导出。
 7. Provider.Name 和 bootstrap schema/env/validation 能力缺少统一 panic 隔离，扩展仍需保证这些声明阶段方法 panic-free。
 8. 并发 Close 不等待首次关闭完成，也不共享首次关闭错误。
-9. Nacos SDK 没有 client-level Close；其 Session.Close 只能维持统一边界，无法主动释放整个底层 SDK client。
+9. Nacos v2 SDK 已提供 client-level Close，但连接重建、监听重试和关闭耗时仍缺少 provider 侧观测。
 10. Consul watch 使用固定退避且没有错误回调、抖动或重试指标；Nacos SDK 监听失败观测依赖 SDK 自身。
 
 ## 15. File Map
@@ -411,12 +411,13 @@ typed getter 当前行为：
 16. `config/provider/source.go`：中立 Source 与 SourceInfo 契约。
 17. `config/provider/model.go`：BootstrapKey。
 18. `config/provider/bootstrap_env_mapper.go`：schema 到 env 的映射。
-19. `config-nacos/provider.go`、`config-nacos/session.go`：Nacos schema、Session 与 Source 解析。
-20. `config-nacos/sdk_client.go`：Nacos SDK Get/Watch 适配。
-21. `config-consul/provider.go`、`config-consul/session.go`：Consul schema、Session 与 Source 解析。
-22. `config-consul/sdk_client.go`：Consul KV Get 与 blocking query 适配。
-23. `config/options_test.go`：Option 与文件声明行为。
-24. `config/builder_test.go`：bootstrap、优先级、watch 和失败路径。
-25. `config/manager_test.go`：刷新、关闭和并发边界。
-26. `config/runtime_api_test.go`：Observe、Subscribe、Status 与 Snapshot 版本内能力。
-27. `config/usecase_test.go`：公共使用场景。
+19. `config-nacos/model.go`、`config-nacos/bootstrap_codec.go`、`config-nacos/bootstrap_server.go`：Nacos typed 模型、bootstrap 编解码与结构化节点校验。
+20. `config-nacos/provider.go`、`config-nacos/session.go`：Nacos schema、Session 与 Source 解析。
+21. `config-nacos/sdk_client.go`：Nacos SDK Get/Watch 适配及 `servers > address` 节点选择。
+22. `config-consul/provider.go`、`config-consul/session.go`：Consul schema、Session 与 Source 解析。
+23. `config-consul/sdk_client.go`：Consul KV Get 与 blocking query 适配。
+24. `config/options_test.go`：Option 与文件声明行为。
+25. `config/builder_test.go`：bootstrap、优先级、watch 和失败路径。
+26. `config/manager_test.go`：刷新、关闭和并发边界。
+27. `config/runtime_api_test.go`：Observe、Subscribe、Status 与 Snapshot 版本内能力。
+28. `config/usecase_test.go`：公共使用场景。

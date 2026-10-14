@@ -9,10 +9,12 @@ import (
 // 测试方法：编码包含连接字段和 Sources 的 Bootstrap，断言映射结构完整且字段语义不变。
 func TestBootstrapEncodeFromSchema(t *testing.T) {
 	spec := Bootstrap{
-		Address:     "127.0.0.1:8848",
+		Address: "127.0.0.1:8848",
+		Servers: []Server{
+			{Host: "nacos-a", Port: 18848, Scheme: "https", ContextPath: "/custom", GrpcPort: 19848},
+		},
 		NamespaceID: "public",
 		TimeoutMs:   3000,
-		Scheme:      "http",
 		Sources: []BootstrapSource{
 			{GroupID: "g1", DataID: "d1.yaml", Priority: 20, Optional: true},
 			{GroupID: "g2", DataID: "d2.yaml"},
@@ -26,6 +28,10 @@ func TestBootstrapEncodeFromSchema(t *testing.T) {
 	}
 	if nacos["address"] != "127.0.0.1:8848" || nacos["namespace"] != "public" || nacos["timeoutMs"] != uint64(3000) {
 		t.Fatalf("unexpected sdk options map: %#v", nacos)
+	}
+	wantServers := []any{map[string]any{"host": "nacos-a", "port": uint64(18848), "scheme": "https", "contextPath": "/custom", "grpcPort": uint64(19848)}}
+	if !reflect.DeepEqual(nacos["servers"], wantServers) {
+		t.Fatalf("unexpected servers map, want=%#v got=%#v", wantServers, nacos["servers"])
 	}
 	sources, ok := nacos["sources"].([]any)
 	if !ok {
@@ -94,12 +100,37 @@ func TestBootstrapDecodeRejectsLossyTypes(t *testing.T) {
 		{name: "priority_fraction", values: map[string]any{ProviderName: map[string]any{"sources": []any{map[string]any{"groupId": "g", "dataId": "d", "priority": 1.5}}}}},
 		{name: "optional_number", values: map[string]any{ProviderName: map[string]any{"sources": []any{map[string]any{"groupId": "g", "dataId": "d", "optional": 1}}}}},
 		{name: "timeout_fraction", values: map[string]any{ProviderName: map[string]any{"timeoutMs": 1.5}}},
+		{name: "server_grpc_port_fraction", values: map[string]any{ProviderName: map[string]any{"servers": []any{map[string]any{"host": "127.0.0.1", "grpcPort": 1.5}}}}},
 	}
 	for _, item := range tests {
 		t.Run(item.name, func(t *testing.T) {
 			if _, err := newBootstrapCodec().Decode(item.values); err == nil {
 				t.Fatalf("expected strict bootstrap type error")
 			}
+		})
+	}
+}
+
+// TestBootstrapDecodeRejectsInvalidServers 验证结构化节点在 bootstrap 阶段严格校验。
+// 测试方法：覆盖缺少 host、未知字段、非法协议、端口越界及派生 gRPC 端口越界，断言统一返回 bootstrap 错误。
+func TestBootstrapDecodeRejectsInvalidServers(t *testing.T) {
+	// 构造覆盖结构、枚举和端口边界的无效节点集合。
+	tests := []struct {
+		name   string
+		server map[string]any
+	}{
+		{name: "host_required", server: map[string]any{"port": 8848}},
+		{name: "unknown_field", server: map[string]any{"host": "nacos", "zone": "a"}},
+		{name: "unsupported_scheme", server: map[string]any{"host": "nacos", "scheme": "ftp"}},
+		{name: "http_port_out_of_range", server: map[string]any{"host": "nacos", "port": 65536}},
+		{name: "grpc_port_out_of_range", server: map[string]any{"host": "nacos", "grpcPort": 65536}},
+		{name: "derived_grpc_port_out_of_range", server: map[string]any{"host": "nacos", "port": 65000}},
+	}
+	// 逐项通过 Decode 验证错误在 bootstrap 阶段收口，而不是延迟到 SDK 建连。
+	for _, item := range tests {
+		t.Run(item.name, func(t *testing.T) {
+			_, err := newBootstrapCodec().Decode(map[string]any{ProviderName: map[string]any{"servers": []any{item.server}}})
+			assertErrorCode(t, err, ErrCodeNacosInvalidBootstrap)
 		})
 	}
 }

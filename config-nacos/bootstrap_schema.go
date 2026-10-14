@@ -39,9 +39,13 @@ func (this BootstrapSource) Info() provider.SourceInfo {
 // Bootstrap 定义 Nacos 启动参数结构，统一承接 file/env/cli/code 输入。
 type Bootstrap struct {
 	// Address 是 Nacos 服务地址，例如 "127.0.0.1:8848" 或逗号分隔多地址。
-	// 必填：条件必填（当通过 SDKOptions 路径连接且配置了 Sources 时）。
+	// 必填：条件必填（Servers 为空且配置了 Sources 时）。
 	// 默认值：无。
 	Address string
+	// Servers 是结构化 Nacos 服务节点；非空时整体覆盖 Address。
+	// 必填：否。
+	// 默认值：空（使用 Address 简写路径）。
+	Servers []Server
 	// NamespaceID 是 Nacos 命名空间 ID。
 	// 必填：否。
 	// 默认值：空（使用 SDK/服务端默认命名空间，通常为 public）。
@@ -54,29 +58,24 @@ type Bootstrap struct {
 	// 必填：否。
 	// 默认值：空。
 	Password string
-	// TimeoutMs 是 SDK HTTP 超时时间（毫秒）。
+	// TimeoutMs 是常规配置，控制 SDK 请求超时时间（毫秒）。
 	// 必填：否。
 	// 默认值：10000。
 	TimeoutMs uint64
-	// Scheme 是请求协议（http/https）。
+	// LogDir 是高级 SDK 配置，控制 Nacos SDK 自有日志目录。
 	// 必填：否。
-	// 默认值：http。
-	Scheme string
-	// ContextPath 是 Nacos HTTP 上下文路径。
-	// 必填：否。
-	// 默认值：/nacos。
-	ContextPath string
-	// LogDir 是 Nacos SDK 日志目录。
-	// 必填：否。
-	// 默认值：%TEMP%/nacos/log。
+	// 默认值：os.TempDir()/nacos/log。
+	// 说明：SDK logger 为进程级单例，首个 Client 的配置生效。
 	LogDir string
-	// CacheDir 是 Nacos SDK 缓存目录。
+	// CacheDir 是高级 SDK 配置，控制 Nacos SDK 快照缓存目录。
 	// 必填：否。
-	// 默认值：%TEMP%/nacos/cache。
+	// 默认值：os.TempDir()/nacos/cache。
+	// 说明：默认目录未按集群隔离，多集群场景应显式配置独立目录。
 	CacheDir string
-	// LogLevel 是 Nacos SDK 日志级别。
+	// LogLevel 是高级 SDK 配置，控制进程级 Nacos SDK 日志级别。
 	// 必填：否。
 	// 默认值：warn。
+	// 约束：仅允许 debug、info、warn、error；首个 Client 的配置生效。
 	LogLevel string
 	// Sources 声明远端 Nacos 配置源集合。
 	// 必填：否。

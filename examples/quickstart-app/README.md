@@ -39,6 +39,17 @@ $env:QUICKSTART_MODE="full"; ./scripts/go.ps1 -C examples run ./quickstart-app d
 ## Nacos/Consul 示例
 
 1. `quickstart_app_full_entry.go` 提供 Nacos/Consul Provider 注册模板；启用时取消 import 与对应 `config.Provider(...)` 注释，并在应用模块引入 provider 依赖。
-2. `application.yaml` 使用当前 `sources[].groupId/dataId` 契约提供注释态 bootstrap 示例；默认不连接真实远端。
+2. `application.yaml` 使用当前 `sources[].groupId/dataId` 契约提供注释态 bootstrap 示例；默认不连接真实远端。标准部署只需声明 `address`，自动使用 `http`、`/nacos` 和每个 HTTP 端口 `+1000` 的 gRPC 端口。
 3. 注册 Provider 本身不会连接远端，只有 bootstrap 中 connector 与 Sources 配置完整时才会构建远端 Plan。
 4. `bootstrap.mockdemo.enabled=true` 仅在 `QUICKSTART_MODE=full` 下生效，因为 mockdemo Provider 只在全量入口注册。
+
+### Nacos 配置分层与默认值
+
+1. `servers` 非空时整体覆盖 `address`；每个节点可独立声明 `host/port/scheme/contextPath/grpcPort`。
+2. server 节点中 `host` 必填；`port`、`scheme`、`contextPath` 默认分别为 `8848`、`http`、`/nacos`，`grpcPort` 省略时按该节点 `port + 1000` 推导。
+3. `timeoutMs` 是常规配置，单位为毫秒，默认值为 `10000`。
+4. `logDir`、`cacheDir`、`logLevel` 是高级 SDK 配置，普通应用可省略；默认值依次为 `<系统临时目录>/nacos/log`、`<系统临时目录>/nacos/cache`、`warn`。
+5. `logLevel` 仅接受小写的 `debug`、`info`、`warn`、`error`，其他值会在 bootstrap 校验阶段失败。
+6. Nacos SDK 的日志配置是进程级全局配置：同一进程内以首个创建的 Client 为准，后续 Client 的 `logDir`、`logLevel` 不保证生效。
+7. 默认缓存目录会被同一机器上的进程共享。依赖本地缓存回退，或同时连接不同环境、集群时，应为每个应用和集群配置独立的 `cacheDir`，避免同名 namespace/group/dataId 的缓存互相覆盖。
+8. 示例给出的 `./.runtime/quickstart-app/nacos/...` 是相对于进程工作目录的本地开发路径；生产环境应替换为应用可写且按应用、集群隔离的稳定目录。

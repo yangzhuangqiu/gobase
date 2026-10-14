@@ -48,8 +48,9 @@ Runtime Snapshot 的 `default/file/remote/pinned` 合并优先级不属于环境
 示例：
 1. `config` -> `APP_CONFIG`
 2. `nacos.timeoutMs` -> `APP_NACOS_TIMEOUT_MS`
-3. `consul.waitTimeMs` -> `APP_CONSUL_WAIT_TIME_MS`
-4. `mock.provider.apiURL` -> `APP_MOCK_PROVIDER_API_URL`
+3. `nacos.servers` -> `APP_NACOS_SERVERS`
+4. `consul.waitTimeMs` -> `APP_CONSUL_WAIT_TIME_MS`
+5. `mock.provider.apiURL` -> `APP_MOCK_PROVIDER_API_URL`
 
 说明：
 1. 不含 `[]` 的 `list/map` schema key 会自动映射，并把环境变量值按 YAML/JSON 文本解析；例如 `nacos.sources` 对应 `APP_NACOS_SOURCES`。
@@ -70,16 +71,24 @@ Runtime Snapshot 的 `default/file/remote/pinned` 合并优先级不属于环境
 | Env Key | 写入 bootstrap key | 类型 |
 | --- | --- | --- |
 | `APP_NACOS_ADDRESS` | `nacos.address` | `string` |
+| `APP_NACOS_SERVERS` | `nacos.servers` | YAML/JSON `list` |
 | `APP_NACOS_NAMESPACE` | `nacos.namespace` | `string` |
 | `APP_NACOS_USERNAME` | `nacos.username` | `string` |
 | `APP_NACOS_PASSWORD` | `nacos.password` | `string` |
 | `APP_NACOS_TIMEOUT_MS` | `nacos.timeoutMs` | `uint64` |
-| `APP_NACOS_SCHEME` | `nacos.scheme` | `string` |
-| `APP_NACOS_CONTEXT_PATH` | `nacos.contextPath` | `string` |
 | `APP_NACOS_LOG_DIR` | `nacos.logDir` | `string` |
 | `APP_NACOS_CACHE_DIR` | `nacos.cacheDir` | `string` |
 | `APP_NACOS_LOG_LEVEL` | `nacos.logLevel` | `string` |
 | `APP_NACOS_SOURCES` | `nacos.sources` | YAML/JSON `list` |
+
+说明：
+
+1. `APP_NACOS_SERVERS` 非空时整体覆盖 `APP_NACOS_ADDRESS`；列表项支持 `host/port/scheme/contextPath/grpcPort`。
+2. server 节点 `host` 必填；`port`、`scheme`、`contextPath` 默认分别为 `8848`、`http`、`/nacos`，`grpcPort` 省略时按节点 `port + 1000` 推导。
+3. `timeoutMs` 是常规请求超时配置，默认 `10000ms`。
+4. `logDir`、`cacheDir`、`logLevel` 是高级 SDK 配置；默认依次为 `<系统临时目录>/nacos/log`、`<系统临时目录>/nacos/cache`、`warn`。
+5. `logLevel` 仅允许 `debug/info/warn/error`；`logDir/logLevel` 受 SDK 全局 logger 约束，进程内 first-client-wins。
+6. SDK 快照缓存键不包含集群地址；多应用或多集群不得共享 `cacheDir`，避免远端失败时读取错误快照。
 
 ### 4.3 Nacos（`BootstrapEnvLoader` 扩展）
 

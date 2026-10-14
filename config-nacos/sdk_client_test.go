@@ -62,6 +62,19 @@ func TestNacosSDKClientWatchConfigRejectsNilCallback(t *testing.T) {
 	assertErrorContains(t, err, "onChange callback is required")
 }
 
+// TestNacosSDKClientCloseDelegatesToV2Client 验证适配层会释放 v2 SDK 的 gRPC 客户端。
+// 测试方法：关闭适配层并断言 CloseClient 被调用一次且返回 nil。
+func TestNacosSDKClientCloseDelegatesToV2Client(t *testing.T) {
+	fakeSDKClient := &fakeNacosConfigClient{}
+	client := &nacosSDKClient{client: fakeSDKClient}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close nacos sdk client failed: %v", err)
+	}
+	if got := fakeSDKClient.closeSnapshot(); got != 1 {
+		t.Fatalf("expected one CloseClient call, got: %d", got)
+	}
+}
+
 // TestNacosSDKClientWatchConfigPropagatesListenError 验证监听注册错误会透传。
 func TestNacosSDKClientWatchConfigPropagatesListenError(t *testing.T) {
 	listenErr := errors.New("listen_failed")
@@ -161,4 +174,12 @@ func TestParseServerConfigsSkipsEmptyFragments(t *testing.T) {
 func TestParseServerConfigsRejectsNoValidAddress(t *testing.T) {
 	_, err := parseServerConfigs(ClientOptions{Address: " , , "})
 	assertErrorContains(t, err, "no valid nacos server address")
+}
+
+// TestNewClientRejectsInvalidLogLevel 验证程序化 ClientOptions 无法绕过日志级别校验。
+// 测试方法：传入有效地址和非法级别，断言在创建真实 SDK Client 前返回参数错误。
+func TestNewClientRejectsInvalidLogLevel(t *testing.T) {
+	_, err := NewClient(ClientOptions{Address: "127.0.0.1:8848", LogLevel: "verbose"})
+	assertErrorCode(t, err, ErrCodeNacosSDKInvalidInput)
+	assertErrorContains(t, err, "invalid nacos log level")
 }

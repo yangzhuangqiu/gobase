@@ -16,6 +16,8 @@ const (
 	ProviderName = "nacos"
 	// BootstrapKeyNacosAddress 是 Nacos 地址 key。
 	BootstrapKeyNacosAddress = "nacos.address"
+	// BootstrapKeyNacosServers 是结构化 Nacos 节点列表 key。
+	BootstrapKeyNacosServers = "nacos.servers"
 	// BootstrapKeyNacosNamespace 是 Nacos namespace key。
 	BootstrapKeyNacosNamespace = "nacos.namespace"
 	// BootstrapKeyNacosUsername 是 Nacos 用户名 key。
@@ -24,17 +26,13 @@ const (
 	BootstrapKeyNacosPassword = "nacos.password"
 	// BootstrapKeyNacosSources 是 Nacos source 列表声明 key。
 	BootstrapKeyNacosSources = "nacos.sources"
-	// BootstrapKeyNacosTimeoutMs 是 Nacos SDK 超时 key。
+	// BootstrapKeyNacosTimeoutMs 是常规 Nacos SDK 请求超时 key。
 	BootstrapKeyNacosTimeoutMs = "nacos.timeoutMs"
-	// BootstrapKeyNacosScheme 是 Nacos SDK scheme key。
-	BootstrapKeyNacosScheme = "nacos.scheme"
-	// BootstrapKeyNacosContextPath 是 Nacos SDK contextPath key。
-	BootstrapKeyNacosContextPath = "nacos.contextPath"
-	// BootstrapKeyNacosLogDir 是 Nacos SDK 日志目录 key。
+	// BootstrapKeyNacosLogDir 是高级 Nacos SDK 日志目录 key。
 	BootstrapKeyNacosLogDir = "nacos.logDir"
-	// BootstrapKeyNacosCacheDir 是 Nacos SDK 缓存目录 key。
+	// BootstrapKeyNacosCacheDir 是高级 Nacos SDK 快照缓存目录 key。
 	BootstrapKeyNacosCacheDir = "nacos.cacheDir"
-	// BootstrapKeyNacosLogLevel 是 Nacos SDK 日志级别 key。
+	// BootstrapKeyNacosLogLevel 是高级 Nacos SDK 日志级别 key。
 	BootstrapKeyNacosLogLevel = "nacos.logLevel"
 )
 
@@ -101,6 +99,7 @@ func New(bootstrap ...Bootstrap) *Provider {
 	// 阶段二：复制 Sources，隔离调用方后续对输入 slice 的修改。
 	if len(bootstrap) == 1 {
 		value := bootstrap[0]
+		value.Servers = append([]Server{}, value.Servers...)
 		value.Sources = append([]BootstrapSource{}, value.Sources...)
 		result.bootstrap = &value
 		result.inputErr = validateDeclaredBootstrapSources(value.Sources)
@@ -164,17 +163,22 @@ func (this *Provider) ValidateBootstrap(values map[string]any) error {
 
 // BootstrapSchema 返回 Nacos bootstrap 可发现键定义。
 func (this *Provider) BootstrapSchema() []provider.BootstrapKey {
+	// schema 同时声明列表本身和节点叶子，供发现、env 映射与 CLI/help 使用。
 	return []provider.BootstrapKey{
 		{Key: BootstrapKeyNacosAddress, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "", Description: "Nacos server address."},
+		{Key: BootstrapKeyNacosServers, Type: provider.BootstrapSchemaTypeList, Required: false, DefaultValue: "[]", Description: "Structured Nacos server list; non-empty value overrides address."},
+		{Key: "nacos.servers[].host", Type: provider.BootstrapSchemaTypeString, Required: true, DefaultValue: "", Description: "Server host without scheme, path, or port."},
+		{Key: "nacos.servers[].port", Type: provider.BootstrapSchemaTypeUint64, Required: false, DefaultValue: "8848", Description: "Server HTTP port."},
+		{Key: "nacos.servers[].scheme", Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "http", Description: "Server HTTP scheme: http or https."},
+		{Key: "nacos.servers[].contextPath", Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "/nacos", Description: "Server HTTP context path."},
+		{Key: "nacos.servers[].grpcPort", Type: provider.BootstrapSchemaTypeUint64, Required: false, DefaultValue: "0", Description: "Server gRPC port; zero lets SDK use HTTP port plus 1000."},
 		{Key: BootstrapKeyNacosNamespace, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "public", Description: "Nacos namespace id."},
 		{Key: BootstrapKeyNacosUsername, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "", Description: "Nacos auth username."},
 		{Key: BootstrapKeyNacosPassword, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "", Description: "Nacos auth password."},
-		{Key: BootstrapKeyNacosTimeoutMs, Type: provider.BootstrapSchemaTypeUint64, Required: false, DefaultValue: "10000", Description: "SDK timeout in milliseconds."},
-		{Key: BootstrapKeyNacosScheme, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "http", Description: "HTTP scheme."},
-		{Key: BootstrapKeyNacosContextPath, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "/nacos", Description: "HTTP context path."},
-		{Key: BootstrapKeyNacosLogDir, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "%TEMP%/nacos/log", Description: "SDK log directory."},
-		{Key: BootstrapKeyNacosCacheDir, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "%TEMP%/nacos/cache", Description: "SDK cache directory."},
-		{Key: BootstrapKeyNacosLogLevel, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "warn", Description: "SDK log level."},
+		{Key: BootstrapKeyNacosTimeoutMs, Type: provider.BootstrapSchemaTypeUint64, Required: false, DefaultValue: "10000", Description: "Common client request timeout in milliseconds."},
+		{Key: BootstrapKeyNacosLogDir, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "<system-temp>/nacos/log", Description: "Advanced SDK log directory; process-wide first client wins."},
+		{Key: BootstrapKeyNacosCacheDir, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "<system-temp>/nacos/cache", Description: "Advanced SDK snapshot cache directory."},
+		{Key: BootstrapKeyNacosLogLevel, Type: provider.BootstrapSchemaTypeString, Required: false, DefaultValue: "warn", Description: "Advanced SDK log level: debug, info, warn, or error; process-wide first client wins."},
 		{Key: BootstrapKeyNacosSources, Type: provider.BootstrapSchemaTypeList, Required: false, DefaultValue: "[]", Description: "Remote source list."},
 		{Key: "nacos.sources[].groupId", Type: provider.BootstrapSchemaTypeString, Required: true, DefaultValue: "", Description: "Source group id."},
 		{Key: "nacos.sources[].dataId", Type: provider.BootstrapSchemaTypeString, Required: true, DefaultValue: "", Description: "Source data id."},

@@ -94,6 +94,7 @@
    - `config-nacos/bootstrap_test.go`
 6. 真实链路（可选）：
    - `config-nacos/integration_test.go`（`integration` tag）
+   - token 缺失时可用 username/password 自动登录；测试结束会恢复原配置，原先不存在则删除测试项
 
 ### 6.3 config-consul
 

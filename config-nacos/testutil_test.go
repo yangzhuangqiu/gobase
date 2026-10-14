@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nacos-group/nacos-sdk-go/model"
-	"github.com/nacos-group/nacos-sdk-go/vo"
+	"github.com/nacos-group/nacos-sdk-go/v2/model"
+	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"github.com/yangzhuangqiu/gobase/errcode"
 )
 
@@ -42,6 +42,7 @@ type fakeNacosConfigClient struct {
 
 	listenCalls int
 	cancelCalls int
+	closeCalls  int
 }
 
 // GetConfig 返回预设读取结果。
@@ -85,9 +86,11 @@ func (this *fakeNacosConfigClient) SearchConfig(param vo.SearchConfigParam) (*mo
 	return nil, nil
 }
 
-// PublishAggr 为接口占位实现。
-func (this *fakeNacosConfigClient) PublishAggr(param vo.ConfigParam) (published bool, err error) {
-	return false, nil
+// CloseClient 记录 v2 SDK 客户端关闭调用。
+func (this *fakeNacosConfigClient) CloseClient() {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	this.closeCalls++
 }
 
 // emitChange 主动触发监听回调，模拟 SDK 推送。
@@ -105,6 +108,13 @@ func (this *fakeNacosConfigClient) snapshot() (listenCalls int, cancelCalls int,
 	this.mu.Lock()
 	defer this.mu.Unlock()
 	return this.listenCalls, this.cancelCalls, this.getParam, this.listenParam, this.cancelParam
+}
+
+// closeSnapshot 返回 SDK client 关闭调用次数。
+func (this *fakeNacosConfigClient) closeSnapshot() int {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	return this.closeCalls
 }
 
 // assertErrorContains 断言错误文本包含片段。
