@@ -22,7 +22,7 @@ app 的公共 API 不暴露 Cobra/Pflag。使用者只需要理解五类配置�
 | 配置 Flags | `CommandFlags.Config*`、内置 `--override` | ConfigManager/ConfigValue | 转换为本次 Runtime 的 pinned 配置层 |
 | 配置来源 | `WithConfig(config.Option...)` | `Runtime.ConfigManager()`、`ConfigValue[T]` | 交给 Runtime Build/Close ConfigManager |
 | 日志 | `WithLogging` | `Runtime.Logger(name)` 或 IOC 注入 | 在 config 后初始化，在 IOC 后关闭/flush |
-| IOC | `WithBeans/WithModules/WithIOCOptions` | `Runtime.Container()` 或字段注入 | 构建 Container 并统一释放 managed beans |
+| IOC | `WithBeanDefinitions/WithModules/WithIOCOptions` | `Runtime.Container()` 或字段注入 | 构建 Container 并统一释放 managed beans |
 | 运行前准备 | `WithBeforeRunHook` | Hook 参数中的 Runtime/CommandContext | Runner 前按声明顺序执行并聚合错误 |
 | 优雅退出 | `WithShutdown(WithShutdown*...)` | Shutdown Hook | 协调信号、Runner、Hooks 和 Runtime Close |
 | 测试与嵌入 | `New/ExecuteContext/WithOutput` | 显式 context、args、buffer | 不安装全局信号，返回完整错误链 |
@@ -157,7 +157,7 @@ func runServer(ctx context.Context, runtime app.Runtime) error {
 | `WithRuntime(runtimeApplication)` | 非 nil `*app-runtime.Application` | 自动创建默认蓝图 | 完整替换 Runtime 蓝图；与 `WithRuntimeOptions`/Runtime 门面 Options 互斥 |
 | `WithRuntimeOptions(options...)` | app-runtime Options | 空集合 | 在默认蓝图上追加高级 Runtime 配置 |
 
-`WithConfig/WithLogging/WithBeans/WithModules/WithIOCOptions/WithConfigBinding` 都是更具体的 Runtime 门面，内部等价于追加 `WithRuntimeOptions`。因此只要使用了其中任何一项，就不要再同时使用 `WithRuntime`。
+`WithConfig/WithLogging/WithBeanDefinitions/WithModules/WithIOCOptions/WithConfigBinding` 都是更具体的 Runtime 门面，内部等价于追加 `WithRuntimeOptions`。因此只要使用了其中任何一项，就不要再同时使用 `WithRuntime`。
 
 ### 2.2 Root Runner 的输入与返回
 
@@ -608,7 +608,7 @@ app 为高频 Runtime 能力提供一组聚合 Options。它们只负责声明�
 | `WithConfig(options...)` | `config.Option` 列表；nil 被 Runtime 忽略 | 是，按声明顺序追加 | 创建一个 ConfigManager |
 | `WithConfigBinding[T](scope, validators...)` | typed 配置类型、dotted scope、typed validators | 是 | 每次 Build 创建并注册独立 `*ConfigValue[T]` |
 | `WithLogging(logging)` | 一个实现 `app.Logging` 的日志 bootstrap | 可重复，后一个非 nil 实现覆盖前一个 | config 后创建日志 Provider/Factory |
-| `WithBeans(beans...)` | managed bean 实例列表 | 是，按输入顺序注册 | 进入 IOC Build；nil/typed nil 在获取资源前失败 |
+| `WithBeanDefinitions(definitions...)` | 完整 `ioc.Definition` 列表 | 是，按输入顺序注册 | 保留接口/名称/生命周期策略；Bean nil/typed nil 在获取资源前失败 |
 | `WithModules(modules...)` | `app.Module` 列表 | 是 | 调用 Module.Register；空名/同名/typed nil 在 Build 前失败 |
 | `WithIOCOptions(options...)` | `ioc.Option` 列表 | 是，按声明顺序追加 | 创建 Container 时应用高级策略 |
 
@@ -721,7 +721,7 @@ app.Main(
     ),
     app.WithFlagBinder(&configFlags{}),
     app.WithConfigBinding[ApplicationConfig]("", validateConfig),
-    app.WithBeans(&OrderService{}),
+    app.WithBeanDefinitions(ioc.Define(&OrderService{})),
     app.WithRunner(runServer),
 )
 ```
@@ -889,11 +889,11 @@ func runServer(ctx context.Context, runtime app.Runtime) error {
 
 ## 10. 使用 IOC
 
-应用私有对象直接使用 `WithBeans`；跨应用复用的装配使用 Module。调用方不手工创建、Build 或 Close Container：
+应用私有对象使用 `WithBeanDefinitions`；基础设施模块可提供 Definition 工厂隐藏 `WithDeclare` 细节，跨应用复用的对象集合使用 Module。调用方不手工创建、Build 或 Close Container：
 
 | 配置入口 | 参数 | 声明阶段行为 | 失败语义 |
 |---|---|---|---|
-| `WithBeans(beans...)` | 已构造的 bean 实例 | 按输入顺序保存，Runtime Build 时注册为 managed bean | nil/typed nil 在获取 Runtime 资源前 fail-fast；注册/注入/Init 失败触发 Build 回滚 |
+| `WithBeanDefinitions(definitions...)` | Bean 与完整 RegisterOption | 按输入顺序保存，Runtime Build 时原样 RegisterDefinition | Bean nil/typed nil 在获取 Runtime 资源前 fail-fast；注册/注入/Init 失败触发 Build 回滚 |
 | `WithModules(modules...)` | 实现 `Name/Register` 的 Module | 按声明顺序调用 Register | nil Module 忽略；typed nil、空名称、同名 Module 失败 |
 | `WithIOCOptions(options...)` | `ioc.Option` | 创建 Container 时，在默认 IOC logger 后按顺序应用 | 由具体 IOC Option 定义；面向 close policy/timeout/logger 等高级策略 |
 
@@ -1239,7 +1239,7 @@ application := app.New(
 
 | 需求 | 使用入口 | 不要同时使用 |
 |---|---|---|
-| 普通应用配置 config/log/IOC | `WithConfig/WithLogging/WithBeans/WithModules/WithIOCOptions` | `WithRuntime` |
+| 普通应用配置 config/log/IOC | `WithConfig/WithLogging/WithBeanDefinitions/WithModules/WithIOCOptions` | `WithRuntime` |
 | app 没有门面的 app-runtime Option | `WithRuntimeOptions(option...)` | `WithRuntime` |
 | 外部已经拥有完整 `*app-runtime.Application` 蓝图 | `WithRuntime(application)` | 任何 Runtime 门面或 `WithRuntimeOptions` |
 

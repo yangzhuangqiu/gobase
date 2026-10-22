@@ -57,25 +57,36 @@ func (this *configuredRequestLogObserver) Observe(ctx context.Context, observati
 	this.observer.ObserveRequestLog(ctx, observation, slow)
 }
 
-// prepareRequestObservers 聚合配置化日志和显式/IOC 通用 Observer，保证只安装一个完成态 Middleware。
+// prepareRequestObservers 聚合 IOC 注入的配置化日志和通用 Observer，保证只安装一个完成态 Middleware。
 // 阶段角色：Server 构造期校验 typed 依赖并冻结 Access Log 路径策略。
 func prepareRequestObservers(
 	config AccessLogConfig,
-	options *buildOptions,
+	requestLogObservers []RequestLogObserver,
+	requestObservers []webhertz.RequestObserver,
 	metadataProviders []webhertz.RequestObservationMetadataProvider,
 ) ([]webhertz.RequestObserver, error) {
-	// 第一阶段：Access Log 的启用条件是配置与 typed adapter 同时存在，缺失时 fail-fast。
-	if config.Enabled && len(options.requestLogObservers) == 0 {
+	// 第一阶段：完整校验 IOC 组件，避免 typed nil 推迟到请求期才 panic。
+	for index, observer := range requestLogObservers {
+		if isNilInterface(observer) {
+			return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.middleware result=failed stage=build_access_log reason=request_log_observer_required observer_index=%d", index))
+		}
+	}
+	for index, observer := range requestObservers {
+		if isNilInterface(observer) {
+			return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.middleware result=failed stage=build_request_observers reason=request_observer_required observer_index=%d", index))
+		}
+	}
+	if config.Enabled && len(requestLogObservers) == 0 {
 		return nil, errorForDeclarationInvalid("op=app_web_hertz.middleware result=failed stage=build_access_log reason=request_log_observer_required")
 	}
-	capacity := 1 + len(metadataProviders) + len(options.requestLogObservers) + len(options.requestObservers)
+	capacity := 1 + len(metadataProviders) + len(requestLogObservers) + len(requestObservers)
 	observers := make([]webhertz.RequestObserver, 0, capacity)
 	if config.Enabled {
 		skipPaths := make(map[string]struct{}, len(config.SkipPaths))
 		for _, path := range config.SkipPaths {
 			skipPaths[path] = struct{}{}
 		}
-		for _, observer := range options.requestLogObservers {
+		for _, observer := range requestLogObservers {
 			observers = append(observers, &configuredRequestLogObserver{
 				observer:      observer,
 				skipPaths:     skipPaths,
@@ -84,14 +95,14 @@ func prepareRequestObservers(
 		}
 	}
 	// 第二阶段：桥接器必须先提供 Request ID/panic 元数据；通用 Observer 不受 Access Log 开关影响。
-	if len(observers) > 0 || len(options.requestObservers) > 0 {
+	if len(observers) > 0 || len(requestObservers) > 0 {
 		bridges := make([]webhertz.RequestObserver, 0, 1+len(metadataProviders))
 		bridges = append(bridges, requestObservationBridge{})
 		for _, provider := range metadataProviders {
 			bridges = append(bridges, instrumentationMetadataBridge{provider: provider})
 		}
 		observers = append(bridges, observers...)
-		observers = append(observers, options.requestObservers...)
+		observers = append(observers, requestObservers...)
 	}
 	return observers, nil
 }

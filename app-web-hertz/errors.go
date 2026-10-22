@@ -11,11 +11,11 @@ import (
 type ErrorCode = errcode.StringCode
 
 const (
-	// ErrCodeConfigInvalid 表示显式或 Snapshot 解码后的标准配置语义非法。
+	// ErrCodeConfigInvalid 表示 Snapshot 解码后的标准配置语义非法。
 	ErrCodeConfigInvalid ErrorCode = "app_web_hertz.config_invalid"
 	// ErrCodeConfigLoadFailed 表示配置快照、scope 解码或 provider 配置校验失败。
 	ErrCodeConfigLoadFailed ErrorCode = "app_web_hertz.config_load_failed"
-	// ErrCodeDeclarationInvalid 表示依赖、Controller、Filter 或 Option 声明非法。
+	// ErrCodeDeclarationInvalid 表示依赖、应用组件或 Option 声明非法。
 	ErrCodeDeclarationInvalid ErrorCode = "app_web_hertz.declaration_invalid"
 	// ErrCodeServerBuildFailed 表示 web-hertz Server 构建失败。
 	ErrCodeServerBuildFailed ErrorCode = "app_web_hertz.server_build_failed"
@@ -23,6 +23,8 @@ const (
 	ErrCodeModuleRegisterFailed ErrorCode = "app_web_hertz.module_register_failed"
 	// ErrCodeServerStateInvalid 表示托管 Server 在 IOC Init 完成前被调用。
 	ErrCodeServerStateInvalid ErrorCode = "app_web_hertz.server_state_invalid"
+	// ErrCodeServerResolveFailed 表示 App Runner 无法从 Runtime IOC 解析唯一 web.Server。
+	ErrCodeServerResolveFailed ErrorCode = "app_web_hertz.server_resolve_failed"
 )
 
 // errorForConfigInvalid 构造配置解析和组合校验错误。
@@ -53,6 +55,11 @@ func errorForModuleRegisterFailed(message string, cause ...error) error {
 // errorForServerStateInvalid 构造托管 Server 尚未初始化的状态错误。
 func errorForServerStateInvalid(message string, cause ...error) error {
 	return buildError(ErrCodeServerStateInvalid, message, cause...)
+}
+
+// errorForServerResolveFailed 构造 App Runner 的 Server 解析错误。
+func errorForServerResolveFailed(message string, cause ...error) error {
+	return buildError(ErrCodeServerResolveFailed, message, cause...)
 }
 
 // buildError 统一构造带稳定 code 和可选 cause 的阶段错误。

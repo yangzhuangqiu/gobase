@@ -17,7 +17,7 @@ const (
 	ErrCodeRuntimeCloseFailed ErrorCode = "app_runtime.close.failed"
 	// ErrCodeModuleInvalid 表示 Module 声明无效、回调为空或名称重复。
 	ErrCodeModuleInvalid ErrorCode = "app_runtime.module.invalid"
-	// ErrCodeBeanInvalid 表示简单 bean 声明为 nil 或 typed nil。
+	// ErrCodeBeanInvalid 表示 Bean Definition 的 Bean 声明为 nil 或 typed nil。
 	ErrCodeBeanInvalid ErrorCode = "app_runtime.bean.invalid"
 	// ErrCodeLoggingInvalid 表示 Logging 声明携带 typed nil。
 	ErrCodeLoggingInvalid ErrorCode = "app_runtime.logging.invalid"
@@ -38,7 +38,7 @@ func errorForModuleInvalid(msg string, cause ...error) error {
 	return buildError(ErrCodeModuleInvalid, msg, cause...)
 }
 
-// errorForBeanInvalid 构造简单 bean 声明错误。
+// errorForBeanInvalid 构造 Bean Definition 声明错误。
 func errorForBeanInvalid(msg string, cause ...error) error {
 	return buildError(ErrCodeBeanInvalid, msg, cause...)
 }

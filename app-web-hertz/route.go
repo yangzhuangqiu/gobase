@@ -63,32 +63,63 @@ var (
 	handlerType = reflect.TypeOf(hertzapp.HandlerFunc(nil))
 )
 
-// prepareControllers 校验 Controller 并构建保持输入顺序的 RouteFunc。
-// 阶段角色：只做反射扫描和不可变计划，不执行 RegisterRoutes 或修改 Hertz Router。
-func prepareControllers(controllers []Controller, style RoutePathStyle) ([]webhertz.RouteFunc, error) {
-	routes := make([]webhertz.RouteFunc, 0, len(controllers))
+// prepareControllers 校验 Controller 并构建保持输入顺序的不可变路由计划。
+// 阶段角色：只做反射扫描，不执行 RegisterRoutes 或修改 Hertz Router。
+func prepareControllers(controllers []Controller, style RoutePathStyle) ([]*controllerRoutePlan, error) {
+	plans := make([]*controllerRoutePlan, 0, len(controllers))
 	for index, controller := range controllers {
 		if isNilInterface(controller) {
-			return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.new result=failed stage=validate_controllers reason=controller_required controller_index=%d", index))
+			return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.build result=failed stage=validate_controllers reason=controller_required controller_index=%d", index))
 		}
 		plan, err := buildControllerRoutePlan(controller, index, style)
 		if err != nil {
 			return nil, err
 		}
-		routes = append(routes, plan.register)
+		plans = append(plans, plan)
 	}
-	return routes, nil
+	return plans, nil
+}
+
+// prepareRoutes 合并 Controller 与分组 Filter，生成一次性的 Hertz 路由装配入口。
+// 阶段角色：共享基础分组只由框架创建和缓存；Controller 只接收无路径子分组。
+func prepareRoutes(controllers []Controller, groupedFilters []groupedFilterPlan, style RoutePathStyle) ([]webhertz.RouteFunc, error) {
+	plans, err := prepareControllers(controllers, style)
+	if err != nil {
+		return nil, err
+	}
+	if len(plans) == 0 && len(groupedFilters) == 0 {
+		return nil, nil
+	}
+
+	register := func(router *route.RouterGroup) error {
+		groups := make(map[string]*route.RouterGroup, len(groupedFilters)+len(plans))
+
+		// 第一阶段：每个逻辑路径只创建一个框架持有的基础分组，并一次性安装分组 Filter。
+		for _, filterGroup := range groupedFilters {
+			groups[filterGroup.groupPath] = router.Group(filterGroup.groupPath, filterGroup.handlers...)
+		}
+		// 第二阶段：Controller 从共享基础分组派生无路径子分组，隔离自身通过 Use 增加的 Middleware。
+		for _, plan := range plans {
+			baseGroup, exists := groups[plan.groupPath]
+			if !exists {
+				baseGroup = router.Group(plan.groupPath)
+				groups[plan.groupPath] = baseGroup
+			}
+			if err := plan.register(baseGroup.Group("")); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return []webhertz.RouteFunc{register}, nil
 }
 
 // buildControllerRoutePlan 解析单个 Controller 的分组、可选手动注册和自动路由。
 // 阶段角色：Server 构造前置校验；没有任何路由能力的 Controller 会 fail-fast。
 func buildControllerRoutePlan(controller Controller, index int, style RoutePathStyle) (*controllerRoutePlan, error) {
-	groupPath := strings.TrimSpace(controller.GroupPath())
-	if groupPath == "" {
-		groupPath = "/"
-	}
-	if !strings.HasPrefix(groupPath, "/") {
-		return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.new result=failed stage=validate_controller_group reason=leading_slash_required controller_index=%d group_path=%q", index, groupPath))
+	groupPath, valid := normalizeGroupPath(controller.GroupPath())
+	if !valid {
+		return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.build result=failed stage=validate_controller_group reason=leading_slash_required controller_index=%d group_path=%q", index, groupPath))
 	}
 
 	// 手动注册是可选能力；自动扫描始终执行，两种声明最终叠加到同一个分组。
@@ -98,7 +129,7 @@ func buildControllerRoutePlan(controller Controller, index int, style RoutePathS
 		return nil, err
 	}
 	if registrar == nil && len(automaticRoutes) == 0 {
-		return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.new result=failed stage=validate_controller_routes reason=route_required controller_index=%d controller_type=%T", index, controller))
+		return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.build result=failed stage=validate_controller_routes reason=route_required controller_index=%d controller_type=%T", index, controller))
 	}
 	return &controllerRoutePlan{
 		controllerIndex: index,
@@ -124,12 +155,12 @@ func scanAutomaticRoutes(controller Controller, controllerIndex int, style Route
 		}
 		if err != nil {
 			return nil, errorForDeclarationInvalid(
-				messagef("op=app_web_hertz.new result=failed stage=scan_controller_routes reason=method_name_invalid controller_index=%d controller_type=%s method=%s", controllerIndex, controllerType, method.Name),
+				messagef("op=app_web_hertz.build result=failed stage=scan_controller_routes reason=method_name_invalid controller_index=%d controller_type=%s method=%s", controllerIndex, controllerType, method.Name),
 				err,
 			)
 		}
 		if !isHertzHandlerMethod(method.Type) {
-			return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.new result=failed stage=scan_controller_routes reason=handler_signature_invalid controller_index=%d controller_type=%s method=%s expected=func(context.Context,*app.RequestContext)", controllerIndex, controllerType, method.Name))
+			return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.build result=failed stage=scan_controller_routes reason=handler_signature_invalid controller_index=%d controller_type=%s method=%s expected=func(context.Context,*app.RequestContext)", controllerIndex, controllerType, method.Name))
 		}
 		handler := controllerValue.Method(methodIndex).Convert(handlerType).Interface().(hertzapp.HandlerFunc)
 		routes = append(routes, automaticRoute{
@@ -194,12 +225,9 @@ func isHertzHandlerMethod(methodType reflect.Type) bool {
 		methodType.NumOut() == 0
 }
 
-// register 在 Hertz 构造期把一个 Controller 计划注册到独占 RouterGroup。
+// register 在 Hertz 构造期把一个 Controller 计划注册到其独占子 RouterGroup。
 // 阶段角色：先执行可选 RegisterRoutes，再按稳定顺序叠加方法名自动路由。
-func (this *controllerRoutePlan) register(router *route.RouterGroup) error {
-	// 每个 Controller 都创建 group；`/` 只表示无 URL 前缀，不共享根 Router 的 Middleware 作用域。
-	target := router.Group(this.groupPath)
-
+func (this *controllerRoutePlan) register(target *route.RouterGroup) error {
 	// 手动声明优先，使动态路由和 group Middleware 在自动静态路由前完成装配。
 	if this.registrar != nil {
 		if err := this.registrar.RegisterRoutes(target); err != nil {

@@ -21,6 +21,20 @@ type runtimeTestDependency struct {
 	Trace *[]string `ioc:"-"`
 }
 
+// runtimeTestRole 定义 Bean Definition 测试使用的语义接口。
+type runtimeTestRole interface {
+	// Role 返回可断言的稳定角色值。
+	Role() string
+}
+
+// runtimeTestRoleBean 验证完整 Definition 会把同一实例发布到接口索引。
+type runtimeTestRoleBean struct{}
+
+// Role 返回测试角色值。
+func (this *runtimeTestRoleBean) Role() string {
+	return "definition"
+}
+
 // Init 记录依赖初始化动作。
 func (this *runtimeTestDependency) Init(context.Context) error {
 	*this.Trace = append(*this.Trace, "init-dependency")
@@ -198,6 +212,52 @@ func TestUseCaseBuildRuntime(t *testing.T) {
 	}
 }
 
+// TestUseCaseBeanDefinitionsPublishSemanticInterfaces 验证 Runtime 能原样注册完整 IOC Definition。
+//
+// 测试方法：
+// 1. 使用 WithBeanDefinitions 声明具体 Bean、接口类型和名称；
+// 2. Build 后分别按接口和名称解析；
+// 3. 断言两种索引都返回原始实例，并由 Runtime 正常关闭。
+func TestUseCaseBeanDefinitionsPublishSemanticInterfaces(t *testing.T) {
+	// 第一阶段：由应用蓝图保存完整 Definition，接口声明与名称不在 app-runtime 重建。
+	bean := &runtimeTestRoleBean{}
+	application := New(
+		WithConfig(config.File(config.FileDisabled())),
+		WithBeanDefinitions(ioc.Define(
+			bean,
+			ioc.WithName("RuntimeTestRole"),
+			ioc.WithDeclare[runtimeTestRole](),
+		)),
+	)
+	runtime, err := application.Build(context.Background())
+	if err != nil {
+		t.Fatalf("build runtime with definition: %v", err)
+	}
+	// 第二阶段：从 IOC 的接口与名称索引验证原始 Definition 被无损注册。
+	resolved, err := ioc.ResolveAs[runtimeTestRole](runtime.Container())
+	if err != nil || resolved != bean || resolved.Role() != "definition" {
+		t.Fatalf("unexpected interface resolution: resolved=%v err=%v", resolved, err)
+	}
+	named, err := ioc.ResolveByNameAs[runtimeTestRole](runtime.Container(), "RuntimeTestRole")
+	if err != nil || named != bean {
+		t.Fatalf("unexpected named resolution: resolved=%v err=%v", named, err)
+	}
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("close runtime with definition: %v", err)
+	}
+}
+
+// TestUseCaseBeanDefinitionsRejectNilBeforeResourceBuild 验证空 Definition 在 Runtime 获取资源前失败。
+//
+// 测试方法：声明空 Bean Definition 后调用 Build，断言返回稳定 bean_invalid 且不创建 Runtime。
+func TestUseCaseBeanDefinitionsRejectNilBeforeResourceBuild(t *testing.T) {
+	application := New(WithBeanDefinitions(ioc.Definition{}))
+	runtime, err := application.Build(context.Background())
+	if runtime != nil || !errcode.IsCode[ErrorCode](err, ErrCodeBeanInvalid) {
+		t.Fatalf("expected bean definition declaration error: runtime=%v err=%v", runtime, err)
+	}
+}
+
 // TestUseCaseBuildFailureClosesAcquiredResources 验证自动配置失败会关闭已取得的日志与配置资源。
 //
 // 测试方法：
@@ -343,7 +403,7 @@ type runtimeBoundConfig struct {
 }
 
 type runtimeBoundBean struct {
-	// Config 验证 *ConfigValue[T] 可由 WithBeans 自动注入。
+	// Config 验证 *ConfigValue[T] 可由 Bean Definition 自动注入。
 	Config *ConfigValue[runtimeBoundConfig]
 }
 
@@ -435,7 +495,7 @@ func (this *runtimeConfigClient) Emit(content string) {
 	}
 }
 
-// TestUseCaseConfigBindingInjectsTypedValue 验证聚合 Config 与简单 Beans 构成常规 typed config 路径。
+// TestUseCaseConfigBindingInjectsTypedValue 验证聚合 Config 与 Bean Definitions 构成常规 typed config 路径。
 //
 // 测试方法：声明 Defaults/Bind 和一个简单 bean，Build 后 Resolve bean，断言其 Config 已注入且可直接 Load。
 func TestUseCaseConfigBindingInjectsTypedValue(t *testing.T) {
@@ -446,7 +506,7 @@ func TestUseCaseConfigBindingInjectsTypedValue(t *testing.T) {
 			config.Defaults(map[string]any{"service": map[string]any{"name": "orders"}}),
 		),
 		WithConfigBinding[runtimeBoundConfig]("service"),
-		WithBeans(bean),
+		WithBeanDefinitions(ioc.Define(bean)),
 	)
 	runtime, err := application.Build(context.Background())
 	if err != nil {
@@ -469,7 +529,7 @@ func TestConfigBindingPullsLatestWithoutSubscriber(t *testing.T) {
 			config.Provider(&runtimeSessionProvider{name: "runtime-binding", client: client}),
 		),
 		WithConfigBinding[runtimeBoundConfig]("service"),
-		WithBeans(bean),
+		WithBeanDefinitions(ioc.Define(bean)),
 	)
 	runtime, err := application.Build(context.Background())
 	if err != nil {
@@ -581,7 +641,7 @@ func TestUseCaseBlueprintRejectsTypedNilDeclarations(t *testing.T) {
 	var module *functionModule
 	var logging *runtimeTestLogging
 	application := New(
-		WithBeans(bean),
+		WithBeanDefinitions(ioc.Define(bean)),
 		WithModules(module),
 		WithLogging(logging),
 	)

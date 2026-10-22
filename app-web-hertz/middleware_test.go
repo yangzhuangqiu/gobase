@@ -193,12 +193,11 @@ func TestCORSEnabledWithoutStaticOrTypedPolicyFailsDeclaration(t *testing.T) {
 	}
 }
 
-// TestPrepareRequestObserversRequiresAdapterAndAppliesAccessLogPolicy 验证 Access Log 开关不被通用 Metrics Observer 冒充，并正确应用跳过/慢请求策略。
-// 测试方法：先只提供通用 Observer 断言缺少日志适配器失败，再提供日志适配器并手动发送快照验证精确 skip 和 slow 标记。
+// TestPrepareRequestObserversRequiresAdapterAndAppliesAccessLogPolicy 验证 IOC Observer 声明与 Access Log 策略。
+// 测试方法：先断言通用 Observer 不能冒充日志适配器，再验证 skip/slow，并确认 typed nil 在构造期失败。
 func TestPrepareRequestObserversRequiresAdapterAndAppliesAccessLogPolicy(t *testing.T) {
-	options := defaultOptions()
-	options.requestObservers = []webhertz.RequestObserver{requestObservationBridge{}}
-	_, err := prepareRequestObservers(AccessLogConfig{Enabled: true}, options, nil)
+	requestObservers := []webhertz.RequestObserver{requestObservationBridge{}}
+	_, err := prepareRequestObservers(AccessLogConfig{Enabled: true}, nil, requestObservers, nil)
 	if !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
 		t.Fatalf("expected missing request log observer error, got=%v", err)
 	}
@@ -206,11 +205,11 @@ func TestPrepareRequestObserversRequiresAdapterAndAppliesAccessLogPolicy(t *test
 	// 第二阶段：日志策略只过滤自身，不影响同一完成态链中的通用 Observer。
 	called := 0
 	wasSlow := false
-	options.requestLogObservers = []RequestLogObserver{requestLogObserverFunc(func(_ context.Context, _ webhertz.HTTPRequestObservation, slow bool) {
+	requestLogObservers := []RequestLogObserver{requestLogObserverFunc(func(_ context.Context, _ webhertz.HTTPRequestObservation, slow bool) {
 		called++
 		wasSlow = slow
 	})}
-	observers, err := prepareRequestObservers(AccessLogConfig{Enabled: true, SkipPaths: []string{"/healthz"}, SlowThreshold: time.Second}, options, nil)
+	observers, err := prepareRequestObservers(AccessLogConfig{Enabled: true, SkipPaths: []string{"/healthz"}, SlowThreshold: time.Second}, requestLogObservers, requestObservers, nil)
 	if err != nil {
 		t.Fatalf("prepare access log observers: %v", err)
 	}
@@ -220,6 +219,16 @@ func TestPrepareRequestObserversRequiresAdapterAndAppliesAccessLogPolicy(t *test
 	}
 	if called != 1 || !wasSlow {
 		t.Fatalf("unexpected access log policy result: called=%d slow=%t", called, wasSlow)
+	}
+
+	// 第三阶段：组件已不经过 Option 校验，私有统一装配边界必须显式拒绝两类 typed nil。
+	var typedNilLog *recordingRequestLogObserver
+	if _, err := prepareRequestObservers(AccessLogConfig{}, []RequestLogObserver{typedNilLog}, nil, nil); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
+		t.Fatalf("expected typed nil request log observer error, got=%v", err)
+	}
+	var typedNilObserver *recordingRequestObserver
+	if _, err := prepareRequestObservers(AccessLogConfig{}, nil, []webhertz.RequestObserver{typedNilObserver}, nil); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
+		t.Fatalf("expected typed nil request observer error, got=%v", err)
 	}
 }
 

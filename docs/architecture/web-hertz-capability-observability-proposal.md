@@ -17,7 +17,7 @@ OpenTelemetry Provider 一并塞进 `web-hertz.Config`。
 2. `app-web-hertz` 负责从 `config.Manager` 读取扩展配置，按固定阶段装配 Recovery、Request ID、
    CORS、Gzip 和完成态访问观测，并继续把 Controller/Filter 转换为 Hertz 原生能力。
 3. `web-hertz` 增加完成态 Request Observation/Observer 等无 Prometheus/OTel 依赖的窄合同，并继续提供
-   原生 Hertz Option/Middleware 入口；`app-web-hertz` 根据配置和 IOC/typed Option 装配；
+   原生 Hertz Option/Middleware 入口；`app-web-hertz` 根据配置、IOC 组件和 typed 策略 Option 装配；
    `app-observe-webhertz` 按需提供 Request Log、Prometheus 和 OTel 具体适配。
 4. Prometheus、pprof 等运维端点推荐使用独立诊断监听；它不是“管理系统”，也不预设通用 Module。
    应用 workload controller 统一监督业务 Server 与诊断 Server；IOC managed bean 图逆序关闭
@@ -53,7 +53,7 @@ OpenTelemetry Provider 一并塞进 `web-hertz.Config`。
 3. 启动配置只在构造阶段冻结，不承诺 Middleware、Router、监听地址或 exporter 热更新。
 4. 所有新增能力默认不改变当前行为；新增开关必须显式启用。
 5. 配置只能描述意图。Listener、Tracer、Registry、Provider、Secret、回调和 Handler 等对象由对应
-   managed bean/adapter 创建或借用，再通过 typed Option/IOC 注入。
+   managed bean/adapter 创建或借用；纯策略通过 typed Option 注入，应用组件通过 IOC 注入。
 6. 请求体、Authorization、Cookie、Token、Secret、SQL 参数和完整第三方响应不得进入默认日志、
    Metrics Label 或 Trace Attribute。
 
@@ -257,24 +257,24 @@ web:
 
 #### 5.2.3 配置字段与对象扩展的边界
 
-| 能力 | YAML 负责 | typed Option/IOC 负责 | 非法配置结果 |
+| 能力 | YAML 负责 | typed 策略 Option / IOC 组件负责 | 非法配置结果 |
 |---|---|---|---|
 | Recovery | enabled、内建响应策略 | 自定义 Recovery Handler、错误上报器 | Init fail-fast |
 | Request ID | enabled、header、是否信任合法入站值 | 自定义 Generator | Init fail-fast |
-| Access Log | enabled、skipPaths、慢请求阈值 | Request Log Observer、字段 Enricher；输出/编码/级别仍归 `log` | Init fail-fast |
+| Access Log | enabled、skipPaths、慢请求阈值 | IOC Request Log Observer；字段 Enricher、输出/编码/级别仍归 `log` | Init fail-fast |
 | CORS | enabled、静态 origins/methods/headers、credentials | 动态 Origin Func | Init fail-fast |
 | Gzip | enabled、level、minLength、静态排除类型 | 自定义压缩判断 | Init fail-fast |
 | Application Filter | 不进入 YAML | IOC `[]Filter` 与 `Order()` | 声明非法时 Build 失败 |
 
-配置 Handler 只能选择模块提供的稳定策略；任意回调、Generator、动态 Origin Func 和业务 Filter 仍通过
-typed Option/IOC 注入，不能把函数名写入 YAML 后反射解析。若配置启用某能力但所选策略要求的 typed
+配置 Handler 只能选择模块提供的稳定策略；任意回调、Generator、动态 Origin Func 通过 typed Option 注入，
+业务组件通过 IOC 注入，不能把函数名写入 YAML 后反射解析。若配置启用某能力但所选策略要求的 typed
 依赖缺失，Init 返回 `app_web_hertz.declaration_invalid`，不得静默降级。
 
-#### 5.2.4 显式构造与热更新
+#### 5.2.4 IOC 构造与热更新
 
-现有 `New(webhertz.Config, ...)` 保持不变，等价于只提供 Server 配置且全部标准 Middleware 关闭。新增
-`NewConfigured(appwebhertz.Config, ...)` 与 IOC Init 复用同一个 resolve/build 核心，避免 Manager 路径和
-显式路径产生两套顺序或默认值。
+应用装配入口是 `NewModule`；`managedServer.Init` 把 Controller、Filter、fallback、Observer 和
+Instrumentation Bundle 等 IOC 组件冻结为私有快照后调用统一 builder。无 IOC 场景直接使用
+`web-hertz.New`。
 
 Server 配置和 Middleware 链均为启动配置：Init 成功后冻结，不调用 `Manager.Subscribe`。刷新后的 Snapshot
 只供下一次 Build/进程重启使用。若未来确有动态 CORS 白名单等需求，应单独定义原子策略快照和失败时保留
@@ -301,8 +301,8 @@ Secret 和采样策略均由应用运行环境拥有，框架无法仅凭 YAML �
 `app-observe-webhertz` 只作为按需依赖的 Web 信号适配包，接入路径固定为：
 
 1. `web-hertz` 定义完成态 Observation/Observer 与原生 Hertz Option/Middleware 能力，不依赖具体后端；
-2. `app-web-hertz` 从 Config 解析标准链，并通过 typed Option/IOC 接受 Observer 或原子 Instrumentation
-   Bundle，把它们安装到固定阶段；
+2. `app-web-hertz` 从 Config 解析标准链，并通过 IOC 接受 Observer 或原子 Instrumentation Bundle，
+   把它们安装到固定阶段；typed Option 只承载纯策略和 provider 高级扩展；
 3. `app-observe-webhertz` 接受调用方提供的 Prometheus Registerer/Gatherer、Logger Factory、
    Meter/TracerProvider 和 typed Options，返回 Observer、Collector、Handler、Registration 或原子 Bundle；
 4. Registry/Provider managed bean 创建并拥有资源，适配 bean 通过 IOC 借用，再把适配结果交给
@@ -316,7 +316,7 @@ Secret 和采样策略均由应用运行环境拥有，框架无法仅凭 YAML �
 
 | 能力 | 启用条件 | 依赖缺失语义 |
 |---|---|---|
-| Access Log | `web.hertz.middleware.accessLog.enabled=true`，并由 typed Option/IOC 提供 Request Log Observer | Init fail-fast，不静默丢日志 |
+| Access Log | `web.hertz.middleware.accessLog.enabled=true`，并由 IOC 提供 Request Log Observer | Init fail-fast，不静默丢日志 |
 | Prometheus HTTP Metrics | 声明适配 Module/bean，由 IOC 创建并注入 Prometheus Observer | 未注入即未启用，不需要 YAML false |
 | OTel HTTP Trace | 声明适配 Module/bean，由 IOC 创建并注入原子 Instrumentation Bundle | 未注入即未启用；Bundle 构造失败不发布 Server |
 
@@ -546,9 +546,9 @@ diagnostics listener
   └─ /debug/pprof/*（默认关闭）
 ```
 
-Phase 4 已在 `quickstart-app-web-hertz` 的应用装配层用显式 Workload Controller 组装和监督，未新增通用
-Module。具体应用
-composition root 只声明并把同一个 controller 接入 Runner/Shutdown Hook，不直接操作底层 Server。
+当前 `quickstart-app-web-hertz` 聚焦单业务 Server 的最小 IOC 装配，不承载诊断 Server。需要该能力的具体应用
+由 composition root 声明 Workload Controller，并把同一个 controller 接入 Runner/Shutdown Hook；框架不新增
+通用 Module，也不直接操作应用的诊断 Server。
 诊断 Server 构造失败时不返回半初始化对象；业务 Server 已创建而诊断 Server 创建失败时，controller 必须
 逆序关闭已创建工作负载并合并错误。运行期任一长期工作负载意外退出，都触发统一 Shutdown，不能只写日志
 后让进程继续处于部分服务状态。
@@ -627,22 +627,22 @@ composition root 只声明并把同一个 controller 接入 Runner/Shutdown Hook
 
 ### Phase 2：标准 Middleware 配置装配
 
-状态：已完成（2026-08-24）。已实现兼容 `Config/NewConfigured`、单 Snapshot IOC 装配、固定标准链、Recovery、Request ID、CORS、Gzip、typed policy 及安全/顺序测试。Access Log 按计划留给 Phase 3 完成态 Observation，不在本阶段绑定日志后端。
+状态：已完成（2026-08-24）。已实现公开 Config、单 Snapshot IOC 装配、固定标准链、Recovery、Request ID、CORS、Gzip、typed policy 及安全/顺序测试。Access Log 按计划由 Phase 3 完成态 Observation 承载，不在本阶段绑定日志后端。
 
 目标：让常用能力可由 `web.hertz` scope 显式启用。
 
-1. 新增公开 `appwebhertz.Config`、`MiddlewareConfig` 和 `NewConfigured`；Server 字段 YAML inline，保留现有
-   `web.hertz` 扁平配置兼容性，旧 `New` 签名和行为不变。
-2. `managedServer.Init` 从同一个 Snapshot 一次性解码完整 Config，分别 resolve Server/Middleware 后调用与
-   `NewConfigured` 共用的 build 核心，不注册配置订阅。
+1. 定义公开 `appwebhertz.Config`、`MiddlewareConfig`；Server 字段通过 YAML inline 保持在 `web.hertz`
+   扁平 scope。
+2. `managedServer.Init` 从同一个 Snapshot 一次性解码完整 Config，分别 resolve Server/Middleware 后调用
+   私有统一 build 核心，不注册配置订阅。
 3. 第一批实现 Recovery、Request ID、CORS、Gzip；Access Log 不固定 Prometheus 或 Zap 实现，随 Phase 3
    接入完成态 Observation。
 4. 固化标准阶段、typed 策略 Option 与禁用后显式声明的高级路径。
 5. 配置错误保留 `app_web_hertz.config_load_failed` 与下层 cause；typed 依赖缺失保留
    `app_web_hertz.declaration_invalid`。
 
-验收：旧扁平配置兼容解码；Manager 只读取一次且无 Subscription；显式构造与 IOC 构造结果一致；每个
-feature 的 enabled/disabled/invalid 测试；标准顺序和 panic 最终状态测试；CORS 安全组合测试；
+验收：扁平 Server 字段正确解码；Manager 只读取一次且无 Subscription；每个 feature 的
+enabled/disabled/invalid 测试；标准顺序和 panic 最终状态测试；CORS 安全组合测试；
 `app-web-hertz` test/vet 和 quickstart focused test。
 
 ### Phase 3：完成态 Observation 与应用装配
@@ -653,7 +653,7 @@ feature 的 enabled/disabled/invalid 测试；标准顺序和 panic 最终状态
 
 1. 在 `web-hertz` 定义不可持有 RequestContext 的完成态快照、窄 Observer 合同和对应 Middleware Option；
    不引入 Prometheus、OTel 或根日志依赖。
-2. `app-web-hertz` 通过 typed Option/IOC 聚合 Observer，并把完成态 Middleware 安装到固定阶段；Access Log
+2. `app-web-hertz` 通过 IOC 聚合 Observer，并把完成态 Middleware 安装到固定阶段；Access Log
    通过 Logger Factory/Observer 适配，不修改全局 hlog。
 3. 新建按需 `app-observe-webhertz` Module，以单个原子 managed adapter bean 按需声明 Request Log Observer、
    Prometheus Observer/Collector registration/Handler 接口；Registry 采用显式 owned-private 或
@@ -668,18 +668,13 @@ label 合同稳定；适配包没有固定 scope、隐藏 goroutine 或全局注
 
 ### Phase 4：应用诊断 Server 与统一监督
 
-状态：已完成（2026-10-09）。`quickstart-app-web-hertz` 已使用应用私有 `quickstart.diagnostics` 配置构造
-独立 `net/http.Server` 和 `ServeMux`；应用 owned 的 private Registry 聚合 IOC/Web Collector，再以 shared
-模式借给 Prometheus HTTP Adapter。Go/Process/业务 Collector 必须显式选择，pprof 默认关闭；pprof
-Handler 直接基于 `runtime/pprof`/`runtime/trace` 注册到私有 mux，不导入会修改 DefaultServeMux 的
-`net/http/pprof`。业务
-Hertz 与诊断 Server 由同一个 Workload Controller 接入 `app` Runner/Shutdown Hook；任一成员退出都会
-取消兄弟成员，Hook 等待全部 Run 收敛后才允许 Runtime Close。未抽取 `app-diagnostics-http`，也未修改
-`app`、`web-hertz` 或 `app-web-hertz` 的公共合同。
+状态：待独立高级示例或真实应用验证。当前最小 Quickstart 只运行一个 IOC 托管的业务 Hertz Server；诊断
+Server、private Registry、pprof 和多工作负载监督仍由具体应用 composition root 负责，尚未抽取
+`app-diagnostics-http`，也不修改 `app`、`web-hertz` 或 `app-web-hertz` 的公共合同。
 
 目标：安全导出 Metrics/pprof，并纳入应用生命周期。
 
-1. 先在应用 adapter/quickstart 用显式 Workload Controller 组装诊断 Server；具体应用只把同一 controller
+1. 在真实应用或独立高级示例中用显式 Workload Controller 组装诊断 Server；具体应用只把同一 controller
    接入 Runner/Shutdown Hook，不使用 DefaultServeMux，不修改 `app`。
 2. 聚合 IOC、Web 和业务 Collector；Go/Process/Default Gatherer 必须显式选择。
 3. pprof 默认关闭且仅注册到诊断 Server。
@@ -735,7 +730,7 @@ feat(app-web-hertz): add configured standard middleware
 feat(web-hertz): add request observation contract
 feat(app-web-hertz): assemble request observers and instrumentation
 feat(app-observe-webhertz): add request log and prometheus adapters
-feat(examples): compose supervised diagnostics server
+docs(examples): define supervised diagnostics server composition
 feat(app-observe-webhertz): add OpenTelemetry Hertz instrumentation
 ```
 
@@ -764,7 +759,7 @@ feat(app-observe-webhertz): add OpenTelemetry Hertz instrumentation
    配置/IOC 装配，适配包负责 Request Log、Prometheus、OTel 的具体映射但不拥有外部资源。
 3. 现有顶层 Server 字段通过 YAML inline 保持兼容；不引入 `web.hertz.server` 强制迁移。
 4. 启动配置只读取一次，不订阅整个 Middleware/Router Config 热更新。
-5. 显式构造和 Manager 构造复用同一个 resolve/build 核心。
+5. 应用组件只从 IOC 注入，并由 `serverComponents` 快照进入同一个私有 build 核心；无 IOC 场景使用 `web-hertz`。
 
 进入 Phase 1 前仍需确认以下会影响公共合同的问题：
 

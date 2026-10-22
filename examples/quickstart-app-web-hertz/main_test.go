@@ -9,29 +9,23 @@ import (
 	"github.com/cloudwego/hertz/pkg/common/ut"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/cloudwego/hertz/pkg/route"
-	webhertzobserve "github.com/yangzhuangqiu/gobase/app-observe-webhertz"
 	appruntime "github.com/yangzhuangqiu/gobase/app-runtime"
 	appwebhertz "github.com/yangzhuangqiu/gobase/app-web-hertz"
 	baseconfig "github.com/yangzhuangqiu/gobase/config"
 	"github.com/yangzhuangqiu/gobase/ioc"
-	baselog "github.com/yangzhuangqiu/gobase/log"
-	"go.opentelemetry.io/otel/propagation"
+	baseweb "github.com/yangzhuangqiu/gobase/web"
 )
 
-// TestWebHertzModuleImplementsAppRuntimeContract 验证同模块 IOC 适配可直接交给 app-runtime 使用。
-// 测试方法：执行编译期接口赋值，确保不需要额外 app-web-hertz-ioc 模块或运行期类型转换。
+// TestWebHertzModuleImplementsAppRuntimeContract 验证 Web Module 可直接交给 app-runtime。
+// 测试方法：执行编译期接口赋值并断言稳定名称，避免额外 IOC 适配层。
 func TestWebHertzModuleImplementsAppRuntimeContract(t *testing.T) {
 	var module appruntime.Module = appwebhertz.NewModule("")
 	if module.Name() != "app-web-hertz" {
 		t.Fatalf("unexpected module name: %s", module.Name())
 	}
-	var observeModule appruntime.Module = webhertzobserve.NewModule(webhertzobserve.WithRequestLog())
-	if observeModule.Name() != "app-observe-webhertz" {
-		t.Fatalf("unexpected observe module name: %s", observeModule.Name())
-	}
 }
 
-// TestLoadAddressUsesDefaultAndEnvironmentOverride 验证独立 Web 配置具备确定默认地址和环境覆盖入口。
+// TestLoadAddressUsesDefaultAndEnvironmentOverride 验证监听地址具备确定默认值和环境覆盖入口。
 // 测试方法：分别写入空白与显式环境变量，断言 trim 后地址符合启动语义。
 func TestLoadAddressUsesDefaultAndEnvironmentOverride(t *testing.T) {
 	t.Setenv(quickstartAddressEnv, "  ")
@@ -44,9 +38,10 @@ func TestLoadAddressUsesDefaultAndEnvironmentOverride(t *testing.T) {
 	}
 }
 
-// TestGreetingControllerRoutes 验证自动 GET/POST 和手动路径参数路由可叠加在同一 Controller 分组。
-// 测试方法：按 app-web-hertz 约定装配原生 RouterGroup，分别请求三个入口并断言状态与响应。
+// TestGreetingControllerRoutes 验证自动 GET/POST 和手动路径参数路由可叠加在同一逻辑分组。
+// 测试方法：按 Controller 合同装配 RouterGroup，分别请求三个入口并断言状态与响应。
 func TestGreetingControllerRoutes(t *testing.T) {
+	// 第一阶段：用与生产合同相同的 GroupPath 构造 Controller 路由分组。
 	engine := route.NewEngine(config.NewOptions(nil))
 	controller := &GreetingController{}
 	group := engine.Group("/").Group(controller.GroupPath())
@@ -56,109 +51,58 @@ func TestGreetingControllerRoutes(t *testing.T) {
 	group.GET("/hello", controller.GetOrPostHello)
 	group.POST("/hello", controller.GetOrPostHello)
 
+	// 第二阶段：分别覆盖自动多 method 和手动动态路由。
 	assertResponseContains(t, engine, "GET", "/api/hello", `"method":"GET"`)
 	assertResponseContains(t, engine, "POST", "/api/hello", `"method":"POST"`)
 	assertResponseContains(t, engine, "GET", "/api/users/gobase", `"message":"hello, gobase"`)
 }
 
-// TestObservationAndWebModulesBuildTogether 验证 Quickstart 的 Request Log Adapter、配置与 Web Server 形成可关闭的真实 IOC 依赖图。
-// 测试方法：注册 borrowed Manager/LoggerFactory 和 Controller，按 main 顺序注册两个 Module，Build 后关闭并断言无依赖或生命周期错误。
-func TestObservationAndWebModulesBuildTogether(t *testing.T) {
-	// 第一阶段：使用示例默认配置创建单快照 Manager，并声明两个 borrowed 根依赖。
-	manager, err := baseconfig.New(baseconfig.File(baseconfig.FileDisabled()), baseconfig.Defaults(defaultConfig())).Build(context.Background())
+// TestApplicationDefinitionsBuildCompleteServerGraph 验证最新 Definition + Module 路径能构建完整 Server 依赖图。
+// 测试方法：注册 borrowed Manager、全部示例 Definitions 和 Web Module，Build 后解析各语义组件与唯一 Server。
+func TestApplicationDefinitionsBuildCompleteServerGraph(t *testing.T) {
+	manager, err := baseconfig.New(
+		baseconfig.File(baseconfig.FileDisabled()),
+		baseconfig.Defaults(defaultConfig()),
+	).Build(context.Background())
 	if err != nil {
 		t.Fatalf("build quickstart config manager: %v", err)
 	}
 	defer func() { _ = manager.Close() }()
+
+	// 第一阶段：composition root 只发布 Manager、组件 Definition 和 Server Module。
 	container := ioc.New()
 	if err := container.Register(manager, ioc.WithDeclare[baseconfig.Manager](), ioc.WithBorrowed()); err != nil {
 		t.Fatalf("register config manager: %v", err)
 	}
-	loggerFactory := baselog.NewLoggerFactory(nil)
-	if err := container.Register(loggerFactory, ioc.WithDeclare[baselog.LoggerFactory](), ioc.WithBorrowed()); err != nil {
-		t.Fatalf("register logger factory: %v", err)
-	}
-	if err := container.Register(&GreetingController{}, ioc.WithDeclare[appwebhertz.Controller]()); err != nil {
-		t.Fatalf("register greeting controller: %v", err)
-	}
-
-	// 第二阶段：Adapter 先声明语义接口，Web Module 自动注入后构造并由 Close 逆序收敛。
-	if err := webhertzobserve.NewModule(webhertzobserve.WithRequestLog()).Register(container); err != nil {
-		t.Fatalf("register observation module: %v", err)
+	for index, definition := range applicationDefinitions() {
+		if err := container.RegisterDefinition(definition); err != nil {
+			t.Fatalf("register application definition index=%d: %v", index, err)
+		}
 	}
 	if err := appwebhertz.NewModule("").Register(container); err != nil {
 		t.Fatalf("register web module: %v", err)
 	}
+
+	// 第二阶段：IOC 注入完整组件集合，managed Server 在 Init 中完成 provider 装配。
 	if err := container.Build(context.Background()); err != nil {
-		t.Fatalf("build quickstart module graph: %v", err)
+		t.Fatalf("build quickstart component graph: %v", err)
+	}
+	controllers, controllerErr := ioc.ResolveAllAs[appwebhertz.Controller](container)
+	filters, filterErr := ioc.ResolveAllAs[appwebhertz.Filter](container)
+	noRouteHandlers, noRouteErr := ioc.ResolveAllAs[appwebhertz.NoRouteHandler](container)
+	noMethodHandlers, noMethodErr := ioc.ResolveAllAs[appwebhertz.NoMethodHandler](container)
+	server, serverErr := ioc.ResolveAs[baseweb.Server](container)
+	if controllerErr != nil || filterErr != nil || noRouteErr != nil || noMethodErr != nil || serverErr != nil ||
+		len(controllers) != 1 || len(filters) != 2 || len(noRouteHandlers) != 1 || len(noMethodHandlers) != 1 || server == nil {
+		t.Fatalf("unexpected graph: controllers=%d filters=%d no_route=%d no_method=%d errors=[%v %v %v %v %v]",
+			len(controllers), len(filters), len(noRouteHandlers), len(noMethodHandlers),
+			controllerErr, filterErr, noRouteErr, noMethodErr, serverErr)
+	}
+	if _, grouped := filters[1].(appwebhertz.GroupedFilter); !grouped {
+		t.Fatalf("expected second Filter to expose grouped capability, got=%T", filters[1])
 	}
 	if err := container.Close(context.Background()); err != nil {
-		t.Fatalf("close quickstart module graph: %v", err)
-	}
-}
-
-// TestTracingProviderAdapterAndWebCloseAsOneDependencyGraph 验证 Provider owner 覆盖 adapter/Web 生命周期并在最后 Shutdown。
-// 测试方法：显式注册 Provider、OTel adapter 和 Web Module，Build 后解析 Bundle，再 Close 容器并断言 Provider 引用已清空。
-func TestTracingProviderAdapterAndWebCloseAsOneDependencyGraph(t *testing.T) {
-	// 第一阶段：准备 Web Server 所需配置根依赖和 Controller。
-	manager, err := baseconfig.New(baseconfig.File(baseconfig.FileDisabled()), baseconfig.Defaults(defaultConfig())).Build(context.Background())
-	if err != nil {
-		t.Fatalf("build tracing config manager: %v", err)
-	}
-	defer func() { _ = manager.Close() }()
-	container := ioc.New()
-	if err := container.Register(manager, ioc.WithDeclare[baseconfig.Manager](), ioc.WithBorrowed()); err != nil {
-		t.Fatalf("register tracing config manager: %v", err)
-	}
-	if err := container.Register(&GreetingController{}, ioc.WithDeclare[appwebhertz.Controller]()); err != nil {
-		t.Fatalf("register tracing controller: %v", err)
-	}
-	loggerFactory := baselog.NewLoggerFactory(nil)
-	if err := container.Register(loggerFactory, ioc.WithDeclare[baselog.LoggerFactory](), ioc.WithBorrowed()); err != nil {
-		t.Fatalf("register tracing logger factory: %v", err)
-	}
-
-	// 第二阶段：按 owner -> adapter -> consumer 声明模块，IOC 依赖图决定真实 Init/Close 顺序。
-	providerModule := newApplicationTracingModule(applicationTracingConfig{
-		ServiceName:             "test-service",
-		SamplingPolicyReference: defaultApplicationSamplingPolicyReference,
-	})
-	if err := providerModule.Register(container); err != nil {
-		t.Fatalf("register tracing provider module: %v", err)
-	}
-	if err := webhertzobserve.NewModule(
-		webhertzobserve.WithRequestLog(),
-		webhertzobserve.WithOpenTelemetry(
-			webhertzobserve.WithSamplingPolicyReference(defaultApplicationSamplingPolicyReference),
-		),
-	).Register(container); err != nil {
-		t.Fatalf("register tracing adapter module: %v", err)
-	}
-	if err := appwebhertz.NewModule("").Register(container); err != nil {
-		t.Fatalf("register tracing web module: %v", err)
-	}
-	if err := container.Build(context.Background()); err != nil {
-		t.Fatalf("build tracing dependency graph: %v", err)
-	}
-	bundle, err := ioc.ResolveAs[appwebhertz.InstrumentationBundle](container)
-	if err != nil || len(bundle.HertzOptions()) != 1 || len(bundle.Middleware()) != 1 {
-		t.Fatalf("unexpected resolved tracing bundle: bundle=%v err=%v", bundle, err)
-	}
-	propagator, err := ioc.ResolveAs[propagation.TextMapPropagator](container)
-	if err != nil || len(propagator.Fields()) == 0 {
-		t.Fatalf("unexpected resolved propagator: propagator=%v err=%v", propagator, err)
-	}
-	provider, err := ioc.ResolveAs[*applicationTracerProvider](container)
-	if err != nil || provider.OTelTracerProvider() == nil {
-		t.Fatalf("unexpected initialized provider: provider=%v err=%v", provider, err)
-	}
-
-	// 第三阶段：Container 逆序先关闭 Web/adapter，再 Flush/Shutdown Provider owner。
-	if err := container.Close(context.Background()); err != nil {
-		t.Fatalf("close tracing dependency graph: %v", err)
-	}
-	if provider.OTelTracerProvider() != nil {
-		t.Fatal("expected tracer provider shutdown after dependent Web/adapter close")
+		t.Fatalf("close quickstart component graph: %v", err)
 	}
 }
 

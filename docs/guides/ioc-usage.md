@@ -6,7 +6,7 @@
 
 | 场景 | 推荐入口 |
 |---|---|
-| 使用 `app` 构建命令行或服务应用 | 简单对象使用 `app.WithBeans`，可复用装配使用 `app.WithModules` |
+| 使用 `app` 构建命令行或服务应用 | 对象使用 `app.WithBeanDefinitions`，可复用装配使用 `app.WithModules` |
 | 自定义应用 Runtime | 使用 `app-runtime.Application` 托管 IOC |
 | 独立库、测试工具或自定义启动流程 | 直接使用 `ioc.New` |
 

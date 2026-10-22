@@ -25,8 +25,8 @@ type Application struct {
 	configBindings []configBinding
 	// logging 在 config 后创建本次日志 Provider。
 	logging Logging
-	// beans 是无需模块封装的简单 bean 声明。
-	beans []any
+	// beanDefinitions 是携带接口、名称和生命周期策略的完整 IOC bean 声明。
+	beanDefinitions []ioc.Definition
 	// modules 是显式可复用 bean 模块清单。
 	modules []Module
 	// moduleNames 用于模块名重复检测。
@@ -94,14 +94,15 @@ func (this *Application) addModule(module Module) {
 
 }
 
-// addBean 校验并记录简单 bean 声明。
-// 阶段角色：Option 应用期在获取 Runtime 资源前拒绝 nil bean。
-func (this *Application) addBean(bean any) {
-	if isNilLike(bean) {
-		this.recordInputError(errorForBeanInvalid(messagef("op=app_runtime.bean result=failed stage=declare reason=bean_required")))
+// addBeanDefinition 校验并保存完整 IOC bean 声明。
+// 阶段角色：Application Option 声明期在获取 Runtime 资源前拒绝空 Bean。
+func (this *Application) addBeanDefinition(definition ioc.Definition) {
+	if isNilLike(definition.Bean) {
+		this.recordInputError(errorForBeanInvalid(messagef("op=app_runtime.bean_definition result=failed stage=declare reason=bean_required")))
 		return
 	}
-	this.beans = append(this.beans, bean)
+	definition.Options = append([]ioc.RegisterOption{}, definition.Options...)
+	this.beanDefinitions = append(this.beanDefinitions, definition)
 }
 
 // setLogging 校验并保存日志实现声明。

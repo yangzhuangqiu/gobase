@@ -19,7 +19,10 @@ application := appruntime.New(
     ),
     appruntime.WithConfigBinding[OrderConfig]("order", validateOrder),
     appruntime.WithLogging(applogzap.New()),
-    appruntime.WithBeans(&OrderRepository{}, &OrderService{}),
+    appruntime.WithBeanDefinitions(
+		ioc.Define(&OrderRepository{}),
+		ioc.Define(&OrderService{}),
+	),
 )
 
 runtime, err := application.Build(ctx)
@@ -33,7 +36,7 @@ defer cancel()
 return errors.Join(runErr, runtime.Close(shutdownCtx))
 ```
 
-调用方只需要识别六组声明：Name、Config、ConfigBinding、Logging、Beans、Modules。底层策略才使用 `WithIOCOptions`。
+调用方只需要识别六组声明：Name、Config、ConfigBinding、Logging、Bean Definitions、Modules。底层策略才使用 `WithIOCOptions`。
 
 ## 3. 配置能力
 
@@ -133,12 +136,15 @@ Build(ctx context.Context, manager config.Manager) (log.Provider, error)
 
 每次 Build 应返回本次 Runtime 独占的 Provider；失败前由实现清理未交付半成品。
 
-## 6. Beans 与 Modules
+## 6. Bean Definitions 与 Modules
 
 简单应用直接声明：
 
 ```go
-appruntime.WithBeans(&OrderRepository{}, &OrderService{})
+appruntime.WithBeanDefinitions(
+	ioc.Define(&OrderRepository{}),
+	ioc.Define(&OrderService{}, ioc.WithDeclare[OrderApplicationService]()),
+)
 ```
 
 跨应用复用的模块使用：
@@ -155,6 +161,8 @@ func OrderModule() appruntime.Module {
 ```
 
 Module name 非空且唯一。Register 只声明 bean，不打开连接、启动 goroutine 或读取网络；它只获得 `ioc.Registry`，不能 Resolve/Build/Close。资源获取与释放放在 bean 的 `ioc.Initializer/Closer`。
+
+`WithBeanDefinitions` 原样保留名称、接口声明、注入和生命周期所有权。
 
 ## 7. IOC 高级策略
 
@@ -181,7 +189,7 @@ Runtime 注册 `*Runtime`、`*ApplicationInfo`、`config.Manager`、`log.Logger`
 ## 9. Build 与关闭
 
 ```text
-Build: config -> typed ConfigValues -> logging -> IOC -> Beans -> Modules -> IOC Build
+Build: config -> typed ConfigValues -> logging -> IOC -> Bean Definitions -> Modules -> IOC Build
 Close: IOC -> logging -> config
 ```
 
@@ -198,7 +206,7 @@ application := appruntime.New(
         config.Defaults(testConfig()),
     ),
     appruntime.WithConfigBinding[TestConfig](""),
-    appruntime.WithBeans(&TestService{}),
+    appruntime.WithBeanDefinitions(ioc.Define(&TestService{})),
 )
 
 runtime, err := application.Build(context.Background())

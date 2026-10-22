@@ -44,12 +44,16 @@ func WithLogging(logging Logging) Option {
 	}
 }
 
-// WithBeans 注册无需模块封装的简单 managed bean。
-// bean 按输入顺序注册，nil 或 typed nil 会在 Build 获取资源前失败。
-func WithBeans(beans ...any) Option {
+// WithBeanDefinitions 注册携带完整 IOC 策略的 managed bean 声明。
+//
+// 典型调用场景：Controller、Filter 等组件需要按语义接口聚合，调用方使用模块提供的 Definition 工厂声明角色。
+//
+// 参数：
+// - definitions：按输入顺序保存；Bean 为空或 typed nil 时在 Build 获取资源前失败。
+func WithBeanDefinitions(definitions ...ioc.Definition) Option {
 	return func(application *Application) {
-		for _, bean := range beans {
-			application.addBean(bean)
+		for _, definition := range definitions {
+			application.addBeanDefinition(definition)
 		}
 	}
 }

@@ -28,12 +28,6 @@ type buildOptions struct {
 	corsOriginValidator CORSOriginValidator
 	// gzipPredicate 在基础协议与容量检查后决定是否压缩最终响应。
 	gzipPredicate GzipPredicate
-	// requestLogObservers 只在 AccessLog 配置启用时安装，按 Option/IOC 声明顺序保存。
-	requestLogObservers []RequestLogObserver
-	// requestObservers 是无需 YAML 总开关的完成态 Metrics 等通用观察器。
-	requestObservers []webhertz.RequestObserver
-	// instrumentationBundles 保存必须原子安装的后端无关插桩声明。
-	instrumentationBundles []InstrumentationBundle
 }
 
 // defaultOptions 创建使用默认路径风格的纯构造声明。
@@ -130,68 +124,6 @@ func WithGzipPredicate(predicate GzipPredicate) Option {
 	}
 }
 
-// WithRequestLogObservers 声明由 AccessLog 配置控制的请求日志适配器。
-//
-// 参数:
-// - observers: 不得包含 nil；配置未启用 AccessLog 时只保存声明，不安装或调用。
-func WithRequestLogObservers(observers ...RequestLogObserver) Option {
-	return func(options *buildOptions) error {
-		for index, observer := range observers {
-			if isNilInterface(observer) {
-				return errorForDeclarationInvalid(messagef("op=app_web_hertz.option result=failed stage=declare_request_log_observers reason=observer_required observer_index=%d", index))
-			}
-			options.requestLogObservers = append(options.requestLogObservers, observer)
-		}
-		return nil
-	}
-}
-
-// WithRequestObservers 声明无需配置总开关的完成态 Observer。
-//
-// 参数:
-// - observers: 不得包含 nil；通常由 Metrics 适配器实现，按声明顺序同步 fan-out。
-func WithRequestObservers(observers ...webhertz.RequestObserver) Option {
-	return func(options *buildOptions) error {
-		for index, observer := range observers {
-			if isNilInterface(observer) {
-				return errorForDeclarationInvalid(messagef("op=app_web_hertz.option result=failed stage=declare_request_observers reason=observer_required observer_index=%d", index))
-			}
-			options.requestObservers = append(options.requestObservers, observer)
-		}
-		return nil
-	}
-}
-
-// WithInstrumentationBundles 声明必须成对安装原生 Option 与 Middleware 的插桩 Bundle。
-//
-// 参数:
-// - bundles: 不得包含 nil 或 typed nil；Bundle 内容在 Server 构造事务中统一校验。
-//
-// 说明:
-// - 本入口不启用任何默认插桩；只有显式 Option 或 IOC 声明才会安装；
-// - 原生 Hertz Option 先于 WithServerOptions 应用，使调用方仍保留最终高级覆盖能力。
-func WithInstrumentationBundles(bundles ...InstrumentationBundle) Option {
-	return func(options *buildOptions) error {
-		for index, bundle := range bundles {
-			if isNilInterface(bundle) {
-				return errorForDeclarationInvalid(messagef("op=app_web_hertz.option result=failed stage=declare_instrumentation reason=bundle_required bundle_index=%d", index))
-			}
-			options.instrumentationBundles = append(options.instrumentationBundles, bundle)
-		}
-		return nil
-	}
-}
-
-// cloneBuildOptions 复制 Module 声明，使单次 IOC 注入聚合不修改可重放的原始 Option。
-func cloneBuildOptions(input *buildOptions) *buildOptions {
-	result := *input
-	result.serverOptions = append([]webhertz.Option{}, input.serverOptions...)
-	result.requestLogObservers = append([]RequestLogObserver{}, input.requestLogObservers...)
-	result.requestObservers = append([]webhertz.RequestObserver{}, input.requestObservers...)
-	result.instrumentationBundles = append([]InstrumentationBundle{}, input.instrumentationBundles...)
-	return &result
-}
-
 // valid 判断路径风格是否属于公开支持集合。
 // 阶段角色：Option 解析期拒绝未来值，防止自动路由退化为非预期默认值。
 func (this RoutePathStyle) valid() bool {
@@ -214,7 +146,7 @@ func resolveOptions(options []Option) (*buildOptions, error) {
 }
 
 // isNilInterface 判断接口是否为 nil 或携带可空类型的 typed nil。
-// 阶段角色：统一保护 Controller、Filter、Manager 和 Registry 声明边界。
+// 阶段角色：统一保护应用组件、Manager 和 Registry 声明边界。
 func isNilInterface(value any) bool {
 	if value == nil {
 		return true

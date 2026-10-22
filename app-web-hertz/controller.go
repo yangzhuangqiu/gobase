@@ -10,7 +10,7 @@ type Controller interface {
 	// GroupPath 返回当前 Controller 的公共路由前缀。
 	//
 	// 返回:
-	// - 空字符串或 `/`: 不增加 URL 前缀，但仍创建当前 Controller 独占的根路径 RouterGroup；
-	// - 其他值: 必须以 `/` 开头，作为当前 Controller 独占的 RouterGroup 前缀。
+	// - 空字符串或 `/`: 统一归入根逻辑分组 `/`，不代表 Hertz 全局作用域；
+	// - 其他值: 必须以 `/` 开头，相同路径的 Controller 共享逻辑分组 Filter。
 	GroupPath() string
 }

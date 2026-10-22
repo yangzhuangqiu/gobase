@@ -7,7 +7,7 @@ import webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 // 语义:
 // 1. Server 在 YAML 中内联，兼容既有 web.hertz.address/readTimeout 等扁平字段；
 // 2. Middleware 各能力默认关闭，只有 enabled=true 才进入请求链；
-// 3. 配置只在显式构造或 IOC Init 阶段解析一次，不支持运行期热更新。
+// 3. 配置只在 IOC Init 阶段解析一次，不支持运行期热更新。
 type Config struct {
 	// Server 保留 web-hertz 的启动配置合同；YAML 解码时内联到当前 scope。
 	Server webhertz.Config `yaml:",inline"`
@@ -17,7 +17,7 @@ type Config struct {
 
 // MiddlewareConfig 定义 app-web-hertz 固定阶段中的标准 Middleware 配置。
 //
-// 顺序：Request ID -> completion Observation -> Recovery -> CORS -> Gzip -> application Filters。
+// 顺序：Request ID -> completion Observation -> Recovery -> CORS -> Gzip -> 全局/分组应用 Filters。
 type MiddlewareConfig struct {
 	// Recovery 控制 panic 恢复及内建 500 响应策略。
 	Recovery RecoveryConfig `yaml:"recovery"`
@@ -59,7 +59,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// resolveConfiguredConfig 冻结 Server 与标准 Middleware 配置，供显式和 IOC 构造共用。
+// resolveConfiguredConfig 冻结 Server 与标准 Middleware 配置，供 Snapshot 加载和私有装配核心共用。
 // 阶段角色：任何 Handler、Router 或 Hertz Engine 创建前完成默认值、复制和组合校验。
 func resolveConfiguredConfig(input Config) (Config, error) {
 	serverConfig, err := webhertz.ResolveConfig(input.Server)

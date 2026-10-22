@@ -115,6 +115,37 @@ func (this *plainRootController) GetSecond(_ context.Context, request *hertzapp.
 	request.String(consts.StatusOK, "clean")
 }
 
+// groupScopeController 注册可区分逻辑分组与 Controller 局部作用域的测试路由。
+type groupScopeController struct {
+	// groupPath 是 Controller 所属的逻辑分组。
+	groupPath string
+	// routePath 是注册到逻辑分组下的相对路径。
+	routePath string
+	// localHeader 非空时由 Controller 局部 Middleware 写入响应头。
+	localHeader string
+}
+
+// GroupPath 返回测试指定的逻辑分组。
+func (this *groupScopeController) GroupPath() string {
+	return this.groupPath
+}
+
+// RegisterRoutes 在 Controller 子分组安装可选局部 Middleware 并注册响应路由。
+func (this *groupScopeController) RegisterRoutes(router *route.RouterGroup) error {
+	if this.localHeader != "" {
+		router.Use(func(ctx context.Context, request *hertzapp.RequestContext) {
+			request.Response.Header.Set("X-Controller-Scope", this.localHeader)
+			appendScopeStage(request, this.localHeader)
+			request.Next(ctx)
+		})
+	}
+	router.GET(this.routePath, func(_ context.Context, request *hertzapp.RequestContext) {
+		request.Response.Header.Set("X-Scope-Trace", strings.Join(scopeStages(request), ","))
+		request.String(consts.StatusOK, "ok")
+	})
+	return nil
+}
+
 // emptyController 用于验证没有手动或自动路由能力时构建失败。
 type emptyController struct{}
 
@@ -261,16 +292,16 @@ func TestRoutePathStylesMapMethodSuffix(t *testing.T) {
 	}
 }
 
-// TestRootGroupPathCreatesIsolatedRootGroup 验证空字符串与 `/` 都归一化为根路径 Controller group。
-// 测试方法：分别构建两种 Controller 计划，断言 groupPath 均为 `/`，但不直接共享 Hertz 根 Router。
-func TestRootGroupPathCreatesIsolatedRootGroup(t *testing.T) {
+// TestRootGroupPathUsesSameLogicalGroup 验证空字符串与 `/` 都归一化为同一根逻辑分组。
+// 测试方法：分别构建两种 Controller 计划，断言 groupPath 均使用缓存键 `/`。
+func TestRootGroupPathUsesSameLogicalGroup(t *testing.T) {
 	for _, groupPath := range []string{"", "/"} {
 		plan, err := buildControllerRoutePlan(&rootController{groupPath: groupPath}, 0, RoutePathStyleKebab)
 		if err != nil {
 			t.Fatalf("build root controller plan group=%q: %v", groupPath, err)
 		}
 		if plan.groupPath != "/" {
-			t.Fatalf("expected isolated root group=%q got=%q", groupPath, plan.groupPath)
+			t.Fatalf("expected root logical group=%q got=%q", groupPath, plan.groupPath)
 		}
 	}
 }
@@ -294,6 +325,50 @@ func TestRootControllerMiddlewareDoesNotLeak(t *testing.T) {
 			t.Fatalf("unexpected root group response path=%s status=%d body=%q", path, status, body)
 		}
 	}
+
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown host: %v", err)
+	}
+	if err := waitForLifecycleError(t, runResult); err != nil {
+		t.Fatalf("run result: %v", err)
+	}
+}
+
+// TestGroupedFiltersShareLogicalGroupWithoutLeakingControllerMiddleware 验证最终分组装配合同。
+// 测试方法：为 `/api`、根路径和全局分别声明 Filter，请求同组、异组、根路由与 404，断言共享、隔离及 fallback 作用域。
+func TestGroupedFiltersShareLogicalGroupWithoutLeakingControllerMiddleware(t *testing.T) {
+	global := &filterStub{handler: func(ctx context.Context, request *hertzapp.RequestContext) {
+		request.Response.Header.Set("X-Global-Filter", "true")
+		appendScopeStage(request, "global")
+		request.Next(ctx)
+	}}
+	api := &groupedFilterStub{filterStub: &filterStub{handler: func(ctx context.Context, request *hertzapp.RequestContext) {
+		request.Response.Header.Set("X-API-Filter", "true")
+		appendScopeStage(request, "api")
+		request.Next(ctx)
+	}}, groupPath: "/api"}
+	root := &groupedFilterStub{filterStub: &filterStub{handler: func(ctx context.Context, request *hertzapp.RequestContext) {
+		request.Response.Header.Set("X-Root-Filter", "true")
+		appendScopeStage(request, "root")
+		request.Next(ctx)
+	}}, groupPath: ""}
+	controllers := []Controller{
+		&groupScopeController{groupPath: "/api", routePath: "/first", localHeader: "first"},
+		&groupScopeController{groupPath: "/api", routePath: "/second"},
+		&groupScopeController{groupPath: "/other", routePath: "/third"},
+		&groupScopeController{groupPath: "/", routePath: "/root"},
+	}
+	host, address := newStandardTestHost(t, controllers, []Filter{api, global, root})
+	runResult := make(chan error, 1)
+	go func() { runResult <- host.Run(context.Background()) }()
+	requestUntilReady(t, "http://"+address+"/api/first")
+
+	// 每个请求同时证明全局 Filter、逻辑分组 Filter 和 Controller 子分组的边界。
+	assertScopeHeaders(t, "http://"+address+"/api/first", true, false, "first", "global,api,first")
+	assertScopeHeaders(t, "http://"+address+"/api/second", true, false, "", "global,api")
+	assertScopeHeaders(t, "http://"+address+"/other/third", false, false, "", "global")
+	assertScopeHeaders(t, "http://"+address+"/root", false, true, "", "global,root")
+	assertScopeHeaders(t, "http://"+address+"/missing", false, false, "", "")
 
 	if err := host.Shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown host: %v", err)
@@ -375,4 +450,44 @@ func performHTTPMethod(t *testing.T, method string, url string) (int, string) {
 		t.Fatalf("read response method=%s url=%s: %v", method, url, err)
 	}
 	return response.StatusCode, strings.TrimSpace(string(body))
+}
+
+// assertScopeHeaders 请求测试路由并断言全局、分组和 Controller 局部 Middleware 的可见边界。
+// 阶段角色：Server ready 后复用同一组响应头断言，避免各场景重复网络清理代码。
+func assertScopeHeaders(t *testing.T, url string, apiExpected bool, rootExpected bool, controllerExpected string, traceExpected string) {
+	t.Helper()
+	// 第一阶段：发送请求并完整消费响应，保证后续生命周期停止不受连接复用影响。
+	response, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get scope route url=%s: %v", url, err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("close scope response url=%s: %v", url, err)
+	}
+	// 第二阶段：全局头必须存在，其余三个头分别表达逻辑分组和 Controller 局部边界。
+	if response.Header.Get("X-Global-Filter") != "true" ||
+		(response.Header.Get("X-API-Filter") == "true") != apiExpected ||
+		(response.Header.Get("X-Root-Filter") == "true") != rootExpected ||
+		response.Header.Get("X-Controller-Scope") != controllerExpected ||
+		response.Header.Get("X-Scope-Trace") != traceExpected {
+		t.Fatalf("unexpected scope headers url=%s headers=%v", url, response.Header)
+	}
+}
+
+// appendScopeStage 把 Middleware 的进入顺序追加到当前请求私有轨迹。
+// 阶段角色：仅用于集成测试观察 global、grouped 与 Controller-local 的相对顺序。
+func appendScopeStage(request *hertzapp.RequestContext, stage string) {
+	stages := scopeStages(request)
+	request.Set("scope_stages", append(stages, stage))
+}
+
+// scopeStages 读取当前请求已记录的 Middleware 轨迹；缺失时返回空切片。
+// 阶段角色：测试 Handler 生成可经 HTTP 响应头断言的最终顺序。
+func scopeStages(request *hertzapp.RequestContext) []string {
+	value, exists := request.Get("scope_stages")
+	if !exists {
+		return nil
+	}
+	return value.([]string)
 }

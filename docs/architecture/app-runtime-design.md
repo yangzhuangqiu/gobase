@@ -49,7 +49,7 @@ ioc 拥有 bean 图、注入和生命周期
 
 ## 3. 为什么：稳定声明与单次输入分离
 
-`Application` 是可重复使用的蓝图，保存 Name、Config Options、Logging、Beans、Modules 和 IOC Options。
+`Application` 是可重复使用的蓝图，保存 Name、Config Options、Logging、Bean Definitions、Modules 和 IOC Options。
 
 `BuildInput` 只保存一次运行才确定的 `config.Input`。普通路径调用 `Build(ctx)`；CLI、测试和嵌入式宿主调用 `BuildWithInput(ctx, input)`。
 
@@ -63,11 +63,11 @@ Name 派生 env prefix
 
 单次输入不会写回 Application。`FileDisabled()` 是安全收紧语义，后声明只能禁用，不能重新开放。
 
-## 4. 为什么：Beans 与 Modules 分层
+## 4. 为什么：Bean Definitions 与 Modules 分层
 
 要求每个小应用都定义具名模块会增加仪式成本，因此提供两条路径：
 
-1. `WithBeans`：应用私有、数量少、无需复用的对象。
+1. `WithBeanDefinitions`：应用私有对象及其完整接口、名称和生命周期策略。
 2. `WithModules`：跨应用复用、需要稳定错误归因的 bean 集合。
 
 Module 不是 AutoConfiguration。它没有扫描、条件匹配和隐式发现，只是显式模块声明。
@@ -139,7 +139,7 @@ validate Application declarations
   -> Logging.Build
   -> create IOC Container
   -> register borrowed base beans and ConfigValues
-  -> register simple Beans
+  -> register Bean Definitions
   -> execute Modules
   -> Container.Build
   -> publish Runtime
@@ -189,7 +189,7 @@ borrowed beans 不由 IOC 注入字段或调用生命周期，避免 Runtime 与
 | `WithName` | trim 后非空值覆盖 |
 | `WithConfig` | 按声明顺序追加 config.Options |
 | `WithLogging` | 后声明非 nil 实现覆盖 |
-| `WithBeans` | 按声明顺序追加；nil fail-fast |
+| `WithBeanDefinitions` | 按声明顺序原样注册；Bean nil/typed nil fail-fast |
 | `WithModules` | 按声明顺序追加；name 非空且唯一 |
 | `WithIOCOptions` | 按声明顺序追加，调用方可覆盖默认 IOC logger |
 

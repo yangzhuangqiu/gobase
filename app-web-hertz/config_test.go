@@ -124,7 +124,7 @@ func TestResolveConfiguredConfigUsesDisabledDefaultsAndDetachesSlices(t *testing
 }
 
 // TestResolveConfiguredConfigRejectsInvalidMiddleware 验证非法配置在创建 Handler/Engine 前以稳定配置错误失败。
-// 测试方法：表驱动输入未知 Recovery、非法 Header/CORS/Gzip 组合，断言 config_invalid；再经 NewConfigured 验证外层 build 错误。
+// 测试方法：表驱动输入未知 Recovery、非法 Header/CORS/Gzip 组合，断言 config_invalid；再经私有 builder 验证外层 build 错误。
 func TestResolveConfiguredConfigRejectsInvalidMiddleware(t *testing.T) {
 	// 第一阶段：覆盖各标准 Middleware 的非法枚举、范围及安全组合。
 	tests := map[string]MiddlewareConfig{
@@ -149,27 +149,27 @@ func TestResolveConfiguredConfigRejectsInvalidMiddleware(t *testing.T) {
 		})
 	}
 
-	// 第二阶段：显式构造入口应在稳定配置错误外保留 Server 构建阶段语义。
-	_, err := NewConfigured(Config{Middleware: tests["CORS credentials"]}, nil, nil)
+	// 第二阶段：私有统一装配核心应在稳定配置错误外保留 Server 构建阶段语义。
+	_, err := buildServer(Config{Middleware: tests["CORS credentials"]}, serverComponents{}, defaultOptions())
 	if !errcode.IsCode[ErrorCode](err, ErrCodeServerBuildFailed) || !errcode.IsCode[ErrorCode](err, ErrCodeConfigInvalid) {
-		t.Fatalf("expected layered explicit config error, got=%v", err)
+		t.Fatalf("expected layered build config error, got=%v", err)
 	}
 }
 
-// TestExplicitAndSnapshotConfigResolveIdentically 验证显式构造与 IOC 配置路径共享同一个解析合同。
+// TestGoValueAndSnapshotConfigResolveIdentically 验证 Go 配置值与 IOC Snapshot 共享同一个解析合同。
 // 测试方法：同一语义分别构造 Go Config 和 Manager Snapshot，调用统一 resolve/load 后断言完整结果一致。
-func TestExplicitAndSnapshotConfigResolveIdentically(t *testing.T) {
-	// 第一阶段：经显式入口解析完整 Go Config，作为统一配置合同的期望值。
-	explicit := Config{
+func TestGoValueAndSnapshotConfigResolveIdentically(t *testing.T) {
+	// 第一阶段：解析完整 Go Config，作为统一配置合同的期望值。
+	goValue := Config{
 		Server: webhertz.Config{Address: "127.0.0.1:19090"},
 		Middleware: MiddlewareConfig{
 			Recovery:  RecoveryConfig{Enabled: true, Response: RecoveryResponseText},
 			RequestID: RequestIDConfig{Enabled: true, Header: "X-Correlation-ID"},
 		},
 	}
-	expected, err := resolveConfiguredConfig(explicit)
+	expected, err := resolveConfiguredConfig(goValue)
 	if err != nil {
-		t.Fatalf("resolve explicit config: %v", err)
+		t.Fatalf("resolve Go config value: %v", err)
 	}
 	// 第二阶段：从同语义 Snapshot 加载，验证 IOC 不另建一套默认值或校验规则。
 	manager := newTestManager(t, map[string]any{"web": map[string]any{"hertz": map[string]any{

@@ -58,7 +58,7 @@ Register/RegisterDefinition -> Build(ctx) -> Resolve -> Close(ctx)
 2. Build 在注册集稳定后一次性建图，可以在 Init 前发现缺失、歧义和循环。
 3. 只有 Build 成功后 Resolve 才开放，调用方不会读取到半初始化对象。
 
-代价是应用必须编写装配代码。项目通过 `app-runtime.WithBeans/WithModules` 组织这部分代码，而不是把装配重新隐藏到扫描机制中。
+代价是应用必须编写装配代码。项目通过 `app-runtime.WithBeanDefinitions/WithModules` 组织这部分代码，而不是把装配重新隐藏到扫描机制中。
 
 ### 2.2 为什么注册实例，而不是由容器自动构造
 
@@ -475,7 +475,7 @@ A -> B -> A
 
 ### 自动扫描
 
-减少装配代码，但引入包初始化副作用、发现范围和测试隔离问题。当前选择显式注册，并由上层 Beans/Modules 组织装配。
+减少装配代码，但引入包初始化副作用、发现范围和测试隔离问题。当前选择显式注册，并由上层 Bean Definitions/Modules 组织装配。
 
 ### 默认允许循环依赖
 

@@ -95,12 +95,15 @@ func newStandardTestHost(
 		server.WithTransport(standard.NewTransporter),
 	))
 	allOptions := append([]Option{nativeOption}, options...)
-	// 第三阶段：构造未运行 Server，运行和停止仍由具体测试控制。
-	webServer, err := New(
-		webhertz.Config{ExitWaitTime: time.Second},
-		controllers,
-		filters,
-		allOptions...,
+	// 第三阶段：通过私有统一装配核心构造未运行 Server，运行和停止仍由具体测试控制。
+	resolvedOptions, err := resolveOptions(allOptions)
+	if err != nil {
+		t.Fatalf("resolve standard test options: %v", err)
+	}
+	webServer, err := buildServer(
+		Config{Server: webhertz.Config{ExitWaitTime: time.Second}},
+		serverComponents{controllers: controllers, filters: filters},
+		resolvedOptions,
 	)
 	if err != nil {
 		t.Fatalf("new standard test server: %v", err)

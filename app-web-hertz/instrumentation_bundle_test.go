@@ -91,13 +91,12 @@ func TestPrepareInstrumentationBundlesPreservesOrderAndMetadata(t *testing.T) {
 // 测试方法：构造 metadata provider 和通用 Observer，执行真实 Hertz Next 链，断言最终快照同时包含两个关联标识。
 func TestInstrumentationMetadataFlowsIntoCompletionObservation(t *testing.T) {
 	// 第一阶段：聚合应用 Request ID bridge、Bundle Trace ID bridge 与真实消费 Observer。
-	options := defaultOptions()
 	observed := make(chan webhertz.HTTPRequestObservation, 1)
-	options.requestObservers = []webhertz.RequestObserver{requestObserverFunc(func(_ context.Context, observation webhertz.HTTPRequestObservation) {
+	requestObservers := []webhertz.RequestObserver{requestObserverFunc(func(_ context.Context, observation webhertz.HTTPRequestObservation) {
 		observed <- observation
 	})}
 	bundle := &instrumentationBundleStub{traceID: "trace-123"}
-	observers, err := prepareRequestObservers(AccessLogConfig{}, options, []webhertz.RequestObservationMetadataProvider{bundle})
+	observers, err := prepareRequestObservers(AccessLogConfig{}, nil, requestObservers, []webhertz.RequestObservationMetadataProvider{bundle})
 	if err != nil {
 		t.Fatalf("prepare observers: %v", err)
 	}

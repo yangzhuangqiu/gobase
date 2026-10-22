@@ -1,5 +1,5 @@
-// Package appwebhertz 提供标准 Middleware、应用 Controller/Filter 到 web-hertz 的配置化装配适配。
+// Package appwebhertz 提供标准 Middleware、应用组件到 web-hertz 的配置化与 IOC 装配适配。
 //
-// 本包既支持显式值构造，也提供 IOC Module：容器在 Build 阶段自动注入 Controller、
-// Filter 和配置 Manager，从同一 Snapshot 冻结 Server/Middleware，创建并托管一个声明为 web.Server 的单周期 Hertz Server。
+// 本包提供 IOC Module：容器在 Build 阶段自动注入 Controller、Filter、fallback handler 和配置 Manager，
+// 从同一 Snapshot 冻结 Server/Middleware 并托管单周期 Hertz Server；非 IOC 场景直接使用 web-hertz。
 package appwebhertz

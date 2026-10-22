@@ -37,31 +37,7 @@
 
 ## 公共入口与合同
 
-显式 Request Log：
-
-```go
-observer, err := webhertzobserve.NewRequestLogObserver(logProvider.Factory())
-server, err := appwebhertz.NewConfigured(config, controllers, filters,
-    appwebhertz.WithRequestLogObservers(observer),
-)
-```
-
-显式私有 Prometheus：
-
-```go
-runtime, err := webhertzobserve.NewPrivatePrometheusRuntime()
-if err != nil {
-    return err
-}
-defer runtime.Close()
-
-server, err := appwebhertz.NewConfigured(config, controllers, filters,
-    appwebhertz.WithRequestObservers(runtime),
-)
-// runtime 同时实现 PrometheusHandler；由应用把它挂到显式诊断 Router。
-```
-
-IOC：
+`app-web-hertz` 只从 IOC 聚合 Request Log、Metrics 和 Trace 组件，推荐通过本模块声明所需适配器：
 
 ```go
 observeModule := webhertzobserve.NewModule(
@@ -75,6 +51,8 @@ observeModule := webhertzobserve.NewModule(
 ```
 
 Request Log 模式要求 IOC 中已声明 borrowed `log.LoggerFactory`。shared Prometheus 模式要求已声明 borrowed `PrometheusRegistry`。OTel 模式要求应用 owned managed bean 分别声明 `TracerProvider` 和 `propagation.TextMapPropagator`；前者创建 SDK Provider/Exporter/Sampler 并在关闭时负责 `ForceFlush`/`Shutdown`。Module 只注册 adapter bean。
+
+`NewRequestLogObserver` 与 `NewPrivatePrometheusRuntime` 可用于自定义 IOC Module；创建结果必须声明为对应语义接口，再由 `app-web-hertz` 注入。
 
 ## 配置与默认值
 
@@ -157,4 +135,3 @@ Prometheus 默认名称：
 
 1. [总体能力方案](../docs/architecture/web-hertz-capability-observability-proposal.md)
 2. [app-web-hertz README](../app-web-hertz/README.md)
-3. [quickstart-app-web-hertz](../examples/quickstart-app-web-hertz/README.md)

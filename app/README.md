@@ -12,7 +12,7 @@
 4. `--version`、help、bootstrap schema 的 Runtime 前短路。
 5. Runtime Build -> BeforeRunHook -> Runner/Shutdown Group -> Close 的应用生命周期。
 6. `Run/Main` 的默认退出信号与 `ExecuteContext` 的宿主取消协调。
-7. Name/Config/Logging/Beans/Modules 的常规 app-runtime 门面。
+7. Name/Config/Logging/Bean Definitions/Modules 的常规 app-runtime 门面。
 
 ### Out of Scope
 
@@ -31,7 +31,10 @@ func main() {
         ),
         app.WithConfigBinding[OrderConfig]("order", validateOrder),
         app.WithLogging(applogzap.New()),
-        app.WithBeans(&OrderRepository{}, &OrderService{}),
+        app.WithBeanDefinitions(
+            ioc.Define(&OrderRepository{}),
+            ioc.Define(&OrderService{}),
+        ),
         app.WithRunner(func(ctx context.Context, runtime app.Runtime) error {
             service, err := ioc.ResolveAs[*OrderService](runtime.Container())
             if err != nil {
@@ -54,7 +57,7 @@ func main() {
 | `WithConfig(config.Option...)` | 聚合配置能力，不复制 config API |
 | `WithConfigBinding[T]` | 声明 app-runtime typed IOC 配置视图 |
 | `WithLogging` | 选择日志实现 |
-| `WithBeans` | 注册简单 managed beans |
+| `WithBeanDefinitions` | 注册携带接口、名称和生命周期策略的完整 bean definitions |
 | `WithModules` | 注册可复用 Modules |
 | `WithIOCOptions` | 高级 IOC 策略 |
 | `WithRunner` | root 业务入口 |
@@ -93,7 +96,10 @@ app.WithLogging(applogzap.New())
 IOC 声明：
 
 ```go
-app.WithBeans(&Repository{}, &Service{})
+app.WithBeanDefinitions(
+    ioc.Define(&Repository{}),
+    ioc.Define(&Service{}),
+)
 app.WithModules(database.Module(), order.Module())
 ```
 
@@ -118,7 +124,7 @@ parse/complete/validate flags
 
 1. 常规应用只通过 app 配置能力，不手工 Build/Close Runtime。
 2. 配置选项使用 config 模块词汇；不要在 app 创建同义包装。
-3. 简单对象用 Beans，可复用装配用 Modules。
+3. 对象使用 Bean Definitions；基础设施模块提供 Definition 工厂，可复用对象集合使用 Modules。
 4. Runner 是 composition root；普通业务对象只依赖字段注入。
 5. 业务 flags 与配置覆盖 flags 分开声明。
 6. 不需要配置/log/IOC 的命令使用 `RuntimeModeDisabled`。

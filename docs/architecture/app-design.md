@@ -19,7 +19,7 @@
 ### Out of Scope
 
 1. ConfigManager、日志 provider 和 IOC 容器资源所有权。
-2. Beans/Modules 与 bean 生命周期。
+2. Bean Definitions/Modules 与 bean 生命周期。
 3. Cobra/Pflag 公共类型与原生 Command 扩展。
 4. HTTP、gRPC、Consumer 等具体框架的工作负载 controller。
 
@@ -90,7 +90,7 @@ help、version、bootstrap schema 输出属于 Runner 之前的 CLI 分支，不
 1. `app.Main(options...)`：进程级极简入口，统一错误输出和失败退出码。
 2. `app.Run(options...)`：常规入口，返回错误给 main。
 3. `App.Run/ExecuteContext(ctx, args)`：实例级入口；Run 安装进程信号，ExecuteContext 只服从宿主 context；均不保证同一实例并发执行安全。
-4. `WithConfig/WithLogging/WithBeans/WithModules`：按能力聚合的 Runtime 门面。
+4. `WithConfig/WithLogging/WithBeanDefinitions/WithModules`：按能力聚合的 Runtime 门面。
 5. `WithRuntimeOptions`：中级 Runtime 扩展口。
 6. `WithRuntime`：完整运行时蓝图替换口。
 7. `WithRunner`：两参数 root runner。

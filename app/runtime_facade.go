@@ -45,9 +45,10 @@ func WithLogging(logging Logging) Option {
 	return WithRuntimeOptions(appruntime.WithLogging(logging))
 }
 
-// WithBeans 注册无需模块封装的简单 managed bean。
-func WithBeans(beans ...any) Option {
-	return WithRuntimeOptions(appruntime.WithBeans(beans...))
+// WithBeanDefinitions 注册携带接口、名称、注入与生命周期策略的完整 IOC bean 声明。
+// 典型调用场景：使用基础设施模块提供的 Definition 工厂声明 Controller、Filter 等语义角色。
+func WithBeanDefinitions(definitions ...ioc.Definition) Option {
+	return WithRuntimeOptions(appruntime.WithBeanDefinitions(definitions...))
 }
 
 // WithModules 注册可复用业务 bean 模块。

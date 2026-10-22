@@ -173,7 +173,7 @@ func (this *Application) build(ctx context.Context, input BuildInput) (*Runtime,
 		err = this.registerConfigValues(runtime, configValues)
 	}
 	if err == nil {
-		err = this.registerBeans(runtime)
+		err = this.registerBeanDefinitions(runtime)
 	}
 	if err == nil {
 		err = this.registerModules(runtime)
@@ -314,12 +314,12 @@ func (this *Application) registerConfigValues(runtime *Runtime, values []boundCo
 	return nil
 }
 
-// registerBeans 按输入顺序注册简单 managed bean。
-// 阶段角色：Module 前的常规应用 bean 声明入口。
-func (this *Application) registerBeans(runtime *Runtime) error {
-	for index, bean := range this.beans {
-		if err := runtime.container.Register(bean); err != nil {
-			return errorForBuildFailed(messagef("op=app_runtime.build result=failed stage=register_bean reason=register_failed bean_index=%d", index), err)
+// registerBeanDefinitions 按声明顺序注册携带完整 IOC 策略的 bean。
+// 阶段角色：基础 borrowed bean 之后、模块声明之前发布接口索引和生命周期所有权。
+func (this *Application) registerBeanDefinitions(runtime *Runtime) error {
+	for index, definition := range this.beanDefinitions {
+		if err := runtime.container.RegisterDefinition(definition); err != nil {
+			return errorForBuildFailed(messagef("op=app_runtime.build result=failed stage=register_bean_definition reason=register_failed definition_index=%d", index), err)
 		}
 	}
 	return nil

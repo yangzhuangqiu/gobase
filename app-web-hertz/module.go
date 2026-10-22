@@ -38,11 +38,11 @@ type module struct {
 	options []Option
 }
 
-// NewModule 创建自动聚合 Controller/Filter 并发布 web.Server 的 IOC Module。
+// NewModule 创建自动聚合应用组件并发布 web.Server 的 IOC Module。
 //
 // 参数:
 // - scope: trim 后为空时使用 `web.hertz`；非空值作为 config dotted path；
-// - options: 与显式 NewConfigured 相同，控制路径风格、标准 typed policy 和 web-hertz 原生扩展。
+// - options: 控制路径风格、标准 typed policy 和 web-hertz 原生扩展，不承载 IOC 应用组件。
 //
 // 返回:
 // - Module: 可注册一次或在不同 Container 中重放的无资源声明对象。

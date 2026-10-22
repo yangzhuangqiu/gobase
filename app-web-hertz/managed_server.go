@@ -15,8 +15,12 @@ type managedServer struct {
 	Manager baseconfig.Manager
 	// Controllers 由 IOC 按接口声明和注册顺序注入；缺失表示应用没有 Controller。
 	Controllers []Controller `ioc:"required=false"`
-	// Filters 由 IOC 按接口声明和注册顺序注入；缺失表示不安装全局 Filter。
+	// Filters 由 IOC 按接口声明和注册顺序注入；普通类型全局生效，GroupedFilter 绑定逻辑分组。
 	Filters []Filter `ioc:"required=false"`
+	// NoRouteHandlers 由 IOC 注入并按 Order 冻结为全局 404 fallback 链。
+	NoRouteHandlers []NoRouteHandler `ioc:"required=false"`
+	// NoMethodHandlers 由 IOC 注入并按 Order 冻结为全局 405 fallback 链。
+	NoMethodHandlers []NoMethodHandler `ioc:"required=false"`
 	// RequestLogObservers 由 IOC 按语义接口注入；只有配置启用 AccessLog 时进入完成态 fan-out。
 	RequestLogObservers []RequestLogObserver `ioc:"required=false"`
 	// RequestObservers 由 IOC 注入 Metrics 等通用完成态观察器，不依赖 YAML 总开关。
@@ -44,7 +48,7 @@ var (
 // - ctx: IOC Build 上下文；取消时停止配置读取和 Server 构造。
 //
 // 返回:
-// - nil: 配置、Controller、Filter 和 provider 已冻结；
+// - nil: 配置、应用组件和 provider 已冻结；
 // - error: 配置或构造失败，IOC Build 将回滚此前已初始化 bean。
 func (this *managedServer) Init(ctx context.Context) error {
 	// 第一阶段：读取并校验本运行周期的独立启动配置，不订阅热更新。
@@ -52,12 +56,17 @@ func (this *managedServer) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// 第二阶段：Controller/Filter 已由 IOC 按依赖图完成初始化，可安全冻结路由计划。
-	runtimeOptions := cloneBuildOptions(this.options)
-	runtimeOptions.requestLogObservers = append(runtimeOptions.requestLogObservers, this.RequestLogObservers...)
-	runtimeOptions.requestObservers = append(runtimeOptions.requestObservers, this.RequestObservers...)
-	runtimeOptions.instrumentationBundles = append(runtimeOptions.instrumentationBundles, this.InstrumentationBundles...)
-	server, err := buildResolvedServer(input, this.Controllers, this.Filters, runtimeOptions)
+	// 第二阶段：把 IOC 注入结果冻结为完整组件快照，统一装配核心负责全部转换和校验。
+	components := serverComponents{
+		controllers:            this.Controllers,
+		filters:                this.Filters,
+		noRouteHandlers:        this.NoRouteHandlers,
+		noMethodHandlers:       this.NoMethodHandlers,
+		requestLogObservers:    this.RequestLogObservers,
+		requestObservers:       this.RequestObservers,
+		instrumentationBundles: this.InstrumentationBundles,
+	}
+	server, err := buildResolvedServer(input, components, this.options)
 	if err != nil {
 		return err
 	}
