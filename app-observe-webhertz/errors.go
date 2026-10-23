@@ -11,7 +11,7 @@ import (
 type ErrorCode = errcode.StringCode
 
 const (
-	// ErrCodeDeclarationInvalid 表示 Option、Factory、Registry、Provider/Propagator 或 Observer 声明非法。
+	// ErrCodeDeclarationInvalid 表示 Option、Registry、Provider/Propagator 或 Observer 声明非法。
 	ErrCodeDeclarationInvalid ErrorCode = "app_observe_webhertz.declaration_invalid"
 	// ErrCodeRegistrationFailed 表示 Prometheus Collector 注册或注销事务失败。
 	ErrCodeRegistrationFailed ErrorCode = "app_observe_webhertz.registration_failed"

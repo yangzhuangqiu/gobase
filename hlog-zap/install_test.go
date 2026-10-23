@@ -168,11 +168,55 @@ func TestInstallFixedCallerBoundaryMatchesBusinessCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read caller failed: %v", err)
 	}
-	if !strings.Contains(caller, "config_test.go") {
+	if !strings.Contains(caller, "install_test.go") {
 		t.Fatalf("expected caller in business test file, caller=%s", caller)
 	}
 	if strings.Contains(caller, "logger.go") {
 		t.Fatalf("caller should not point to hertzzap internal logger, caller=%s", caller)
+	}
+}
+
+// TestInstallFromProviderOwnsSingleRestorableLease 验证进程级 hlog 安装只有一个 owner 且可幂等恢复。
+// 测试方法：安装首个 Provider、拒绝第二个租约、重复关闭并再次安装，断言 DefaultLogger 身份和冲突错误码。
+func TestInstallFromProviderOwnsSingleRestorableLease(t *testing.T) {
+	// 第一阶段：安装首个 Provider，并确认全局 Logger 已被替换。
+	previous := hlog.DefaultLogger()
+	first := newProviderForAdapterTest(t, filepath.Join(t.TempDir(), "first.log"), "info")
+	second := newProviderForAdapterTest(t, filepath.Join(t.TempDir(), "second.log"), "info")
+	defer func() { _ = first.Close() }()
+	defer func() { _ = second.Close() }()
+
+	lease, err := InstallFromProvider(first)
+	if err != nil {
+		t.Fatalf("install first provider: %v", err)
+	}
+	t.Cleanup(func() { _ = lease.Close() })
+	if hlog.DefaultLogger() == previous {
+		t.Fatal("expected hlog default logger to be replaced")
+	}
+	// 第二阶段：Lease 活跃期间拒绝共享和独立两类重复安装。
+	if conflicting, conflictErr := InstallFromProvider(second); conflicting != nil || !errcode.IsCode[ErrorCode](conflictErr, ErrCodeInstallConflict) {
+		t.Fatalf("expected active lease conflict: lease=%v err=%v", conflicting, conflictErr)
+	}
+	if installed, conflictErr := Install(Config{}); installed != nil || !errcode.IsCode[ErrorCode](conflictErr, ErrCodeInstallConflict) {
+		t.Fatalf("expected standalone install conflict: logger=%v err=%v", installed, conflictErr)
+	}
+	// 第三阶段：幂等恢复后释放 owner，并允许新的共享安装。
+	if err := lease.Close(); err != nil {
+		t.Fatalf("restore first lease: %v", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("repeat restore first lease: %v", err)
+	}
+	if hlog.DefaultLogger() != previous {
+		t.Fatal("expected previous hlog logger to be restored")
+	}
+	reinstalled, err := InstallFromProvider(second)
+	if err != nil {
+		t.Fatalf("install after restore: %v", err)
+	}
+	if err := reinstalled.Close(); err != nil {
+		t.Fatalf("restore reinstalled lease: %v", err)
 	}
 }
 

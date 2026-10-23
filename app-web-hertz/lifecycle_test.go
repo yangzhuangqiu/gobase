@@ -102,7 +102,7 @@ func newStandardTestHost(
 	}
 	webServer, err := buildServer(
 		Config{Server: webhertz.Config{ExitWaitTime: time.Second}},
-		serverComponents{controllers: controllers, filters: filters},
+		serverComponents{controllers: controllers, filters: filters, loggers: testServerLoggers()},
 		resolvedOptions,
 	)
 	if err != nil {

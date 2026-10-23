@@ -18,7 +18,7 @@ OpenTelemetry Provider 一并塞进 `web-hertz.Config`。
    CORS、Gzip 和完成态访问观测，并继续把 Controller/Filter 转换为 Hertz 原生能力。
 3. `web-hertz` 增加完成态 Request Observation/Observer 等无 Prometheus/OTel 依赖的窄合同，并继续提供
    原生 Hertz Option/Middleware 入口；`app-web-hertz` 根据配置、IOC 组件和 typed 策略 Option 装配；
-   `app-observe-webhertz` 按需提供 Request Log、Prometheus 和 OTel 具体适配。
+   `app-web-hertz` 内建 Access Log 映射，`app-observe-webhertz` 按需提供 Prometheus 和 OTel 具体适配。
 4. Prometheus、pprof 等运维端点推荐使用独立诊断监听；它不是“管理系统”，也不预设通用 Module。
    应用 workload controller 统一监督业务 Server 与诊断 Server；IOC managed bean 图逆序关闭
    registration、Provider 和 Exporter。
@@ -182,7 +182,7 @@ sequenceDiagram
     participant Snapshot as "config.Snapshot"
     participant Provider as "web-hertz"
 
-    Root->>Module: NewModule(scope, options...)
+    Root->>Module: NewModule(options...)
     Root->>Module: Register(ioc.Registry)
     Note over Module: 只注册 managed Server bean，不读取配置
     Root->>Module: IOC Build / Init(ctx)
@@ -195,7 +195,7 @@ sequenceDiagram
     Note over Module: 全部成功后发布 delegate
 ```
 
-1. `NewModule("")` 继续把空 scope 归一化为 `web.hertz`；自定义 dotted scope 的行为不变。
+1. `NewModule()` 默认使用 `web.hertz`；自定义 dotted scope 通过 `WithScope(...)` 声明，空白值回退默认。
 2. `Register` 只保存 scope/Option 并注册 bean，不读取 Snapshot、不创建 Middleware、不启动 goroutine。
 3. `managedServer.Init` 调用一次 `Manager.Current()`，再调用 `Snapshot.Decode`；scope 缺失、类型错误或非法组合
    使 IOC Build fail-fast，并保留 config 与 app-web-hertz 两层错误码。
@@ -261,7 +261,7 @@ web:
 |---|---|---|---|
 | Recovery | enabled、内建响应策略 | 自定义 Recovery Handler、错误上报器 | Init fail-fast |
 | Request ID | enabled、header、是否信任合法入站值 | 自定义 Generator | Init fail-fast |
-| Access Log | enabled、skipPaths、慢请求阈值 | IOC Request Log Observer；字段 Enricher、输出/编码/级别仍归 `log` | Init fail-fast |
+| Access Log | enabled、skipPaths、慢请求阈值 | IOC `LoggerFactory`；输出/编码/基础级别仍归 `log` | Init fail-fast |
 | CORS | enabled、静态 origins/methods/headers、credentials | 动态 Origin Func | Init fail-fast |
 | Gzip | enabled、level、minLength、静态排除类型 | 自定义压缩判断 | Init fail-fast |
 | Application Filter | 不进入 YAML | IOC `[]Filter` 与 `Order()` | 声明非法时 Build 失败 |
@@ -294,7 +294,7 @@ last-known-good 的合同，不能把整个 `appwebhertz.Config` 直接热更新
 
 Access Log 的 `enabled/skipPaths` 决定请求 Middleware 是否安装以及哪些请求进入日志，因此归
 `web.hertz.middleware.accessLog`。Logger sink、encoder、level 和输出目标继续归根 `log` 配置；
-`app-web-hertz` 只依赖窄 Request Log Observer，不创建或修改全局 Logger。
+`app-web-hertz` 只借用 IOC 根 `LoggerFactory` 派生固定名称 Logger，不创建 Provider 或修改全局 Logger。
 
 不新增通用 `observability` scope。Metrics/Tracing 需要的 Registry、Meter/TracerProvider、Exporter、
 Secret 和采样策略均由应用运行环境拥有，框架无法仅凭 YAML 正确取得并关闭这些资源。
@@ -316,7 +316,7 @@ Secret 和采样策略均由应用运行环境拥有，框架无法仅凭 YAML �
 
 | 能力 | 启用条件 | 依赖缺失语义 |
 |---|---|---|
-| Access Log | `web.hertz.middleware.accessLog.enabled=true`，并由 IOC 提供 Request Log Observer | Init fail-fast，不静默丢日志 |
+| Access Log | `web.hertz.middleware.accessLog.enabled=true`，并由 IOC 提供 `LoggerFactory` | Init fail-fast，不静默丢日志 |
 | Prometheus HTTP Metrics | 声明适配 Module/bean，由 IOC 创建并注入 Prometheus Observer | 未注入即未启用，不需要 YAML false |
 | OTel HTTP Trace | 声明适配 Module/bean，由 IOC 创建并注入原子 Instrumentation Bundle | 未注入即未启用；Bundle 构造失败不发布 Server |
 
@@ -647,15 +647,15 @@ enabled/disabled/invalid 测试；标准顺序和 panic 最终状态测试；COR
 
 ### Phase 3：完成态 Observation 与应用装配
 
-状态：已完成（2026-08-24）。已实现后端无关完成态快照、有限 Method/Route/Outcome、开始态扩展、Observer 故障隔离、app-web-hertz Access Log/通用 Observer 聚合，以及按需 `app-observe-webhertz` Request Log/Prometheus private/shared Registry 适配。适配模块不读取固定 scope、不启动 Server/goroutine、不访问 DefaultRegistry；诊断 Server 与 OTel Bundle 分别留给 Phase 4/5。
+状态：已完成（2026-08-24）。已实现后端无关完成态快照、有限 Method/Route/Outcome、开始态扩展、Observer 故障隔离、app-web-hertz 内建 Access Log/通用 Observer 聚合，以及按需 `app-observe-webhertz` Prometheus private/shared Registry 适配。适配模块不读取固定 scope、不启动 Server/goroutine、不访问 DefaultRegistry；诊断 Server 与 OTel Bundle 分别留给 Phase 4/5。
 
 目标：实现低耦合、有限基数 HTTP Metrics。
 
 1. 在 `web-hertz` 定义不可持有 RequestContext 的完成态快照、窄 Observer 合同和对应 Middleware Option；
    不引入 Prometheus、OTel 或根日志依赖。
-2. `app-web-hertz` 通过 IOC 聚合 Observer，并把完成态 Middleware 安装到固定阶段；Access Log
-   通过 Logger Factory/Observer 适配，不修改全局 hlog。
-3. 新建按需 `app-observe-webhertz` Module，以单个原子 managed adapter bean 按需声明 Request Log Observer、
+2. `app-web-hertz` 通过 IOC 借用 LoggerFactory、聚合通用 Observer，并把完成态 Middleware 安装到固定阶段；Access Log
+   直接使用固定名称 Logger，不修改全局 hlog。
+3. 新建按需 `app-observe-webhertz` Module，以单个原子 managed adapter bean 按需声明
    Prometheus Observer/Collector registration/Handler 接口；Registry 采用显式 owned-private 或
    borrowed-shared 二选一，支持与 IOC/业务 Collector 聚合且不启动隐藏 HTTP Server。
 4. `app-web-hertz` 只按接口注入 Observer/Bundle，不识别适配模块；IOC 依赖图保证 Server 先于 registration、
@@ -729,7 +729,7 @@ feat(web-hertz): add router config and no-route handlers
 feat(app-web-hertz): add configured standard middleware
 feat(web-hertz): add request observation contract
 feat(app-web-hertz): assemble request observers and instrumentation
-feat(app-observe-webhertz): add request log and prometheus adapters
+feat(app-observe-webhertz): add prometheus adapters
 docs(examples): define supervised diagnostics server composition
 feat(app-observe-webhertz): add OpenTelemetry Hertz instrumentation
 ```
@@ -756,7 +756,7 @@ feat(app-observe-webhertz): add OpenTelemetry Hertz instrumentation
    不新增通用 `observability`/`management` 固定 scope。信号资源由对应 managed bean 管理，诊断 Server
    由 Workload Controller 管理；`app` 不感知具体类型。
 2. `app-observe-webhertz` 是按需适配包：`web-hertz` 提供无后端依赖的能力合同，`app-web-hertz` 负责
-   配置/IOC 装配，适配包负责 Request Log、Prometheus、OTel 的具体映射但不拥有外部资源。
+   Access Log 和 IOC 装配，适配包负责 Prometheus、OTel 的具体映射但不拥有外部资源。
 3. 现有顶层 Server 字段通过 YAML inline 保持兼容；不引入 `web.hertz.server` 强制迁移。
 4. 启动配置只读取一次，不订阅整个 Middleware/Router Config 热更新。
 5. 应用组件只从 IOC 注入，并由 `serverComponents` 快照进入同一个私有 build 核心；无 IOC 场景使用 `web-hertz`。
@@ -766,7 +766,7 @@ feat(app-observe-webhertz): add OpenTelemetry Hertz instrumentation
 1. Optional Bool 使用指针还是新增仓库统一值类型；推荐统一值类型仅在已有跨模块需求时创建，否则先用
    `*bool` 控制范围。
 2. `WithNoRoute/WithNoMethod` 多次声明采用追加还是最后一次覆盖；推荐追加。
-3. Access Log 是否直接依赖根 `log` 接口；推荐通过 Observer/Logger Factory 注入，避免修改全局 hlog。
+3. Access Log 直接借用 IOC 根 `LoggerFactory`，不修改全局 hlog；通用 Metrics Observer 保持独立扩展点。
 
 ## 15. 相关文档
 

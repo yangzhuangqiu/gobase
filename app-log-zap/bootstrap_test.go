@@ -189,6 +189,20 @@ func TestUseCaseAppLogZapBootstrapAndClose(t *testing.T) {
 	}
 }
 
+// TestBuildExposesNarrowZapProviderCapability 验证标准 Build 结果可被框架包装器借用同生命周期 Zap 核心。
+// 测试方法：使用默认配置构建 Provider，通过匿名窄接口断言 ZapProvider，校验核心非 nil 且仍由外层 Provider 关闭。
+func TestBuildExposesNarrowZapProviderCapability(t *testing.T) {
+	provider, err := New().Build(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("build default provider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	accessor, ok := provider.(interface{ ZapProvider() *logzap.Provider })
+	if !ok || accessor.ZapProvider() == nil {
+		t.Fatalf("expected narrow zap provider capability: provider=%T", provider)
+	}
+}
+
 // TestUseCaseAppLogZapRuntimeLogLevelHotReload 验证 app-log-zap 在配置热更新时仅动态调整日志级别。
 //
 // 测试方法：

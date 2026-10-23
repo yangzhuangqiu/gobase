@@ -11,13 +11,14 @@
 3. 复用 log-zap 配置校验和轮转默认值。
 4. 在适配层内部修正 Hertz 包装调用位置。
 5. 从 `log-zap.Provider` 创建共享 level、encoder、writer 与关闭状态的借用 `hlog.FullLogger`。
+6. 以单 owner Lease 安装借用 Logger，并在 Host 停止后恢复原 hlog。
 
 ### Out of Scope
 
 1. 不提供根 `log.LoggerFactory`。
 2. 不支持字符串 context key 自动提取。
 3. 不暴露可配置 caller skip。
-4. 不管理 Hertz 全局 Logger 的恢复和文件 writer Close。
+4. 不关闭借用的 Provider；Lease 只管理全局 Logger 恢复。
 
 ## 公共入口
 
@@ -28,7 +29,17 @@ if err != nil {
 }
 ```
 
-`NewFromProvider` 不修改全局 hlog，也不拥有 Provider。推荐把返回值交给 `appwebhertz.WithHLog`，先停止 Web Host，再关闭 `zapProvider`。
+`NewFromProvider` 不修改全局 hlog，也不拥有 Provider。需要进程级安装和恢复时使用：
+
+```go
+lease, err := hlogzap.InstallFromProvider(zapProvider)
+if err != nil {
+	return err
+}
+defer lease.Close()
+```
+
+应用 Runtime 推荐使用 [`hlog-zap/app`](app/README.md) 的 `apphlogzap.Wrap(applogzap.New(...))` 显式组合，由包装器保证 Server Close → hlog 恢复 → Provider Close 的顺序。
 
 需要独立 Zap 底层时使用 `NewLogger`；需要立即安装独立 Logger 时使用 `Install`。
 
@@ -46,7 +57,7 @@ caller 偏移由 Hertz 适配实现固定并通过测试锁定。根日志的 ty
 
 ## 错误与生命周期
 
-配置错误沿用 log-zap 稳定错误码；`NewFromProvider(nil)` 返回 `hlog_zap.provider.invalid`。`Install` 修改进程全局 hlog 状态，应在服务并发启动前调用。
+配置错误沿用 log-zap 稳定错误码；`NewFromProvider(nil)` 返回 `hlog_zap.provider.invalid`。`InstallFromProvider` 修改进程全局 hlog 状态，应在服务并发启动前调用；活跃 Lease 存在时，`InstallFromProvider` 与独立 `Install` 都返回 `hlog_zap.install.conflict`。Lease 有效期间 composition root 不得绕过本包直接调用 `hlog.SetLogger`。
 
 共享 Provider 路径中：
 
@@ -54,12 +65,13 @@ caller 偏移由 Hertz 适配实现固定并通过测试锁定。根日志的 ty
 2. `SetOutput` 是 no-op，输出资源只能由 Provider 配置和拥有；
 3. Provider Close 后既有 Hertz Logger 保持可调用但不再输出；
 4. 适配器不执行 Sync/Close，Provider 生命周期必须覆盖 Hertz Host。
+5. Lease Close 幂等恢复安装前的 DefaultLogger，并由 Hertz 重建配对的 SystemLogger，不关闭 Provider。
 
 独立 `NewLogger/Install` 返回的 hertzzap Logger 支持 Sync，但当前 API 不暴露底层 lumberjack closer，文件模式资源释放仍是已知缺口。
 
 ## File Map
 
 - `config.go`：共享配置类型别名。
-- `install.go`：构建、安装、caller 与 writer 适配。
-- `provider.go`：共享 `log-zap.Provider` 的借用 FullLogger 适配。
+- `install.go`：构建与安装独立 Logger，并管理共享 Provider 的单 owner Lease、冲突拒绝和幂等恢复。
+- `provider_logger.go`：共享 `log-zap.Provider` 的借用 FullLogger 适配。
 - `errors.go`：Hertz 边界错误构造。

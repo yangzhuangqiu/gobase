@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	baselog "github.com/yangzhuangqiu/gobase/log"
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 )
 
@@ -38,61 +39,28 @@ func (this instrumentationMetadataBridge) RequestObservationMetadata(ctx context
 	return this.provider.RequestObservationMetadata(ctx, request)
 }
 
-// configuredRequestLogObserver 应用 AccessLog skip/slow 策略后委托单个日志适配器。
-type configuredRequestLogObserver struct {
-	// observer 是调用方或 IOC 提供的具体日志适配器。
-	observer RequestLogObserver
-	// skipPaths 保存请求期只读的精确路径集合。
-	skipPaths map[string]struct{}
-	// slowThreshold 为零时不标记慢请求。
-	slowThreshold int64
-}
-
-// Observe 过滤跳过路径、计算慢请求标记并同步调用日志适配器。
-func (this *configuredRequestLogObserver) Observe(ctx context.Context, observation webhertz.HTTPRequestObservation) {
-	if _, skipped := this.skipPaths[observation.Path]; skipped {
-		return
-	}
-	slow := this.slowThreshold > 0 && observation.Duration.Nanoseconds() >= this.slowThreshold
-	this.observer.ObserveRequestLog(ctx, observation, slow)
-}
-
-// prepareRequestObservers 聚合 IOC 注入的配置化日志和通用 Observer，保证只安装一个完成态 Middleware。
-// 阶段角色：Server 构造期校验 typed 依赖并冻结 Access Log 路径策略。
+// prepareRequestObservers 聚合内建 Access Log 和 IOC 注入的通用 Observer，保证只安装一个完成态 Middleware。
+// 阶段角色：Server 构造期校验 typed 依赖并冻结完成态观察计划。
 func prepareRequestObservers(
 	config AccessLogConfig,
-	requestLogObservers []RequestLogObserver,
+	logger baselog.Logger,
 	requestObservers []webhertz.RequestObserver,
 	metadataProviders []webhertz.RequestObservationMetadataProvider,
 ) ([]webhertz.RequestObserver, error) {
-	// 第一阶段：完整校验 IOC 组件，避免 typed nil 推迟到请求期才 panic。
-	for index, observer := range requestLogObservers {
-		if isNilInterface(observer) {
-			return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.middleware result=failed stage=build_access_log reason=request_log_observer_required observer_index=%d", index))
-		}
-	}
+	// 第一阶段：完整校验 IOC 通用组件，避免 typed nil 推迟到请求期才 panic。
 	for index, observer := range requestObservers {
 		if isNilInterface(observer) {
 			return nil, errorForDeclarationInvalid(messagef("op=app_web_hertz.middleware result=failed stage=build_request_observers reason=request_observer_required observer_index=%d", index))
 		}
 	}
-	if config.Enabled && len(requestLogObservers) == 0 {
-		return nil, errorForDeclarationInvalid("op=app_web_hertz.middleware result=failed stage=build_access_log reason=request_log_observer_required")
-	}
-	capacity := 1 + len(metadataProviders) + len(requestLogObservers) + len(requestObservers)
+	capacity := 1 + len(metadataProviders) + len(requestObservers)
 	observers := make([]webhertz.RequestObserver, 0, capacity)
 	if config.Enabled {
-		skipPaths := make(map[string]struct{}, len(config.SkipPaths))
-		for _, path := range config.SkipPaths {
-			skipPaths[path] = struct{}{}
+		accessLog, err := newAccessLogObserver(logger, config)
+		if err != nil {
+			return nil, err
 		}
-		for _, observer := range requestLogObservers {
-			observers = append(observers, &configuredRequestLogObserver{
-				observer:      observer,
-				skipPaths:     skipPaths,
-				slowThreshold: config.SlowThreshold.Nanoseconds(),
-			})
-		}
+		observers = append(observers, accessLog)
 	}
 	// 第二阶段：桥接器必须先提供 Request ID/panic 元数据；通用 Observer 不受 Access Log 开关影响。
 	if len(observers) > 0 || len(requestObservers) > 0 {

@@ -11,11 +11,13 @@ import (
 // 语义:
 // 1. Option 只保存声明，不获取配置、IOC 或网络资源；
 // 2. nil Option 在 Server 构造阶段返回声明错误；
-// 3. 路径风格使用最后一次有效声明，web-hertz Option 按调用方声明顺序保存。
+// 3. scope 与路径风格使用最后一次有效声明，web-hertz Option 按调用方声明顺序保存。
 type Option func(options *buildOptions) error
 
 // buildOptions 保存一次 Server 构造已经归一化的应用装配声明。
 type buildOptions struct {
+	// scope 是 Server bean Init 阶段单次读取的独立配置路径。
+	scope string
 	// serverOptions 在 typed Config 后按声明顺序传给 web-hertz。
 	serverOptions []webhertz.Option
 	// routePathStyle 决定 Controller 方法后缀到 URL 的自动映射风格。
@@ -30,9 +32,23 @@ type buildOptions struct {
 	gzipPredicate GzipPredicate
 }
 
-// defaultOptions 创建使用默认路径风格的纯构造声明。
+// defaultOptions 创建使用默认配置路径和路径风格的纯构造声明。
 func defaultOptions() *buildOptions {
-	return &buildOptions{routePathStyle: RoutePathStyleKebab}
+	return &buildOptions{scope: DefaultScope, routePathStyle: RoutePathStyleKebab}
+}
+
+// WithScope 设置 Server bean 单次读取的独立配置路径。
+//
+// 参数:
+// - scope: trim 后为空时回退 `web.hertz`；非空值原样作为 config dotted path。
+//
+// 说明:
+// - 多次声明时最后一次生效；本 Option 不读取 ConfigManager。
+func WithScope(scope string) Option {
+	return func(options *buildOptions) error {
+		options.scope = resolveScope(scope)
+		return nil
+	}
 }
 
 // WithServerOptions 追加 web-hertz 原生 provider 扩展声明。

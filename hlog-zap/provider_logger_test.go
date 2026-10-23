@@ -91,7 +91,7 @@ func TestNewFromProviderCallerPointsToHlogCallSite(t *testing.T) {
 			continue
 		}
 		caller, _ := event["caller"].(string)
-		if !strings.Contains(caller, "provider_test.go") || strings.Contains(caller, "provider.go") {
+		if !strings.Contains(caller, "provider_logger_test.go") || strings.Contains(caller, "provider_logger.go") {
 			t.Fatalf("unexpected shared provider caller: %s", caller)
 		}
 		return

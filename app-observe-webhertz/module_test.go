@@ -11,21 +11,16 @@ import (
 	appwebhertz "github.com/yangzhuangqiu/gobase/app-web-hertz"
 	"github.com/yangzhuangqiu/gobase/errcode"
 	"github.com/yangzhuangqiu/gobase/ioc"
-	baselog "github.com/yangzhuangqiu/gobase/log"
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// TestModuleBuildsRequestLogAndPrivatePrometheusBeans 验证按需 Module 只借用 LoggerFactory，并发布可注入的日志、Metrics Observer 和 Handler。
-// 测试方法：注册 borrowed Factory，声明两个能力并 Build；分别调用三个接口，断言日志事件与私有 Handler 指标后关闭容器。
-func TestModuleBuildsRequestLogAndPrivatePrometheusBeans(t *testing.T) {
+// TestModuleBuildsPrivatePrometheusBeans 验证 Module 发布可注入的 Metrics Observer 和 Handler。
+// 测试方法：声明私有 Prometheus 能力并 Build；分别调用观察与 Handler 接口，断言指标后关闭容器。
+func TestModuleBuildsPrivatePrometheusBeans(t *testing.T) {
 	container := ioc.New()
-	factory := &recordingLoggerFactory{}
-	if err := container.Register(factory, ioc.WithDeclare[baselog.LoggerFactory](), ioc.WithBorrowed()); err != nil {
-		t.Fatalf("register borrowed logger factory: %v", err)
-	}
-	module := NewModule(WithRequestLog(), WithPrivatePrometheus())
+	module := NewModule(WithPrivatePrometheus())
 	if module.Name() != moduleName {
 		t.Fatalf("unexpected module name: %s", module.Name())
 	}
@@ -36,11 +31,7 @@ func TestModuleBuildsRequestLogAndPrivatePrometheusBeans(t *testing.T) {
 		t.Fatalf("build observe container: %v", err)
 	}
 
-	// 第二阶段：按不同语义接口解析同一批 managed bean，验证没有全局 Logger/Registry 查找。
-	logObserver, err := ioc.ResolveAs[appwebhertz.RequestLogObserver](container)
-	if err != nil {
-		t.Fatalf("resolve request log observer: %v", err)
-	}
+	// 第二阶段：按不同语义接口解析同一 managed bean，验证没有全局 Registry 查找。
 	requestObserver, err := ioc.ResolveAs[webhertz.RequestObserver](container)
 	if err != nil {
 		t.Fatalf("resolve prometheus observer: %v", err)
@@ -49,7 +40,6 @@ func TestModuleBuildsRequestLogAndPrivatePrometheusBeans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve prometheus handler: %v", err)
 	}
-	logObserver.ObserveRequestLog(context.Background(), webhertz.HTTPRequestObservation{Status: 200, Outcome: webhertz.RequestOutcomeSuccess}, false)
 	lifecycleObserver, ok := requestObserver.(webhertz.RequestLifecycleObserver)
 	if !ok {
 		t.Fatal("expected prometheus bean to implement lifecycle observer")
@@ -63,14 +53,7 @@ func TestModuleBuildsRequestLogAndPrivatePrometheusBeans(t *testing.T) {
 	if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), "gobase_http_server_requests_total") {
 		t.Fatalf("unexpected private prometheus handler: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	factory.mu.Lock()
-	logCount := len(factory.events)
-	factory.mu.Unlock()
-	if logCount != 1 {
-		t.Fatalf("expected one request log event, got=%d", logCount)
-	}
-
-	// 第三阶段：Container Close 只注销 Collector；borrowed Factory 保持可用且没有关闭合同。
+	// 第三阶段：Container Close 只注销 Collector，不关闭私有 HTTP Server 等隐藏资源。
 	if err := container.Close(context.Background()); err != nil {
 		t.Fatalf("close observe container: %v", err)
 	}
@@ -140,36 +123,6 @@ func TestModuleRejectsEmptyAndConflictingDeclarationsBeforeRegistration(t *testi
 				t.Fatalf("expected registry to remain mutable: %v", err)
 			}
 		})
-	}
-}
-
-// TestModuleFreezesAdapterOptionsBeforeIOCInit 验证 Module 不在 Register 校验后于 Init 重放带状态 Option。
-// 测试方法：使用递增调用次数的 RequestLogOption，完成 Register/Build 后断言只执行一次且适配器可解析。
-func TestModuleFreezesAdapterOptionsBeforeIOCInit(t *testing.T) {
-	// 第一阶段：构造带副作用的 Option，并注册真实 LoggerFactory 和适配模块。
-	calls := 0
-	statefulOption := RequestLogOption(func(options *requestLogOptions) error {
-		calls++
-		options.loggerName = "frozen.request"
-		return nil
-	})
-	container := ioc.New()
-	factory := &recordingLoggerFactory{}
-	if err := container.Register(factory, ioc.WithDeclare[baselog.LoggerFactory](), ioc.WithBorrowed()); err != nil {
-		t.Fatalf("register borrowed logger factory: %v", err)
-	}
-	if err := NewModule(WithRequestLog(statefulOption)).Register(container); err != nil {
-		t.Fatalf("register stateful observe module: %v", err)
-	}
-	// 第二阶段：Build 只消费 Register 阶段冻结的配置，不能再次执行 Option。
-	if err := container.Build(context.Background()); err != nil {
-		t.Fatalf("build stateful observe module: %v", err)
-	}
-	if calls != 1 || factory.name != "frozen.request" {
-		t.Fatalf("expected one option execution and frozen value: calls=%d name=%s", calls, factory.name)
-	}
-	if err := container.Close(context.Background()); err != nil {
-		t.Fatalf("close stateful observe module: %v", err)
 	}
 }
 

@@ -140,6 +140,12 @@ func (this *runtimeProvider) Factory() baselog.LoggerFactory {
 	return this.core.Factory()
 }
 
+// ZapProvider 返回与 Factory、动态 level 和关闭状态相同的底层 Zap Provider。
+// 阶段角色：只供包装器通过窄能力接口断言建立借用视图，不转移资源所有权。
+func (this *runtimeProvider) ZapProvider() *logzap.Provider {
+	return this.core
+}
+
 // Close 先停止配置投递，再关闭 Zap 核心；允许并发和重复调用。
 func (this *runtimeProvider) Close() error {
 	this.closeOnce.Do(func() {

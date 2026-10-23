@@ -1,14 +1,17 @@
 package webhertz
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/app/server/registry"
 	"github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/route"
+	baselog "github.com/yangzhuangqiu/gobase/log"
 	baseweb "github.com/yangzhuangqiu/gobase/web"
 )
 
@@ -19,6 +22,8 @@ import (
 // 2. 独占底层 *server.Hertz，不暴露绕过状态机的启动和停止入口；
 // 3. 构造后配置、Middleware 和 Routes 均已冻结。
 type Server struct {
+	// logger 是上层注入的实例诊断出口；nil 表示使用 Hertz SystemLogger 兼容路径。
+	logger baselog.Logger
 	// engine 是本实例独占的 Hertz Server。
 	engine *server.Hertz
 	// address 是应用全部原生 Option 后的实际监听地址，用于生命周期诊断。
@@ -55,6 +60,7 @@ var _ baseweb.Server = (*Server)(nil)
 // - *Server: 构造成功且尚未进入运行周期的实例；
 // - error: 配置、声明、Registry 或显式路由注册失败，不返回半初始化 Server。
 func New(input Config, options ...Option) (*Server, error) {
+	startedAt := time.Now()
 	resolvedConfig, err := ResolveConfig(input)
 	if err != nil {
 		return nil, err
@@ -103,14 +109,28 @@ func New(input Config, options ...Option) (*Server, error) {
 		return nil, err
 	}
 
-	return &Server{
+	result := &Server{
+		logger:                 resolvedOptions.logger,
 		engine:                 engine,
 		address:                finalOptions.Addr,
 		state:                  lifecycleStateNew,
 		engineDone:             make(chan struct{}),
 		runningObservationDone: make(chan struct{}),
 		shutdownDone:           make(chan struct{}),
-	}, nil
+	}
+	logDebug(resolvedOptions.logger, context.Background(), "Hertz server assembled",
+		baselog.F("op", "web_hertz.assemble"),
+		baselog.F("result", "ok"),
+		baselog.F("stage", "complete"),
+		baselog.F("address", finalOptions.Addr),
+		baselog.F("hertz_option_count", len(resolvedOptions.hertzOptions)),
+		baselog.F("middleware_count", len(resolvedOptions.middleware)),
+		baselog.F("route_registrar_count", len(resolvedOptions.routes)),
+		baselog.F("no_route_handler_count", len(resolvedOptions.noRoute)),
+		baselog.F("no_method_handler_count", len(resolvedOptions.noMethod)),
+		baselog.F("duration_ms", time.Since(startedAt).Milliseconds()),
+	)
+	return result, nil
 }
 
 // validateHertzOptions 拒绝 F 为空的 Hertz 原生 Option，避免 server.New panic。

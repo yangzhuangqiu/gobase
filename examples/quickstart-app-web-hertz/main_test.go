@@ -13,13 +13,14 @@ import (
 	appwebhertz "github.com/yangzhuangqiu/gobase/app-web-hertz"
 	baseconfig "github.com/yangzhuangqiu/gobase/config"
 	"github.com/yangzhuangqiu/gobase/ioc"
+	baselog "github.com/yangzhuangqiu/gobase/log"
 	baseweb "github.com/yangzhuangqiu/gobase/web"
 )
 
 // TestWebHertzModuleImplementsAppRuntimeContract 验证 Web Module 可直接交给 app-runtime。
 // 测试方法：执行编译期接口赋值并断言稳定名称，避免额外 IOC 适配层。
 func TestWebHertzModuleImplementsAppRuntimeContract(t *testing.T) {
-	var module appruntime.Module = appwebhertz.NewModule("")
+	var module appruntime.Module = appwebhertz.NewModule()
 	if module.Name() != "app-web-hertz" {
 		t.Fatalf("unexpected module name: %s", module.Name())
 	}
@@ -58,7 +59,7 @@ func TestGreetingControllerRoutes(t *testing.T) {
 }
 
 // TestApplicationDefinitionsBuildCompleteServerGraph 验证最新 Definition + Module 路径能构建完整 Server 依赖图。
-// 测试方法：注册 borrowed Manager、全部示例 Definitions 和 Web Module，Build 后解析各语义组件与唯一 Server。
+// 测试方法：注册 borrowed Manager/LoggerFactory、全部示例 Definitions 和 Web Module，Build 后解析各语义组件与唯一 Server。
 func TestApplicationDefinitionsBuildCompleteServerGraph(t *testing.T) {
 	manager, err := baseconfig.New(
 		baseconfig.File(baseconfig.FileDisabled()),
@@ -69,17 +70,21 @@ func TestApplicationDefinitionsBuildCompleteServerGraph(t *testing.T) {
 	}
 	defer func() { _ = manager.Close() }()
 
-	// 第一阶段：composition root 只发布 Manager、组件 Definition 和 Server Module。
+	// 第一阶段：裸 IOC 测试显式发布 Runtime 通常提供的 Manager/LoggerFactory，再声明组件和 Server Module。
 	container := ioc.New()
 	if err := container.Register(manager, ioc.WithDeclare[baseconfig.Manager](), ioc.WithBorrowed()); err != nil {
 		t.Fatalf("register config manager: %v", err)
+	}
+	loggerFactory := baselog.NewLoggerFactory(nil)
+	if err := container.Register(loggerFactory, ioc.WithDeclare[baselog.LoggerFactory](), ioc.WithBorrowed()); err != nil {
+		t.Fatalf("register logger factory: %v", err)
 	}
 	for index, definition := range applicationDefinitions() {
 		if err := container.RegisterDefinition(definition); err != nil {
 			t.Fatalf("register application definition index=%d: %v", index, err)
 		}
 	}
-	if err := appwebhertz.NewModule("").Register(container); err != nil {
+	if err := appwebhertz.NewModule().Register(container); err != nil {
 		t.Fatalf("register web module: %v", err)
 	}
 

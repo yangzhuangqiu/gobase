@@ -71,13 +71,13 @@ func buildResolvedServer(
 	if err != nil {
 		return nil, err
 	}
-	standardPlan, err := prepareStandardMiddleware(input.Middleware, options)
+	standardPlan, err := prepareStandardMiddleware(input.Middleware, options, components.loggers.middleware)
 	if err != nil {
 		return nil, err
 	}
 	requestObservers, err := prepareRequestObservers(
 		input.Middleware.AccessLog,
-		components.requestLogObservers,
+		components.loggers.request,
 		components.requestObservers,
 		instrumentation.metadataProviders,
 	)
@@ -87,6 +87,7 @@ func buildResolvedServer(
 
 	// 第三阶段：Bundle 原生 Option 先应用，advanced outer 保持最外；插桩位于其后、Request ID 之前。
 	serverOptions := make([]webhertz.Option, 0, len(options.serverOptions)+6)
+	serverOptions = append(serverOptions, webhertz.WithLogger(components.loggers.provider))
 	if len(instrumentation.hertzOptions) > 0 {
 		serverOptions = append(serverOptions, webhertz.WithHertzOptions(instrumentation.hertzOptions...))
 	}

@@ -13,8 +13,8 @@ type serverComponents struct {
 	noRouteHandlers []NoRouteHandler
 	// noMethodHandlers 按 IOC 注册顺序声明全局 405 fallback 链。
 	noMethodHandlers []NoMethodHandler
-	// requestLogObservers 在 Access Log 配置启用时接收完成态日志快照。
-	requestLogObservers []RequestLogObserver
+	// loggers 是 IOC 根 LoggerFactory 在 Init 阶段派生的命名 Logger 快照。
+	loggers serverLoggers
 	// requestObservers 无需配置开关，接收 Metrics 等通用完成态快照。
 	requestObservers []webhertz.RequestObserver
 	// instrumentationBundles 成对提供原生 Hertz Option、Middleware 和可选元数据。

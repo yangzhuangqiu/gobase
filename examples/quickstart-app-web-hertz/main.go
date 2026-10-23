@@ -13,6 +13,7 @@ import (
 	applogzap "github.com/yangzhuangqiu/gobase/app-log-zap"
 	appwebhertz "github.com/yangzhuangqiu/gobase/app-web-hertz"
 	baseconfig "github.com/yangzhuangqiu/gobase/config"
+	apphlogzap "github.com/yangzhuangqiu/gobase/hlog-zap/app"
 	"github.com/yangzhuangqiu/gobase/ioc"
 )
 
@@ -143,10 +144,11 @@ func run() error {
 			baseconfig.File(baseconfig.FileDisabled()),
 			baseconfig.Defaults(defaultConfig()),
 		),
-		baseapp.WithLogging(applogzap.New()),
+		// 日志 Provider 在 IOC Build 前同时安装可恢复的 Hertz hlog，框架与应用共享同一 Zap 底层。
+		baseapp.WithLogging(apphlogzap.Wrap(applogzap.New())),
 		// 第二阶段：Definition 发布组件语义，Module 在 IOC Init 聚合并构造 web.Server。
 		baseapp.WithBeanDefinitions(applicationDefinitions()...),
-		baseapp.WithModules(appwebhertz.NewModule("")),
+		baseapp.WithModules(appwebhertz.NewModule()),
 		// 第三阶段：Runner 解析唯一 Server；取消与 Runtime Close 由 app 统一编排。
 		baseapp.WithRunner(appwebhertz.Runner()),
 	)

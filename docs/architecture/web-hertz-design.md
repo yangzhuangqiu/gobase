@@ -14,7 +14,7 @@
 4. 保留 Hertz 原生 Option、Middleware、NoRoute/NoMethod 和 Router 扩展能力。
 5. 提供不依赖具体后端的请求完成态快照与窄 Observer fan-out。
 6. 并发 Run/Shutdown 结果确定，错误保留稳定 code 和底层 cause。
-7. 生命周期日志使用当前 `hlog.SystemLogger()`，不隐式修改全局 Logger。
+7. 自有诊断日志优先使用实例 Logger，standalone 未注入时回退 `hlog.SystemLogger()`，且不隐式修改全局 Logger。
 
 ### 非目标
 
@@ -64,13 +64,14 @@
 application composition root
   ├─ calls/borrows ──> web-hertz ──owns──> Hertz Engine
   │                           └─implements──> web.Server
-  ├─ owns/shared ───> hlog logger（可选）
+  ├─ borrows ───────> log.Logger（可选实例诊断）
+  ├─ owns/shared ───> hlog logger（可选框架内部日志）
   └─ owns ──────────> OS signal；按调用借出 context
 ```
 
-图中的 `calls/borrows` 表示调用和临时借用，`owns` 表示最终释放责任，`implements` 表示接口实现而非所有权转移。`web-hertz` 创建并独占一个 Hertz Engine；调用方拥有输入声明、进程 signal 和 hlog 安装策略；provider 拥有 Engine 运行周期及共享停止事务。
+图中的 `calls/borrows` 表示调用和临时借用，`owns` 表示最终释放责任，`implements` 表示接口实现而非所有权转移。`web-hertz` 创建并独占一个 Hertz Engine；调用方拥有输入声明、进程 signal、实例 Logger 和 hlog 安装策略；provider 拥有 Engine 运行周期及共享停止事务。
 
-模块依赖 `web`、`errcode` 和 Hertz，不依赖 `app`、`app-runtime`、IOC、根日志或具体配置 provider。代码中的 `app.HandlerFunc` 是 Hertz 类型。
+模块依赖 `web`、`errcode`、根 `log` 合同和 Hertz，不依赖 `app`、`app-runtime`、IOC、具体日志实现或配置 provider。代码中的 `app.HandlerFunc` 是 Hertz 类型。
 
 | 资源 | 所有权 | 成功后的释放 | 构造失败语义 |
 |---|---|---|---|
@@ -78,6 +79,7 @@ application composition root
 | `Config`、web-hertz Option 声明 | caller owned，构造期 borrowed | 不需要释放 | 调用方可修正后重新构造 |
 | `Run/Shutdown` context | caller owned，单次调用 borrowed | 调用返回后不再持有 | nil 或已取消按生命周期合同处理 |
 | Hertz hlog | process shared、上层 owned | 上层在 Server 完整停止后恢复/关闭后端 | provider 从不安装、恢复或关闭 |
+| 实例 log.Logger | caller owned，Server borrowed | Server 不关闭 | 构造失败后调用方仍持有 |
 | Listener、Transport 等原生 Option 携带资源 | 遵循对应 Hertz Option 合同 | Server 提交后由 Hertz 运行语义决定 | provider 不做通用回滚；调用方仍负责独立创建且未转移的资源 |
 | RouteFunc 自身产生的外部副作用 | caller owned | 由 RouteFunc 所属上层管理 | 后续 RouteFunc 失败时 provider 无法回滚 |
 
@@ -293,12 +295,12 @@ Hertz v0.10.5 的未运行错误 sentinel 未导出。provider 对文本 `engine
 1. 每个成功进入生命周期的 Server 至多创建一个 Engine Run goroutine 和一个 shutdown driver；running observer 只负责状态与日志观测。
 2. `engineDone`、`runningObservationDone` 和 `shutdownDone` 各关闭一次，所有生命周期状态和最终结果由同一 mutex 保护。
 3. Run 在读取结果前等待 Engine 和共享停止两个完成点，避免 signal 已关闭但错误尚未发布的竞态。
-4. driver 在发布 `shutdownDone` 前等待 running observer 退出并完成最终日志；稳定结果发布后 provider 不再读取 hlog，应用装配层才可恢复进程级 Logger。
+4. driver 在发布 `shutdownDone` 前等待 running observer 退出并完成最终日志；稳定结果发布后 provider 不再读取实例 Logger 或 hlog fallback，应用装配层才可恢复进程级 hlog。
 5. stopped 是不可逆终态，不能迁回 new、starting 或 running。
 
 ## 12. 可观测性
 
-provider 的生命周期日志写入 `hlog.SystemLogger()`，统一包含 `op/result`，失败或重要分支增加 `reason`：
+provider 自有的构造、生命周期和 Observer 隔离日志优先写入 `WithLogger` 注入的实例 `log.Logger`；未注入时回退 `hlog.SystemLogger()`。字段统一包含 `op/result`，失败或重要分支增加 `reason`：
 
 ```text
 op=web_hertz.run      result=running
@@ -307,7 +309,7 @@ op=web_hertz.shutdown result=ok     reason=engine_stopped
 op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 ```
 
-稳定错误 code 和底层 cause 是调用方的主要失败观测入口；日志用于运行诊断，不替代错误分支。provider 不安装 Logger，因 hlog 是进程全局状态。纯应用可在 composition root 使用 `hlog-zap.Install`；需要安装和恢复租约时使用 `app-web-hertz`。
+稳定错误 code 和底层 cause 是调用方的主要失败观测入口；日志用于运行诊断，不替代错误分支。provider 不创建日志后端，也不安装全局 hlog。纯应用可在 composition root 使用 `hlog-zap.Install` 或 `InstallFromProvider`；app Runtime 使用 `hlog-zap/app` 管理 hlog Lease。Hertz 框架内部日志仍由 hlog 输出，不经过实例 Logger。
 
 provider 不自动安装 access-log、指标、trace 或健康检查后端。完成态 Observer 由调用方显式提供；provider 只复制值快照，不依赖 Logger、Prometheus 或 OTel。当前也不提供 Ready、Address、Status 查询，外部探针只能基于应用显式注册的健康路由和进程编排结果判断。日志不得记录请求体、token、TLS 私钥或完整凭据。
 
@@ -326,12 +328,12 @@ provider 不自动安装 access-log、指标、trace 或健康检查后端。完
 3. 初始化阶段永久阻塞无法被 Hertz Shutdown 中断。
 4. pprof 已可通过接收 RouterGroup 的 RouteFunc 表达；配置化启用、独立管理面和可观测性扩展按
    [能力配置化与可观测性演进提案](web-hertz-capability-observability-proposal.md) 评审，不直接暴露 Engine。
-5. Controller、Filter、IOC、配置绑定和 hlog 恢复由独立 `app-web-hertz` 实现，不进入本 provider。
+5. Controller、Filter、IOC 和配置绑定由 `app-web-hertz` 实现；进程级 hlog 安装与恢复由 composition root 或 `hlog-zap/app` 实现。
 
 ## 15. File Map
 
 1. `web-hertz/config.go`：独立配置、默认值和 Hertz Option 映射。
-2. `web-hertz/options.go`：Hertz Option、Middleware、fallback 与 RouteFunc 构造计划。
+2. `web-hertz/options.go`、`diagnostic_log.go`：实例 Logger、standalone hlog fallback 与其他构造计划。
 3. `web-hertz/request_observation.go`、`request_observer*.go`：完成态 VO、窄接口、Option 与 Middleware。
 4. `web-hertz/route.go`：RouteFunc 公共合同。
 5. `web-hertz/no_route.go`、`web-hertz/no_method.go`：404/405 fallback 窄合同。

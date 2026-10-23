@@ -1,6 +1,6 @@
 # Log 架构设计
 
-本文描述 `log`、`log-zap`、`app-log-zap`、`app-log-zap/global` 与 `hlog-zap` 组成的日志子系统。重点是稳定业务契约、模块依赖、资源所有权、运行期更新和失败后仍然成立的语义；配置步骤与业务示例以 [Log 使用指南](../guides/log-usage.md) 为准。
+本文描述 `log`、`log-zap`、`app-log-zap`、`hlog-zap/app`、`app-log-zap/global` 与 `hlog-zap` 组成的日志子系统。重点是稳定业务契约、模块依赖、资源所有权、运行期更新和失败后仍然成立的语义；配置步骤与业务示例以 [Log 使用指南](../guides/log-usage.md) 为准。
 
 ## 1. 原始问题与约束
 
@@ -72,18 +72,25 @@ Hertz 等框架需要 Zap Core 才能复用现有生态，但不能因此取得 
 
 Provider Close 后，已有 Core 保持可调用但不再输出。该选择避免双重 Sync/Close，代价是借用方必须保证 Provider 生命周期覆盖框架 Host，并接受根字段策略不适用于直接 Core 写入。
 
+### 2.6 hlog 安装使用单 owner Lease
+
+Hertz hlog 是进程级可变状态，不能由单个 Server bean 隐式修改。`hlog-zap.InstallFromProvider` 在并发启动前安装借用 Logger，并返回唯一恢复权 Lease；活跃 Lease 存在时拒绝第二次安装。`hlog-zap/app` 装饰调用方选择的 Logging，通过 Build 结果的匿名 `ZapProvider()` 窄能力取得借用视图，并把 delegate Provider 与 Lease 组合，使 app Runtime 固定按 IOC/Server Close → hlog 恢复 → delegate Provider Close 的逆序释放。
+
 ## 3. 子系统边界与所有权
 
 ```mermaid
 flowchart LR
     Business["业务组件"] -->|"borrow Logger"| Factory["log.LoggerFactory"]
-    Runtime["Application / app-runtime"] -->|"owns and closes"| Composite["app-log-zap runtimeProvider"]
+    Runtime["Application / app-runtime"] -->|"Hertz app owns"| AppHlog["hlog-zap/app"]
+    Runtime -->|"ordinary app owns"| Composite["app-log-zap runtimeProvider"]
+    AppHlog -->|"owns composite close"| Composite
     Manager["config.Manager"] -->|"borrowed config source"| Composite
     Composite -->|"owns Subscription"| Subscription["config.Subscription"]
     Composite -->|"owns and closes"| ZapProvider["log-zap.Provider"]
     ZapProvider -->|"owns"| Factory
     ZapProvider -->|"owns"| Output["Zap runtime / writer"]
-    HertzShared["Hertz shared adapter"] -->|"borrows Provider.Core"| ZapProvider
+    HertzShared["hlog-zap Lease"] -->|"borrows Provider.Core"| ZapProvider
+    AppHlog -->|"owns restore right"| HertzShared
     Global["app-log-zap/global"] -->|"owns"| Manager
     Global -->|"owns"| Composite
     HertzStandalone["hlog-zap NewLogger / Install"] -->|"creates independent output"| Standalone["hertzzap.Logger"]
@@ -94,7 +101,7 @@ flowchart LR
 1. Business 只借用 Logger，不关闭 Factory 或 Provider。
 2. 组合 Provider 借用 Manager；它取消自己的 Subscription，但不关闭 Manager。
 3. Application/runtime 是普通组合 Provider 的最终所有者；global 场景由 global 同时拥有 Manager 和 Provider。
-4. Hertz shared adapter 借用动态 Core，不执行 Sync/Close；独立 `NewLogger/Install` 不共享根 Provider。
+4. hlog-zap Lease 借用动态 Core，只管理 hlog 安装与恢复，不执行 Provider Sync/Close；hlog-zap/app 拥有 Lease 和组合 Provider 的关闭顺序。
 5. 所有权只沿图中的 `owns` 箭头转移，普通调用或数据流不会隐式转移资源。
 
 ## 4. 根事件契约与字段不变量
@@ -200,6 +207,8 @@ global Close 只执行一次，按组合 Provider → Manager 顺序关闭并聚
 | 入口 | 底层资源 | 所有权 | 动态 level | 字段策略 | 关闭边界 |
 |---|---|---|---|---|---|
 | `NewFromProvider` | 借用 `Provider.Core()` | Provider 仍是唯一所有者 | `SetLevel` 更新共享 Provider | 不经过根 ContextExtractor/Redactor/schema | 先停 Hertz Host，再关 Provider |
+| `InstallFromProvider` | NewFromProvider + 进程级 hlog | Host 拥有 Lease；Provider 仍拥有 Core | 与共享 Provider 一致 | 同上 | 先停 Host、关闭 Lease，再关 Provider |
+| `apphlogzap.Wrap(logging)` | delegate Provider + `ZapProvider()` 借用视图 + Lease | app Runtime 统一拥有 | 与共享 Provider 一致 | 业务走 delegate Factory；Hertz 内部走 hlog | IOC/Server → Lease → delegate Provider |
 | `NewLogger` | 独立 hertzzap Logger | 调用方持有返回 Logger | 独立 AtomicLevel | 使用 Hertz/Zap 格式化语义 | 可 Sync；文件 closer 当前未暴露 |
 | `Install` | 与 NewLogger 相同，并写入 hlog 全局状态 | 应用入口负责调用时序 | 独立 AtomicLevel | 使用 Hertz/Zap 格式化语义 | 必须在并发启动前安装 |
 
@@ -217,6 +226,8 @@ global Close 只执行一次，按组合 Provider → Manager 顺序关闭并聚
 | composite close | 核心 Close 失败 | `app_log_zap.provider.close_failed` | 组合 Provider 终态 | Subscription 已取消，错误被缓存 | 重复调用返回缓存结果 |
 | global bootstrap | Manager/组合 Provider 创建失败 | init 无返回值；标准日志输出降级原因 | 尝试纯 Provider 或根 fallback | 关闭已取得 Manager | 仅能由下次进程初始化重试 |
 | global close | Provider 或 Manager Close 失败 | `app_log_zap.global.close_failed` | global 引用已清空 | 聚合两类关闭错误 | 重复调用返回缓存结果 |
+| hlog Lease install | 已有活跃 Lease | `hlog_zap.install.conflict` | 既有全局 hlog 不变 | 新借用 Logger 不交付 | 关闭既有 Lease 后可以 |
+| hlog-zap/app build/close | Provider、Lease 构造或逆序释放失败 | `hlog_zap.app.build_failed` / `hlog_zap.app.close_failed`，保留下层 cause | 构造半成品回滚；Close 只执行一次 | 安装失败关闭 Provider；Close 聚合结果 | Build 条件恢复后可重试 |
 
 Provider 构建和 Close 是业务可见错误边界；单次 Logger 写入不返回错误，也不提供可靠投递确认。适配错误使用 `app_log_zap.*` 标记 bootstrap、subscribe、core build、runtime config 和 close 阶段，并保留下游 cause；调用方可用 `errcode.IsCode` 同时识别适配阶段与根因。
 
@@ -246,7 +257,8 @@ Provider 构建和 Close 是业务可见错误边界；单次 Logger 写入不�
 | 借用 Core 共享 level/关闭状态，Sync 不取得资源所有权 | `log-zap/core_test.go` |
 | app-log-zap 初始回放不丢更新，失败取消 Subscription，context 不提前关闭核心 | `app-log-zap/bootstrap_test.go` |
 | global 独占 Manager/Provider、按层降级并缓存 Close 结果 | `app-log-zap/global/global_test.go` |
-| hlog 共享路径复用 writer/level/关闭状态并保持 caller 边界 | `hlog-zap/provider_test.go` |
+| hlog 共享路径复用 writer/level/关闭状态并保持 caller 边界 | `hlog-zap/provider_logger_test.go` |
+| hlog Lease 单 owner、幂等恢复且 app Runtime 保持逆序关闭 | `hlog-zap/install_test.go`、`hlog-zap/app/wrapper_test.go` |
 
 这些测试约束的是可观察语义而非对象实例或内部函数拆分；重构实现时不得用“测试仍能编译”替代对上述结果的验证。
 
@@ -280,11 +292,12 @@ Provider 构建和 Close 是业务可见错误边界；单次 Logger 写入不�
 ### 配置与宿主适配
 
 - `app-log-zap/bootstrap.go`：scope、Provider options 与结构化 Build 契约。
-- `app-log-zap/provider.go`：Subscription、配置桥接、commit 和组合生命周期。
+- `app-log-zap/provider.go`：`ZapProvider()` 窄能力、Subscription、配置桥接、commit 和组合生命周期。
 - `app-log-zap/errors.go`：适配层错误码与 cause 包装。
 - `app-log-zap/global/api.go`、`runtime.go`、`errors.go`：全局入口、降级和资源所有权。
-- `hlog-zap/install.go`、`config.go`：独立 Hertz Logger 构建、安装与配置适配。
-- `hlog-zap/provider.go`、`errors.go`：共享 Provider 的借用 FullLogger 与边界错误。
+- `hlog-zap/install.go`、`config.go`：独立 Hertz Logger 构建、安装与配置适配，并管理共享 Provider 的单 owner hlog Lease。
+- `hlog-zap/provider_logger.go`、`errors.go`：共享 Provider 的借用 Logger 适配与边界错误。
+- `hlog-zap/app/`：Logging 装饰、`ZapProvider()` 窄能力断言、hlog 安装和逆序关闭的组合层。
 
 ## 13. 相关文档
 
@@ -293,4 +306,5 @@ Provider 构建和 Close 是业务可见错误边界；单次 Logger 写入不�
 3. [log-zap 模块入口](../../log-zap/README.md)
 4. [app-log-zap 模块入口](../../app-log-zap/README.md)
 5. [hlog-zap 模块入口](../../hlog-zap/README.md)
-6. [App Runtime 架构设计](app-runtime-design.md)
+6. [hlog-zap/app 子包入口](../../hlog-zap/app/README.md)
+7. [App Runtime 架构设计](app-runtime-design.md)

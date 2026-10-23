@@ -2,9 +2,11 @@ package appwebhertz
 
 import (
 	"context"
+	"time"
 
 	baseconfig "github.com/yangzhuangqiu/gobase/config"
 	"github.com/yangzhuangqiu/gobase/ioc"
+	baselog "github.com/yangzhuangqiu/gobase/log"
 	baseweb "github.com/yangzhuangqiu/gobase/web"
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 )
@@ -21,8 +23,8 @@ type managedServer struct {
 	NoRouteHandlers []NoRouteHandler `ioc:"required=false"`
 	// NoMethodHandlers 由 IOC 注入并按 Order 冻结为全局 405 fallback 链。
 	NoMethodHandlers []NoMethodHandler `ioc:"required=false"`
-	// RequestLogObservers 由 IOC 按语义接口注入；只有配置启用 AccessLog 时进入完成态 fan-out。
-	RequestLogObservers []RequestLogObserver `ioc:"required=false"`
+	// LoggerFactory 由 app Runtime 注入并借用；用于全部应用和 provider 实例日志，必填。
+	LoggerFactory baselog.LoggerFactory
 	// RequestObservers 由 IOC 注入 Metrics 等通用完成态观察器，不依赖 YAML 总开关。
 	RequestObservers []webhertz.RequestObserver `ioc:"required=false"`
 	// InstrumentationBundles 由 IOC 注入成对 Option/Middleware；缺失表示不启用 Tracing 等插桩。
@@ -51,6 +53,11 @@ var (
 // - nil: 配置、应用组件和 provider 已冻结；
 // - error: 配置或构造失败，IOC Build 将回滚此前已初始化 bean。
 func (this *managedServer) Init(ctx context.Context) error {
+	startedAt := time.Now()
+	loggers, err := resolveServerLoggers(this.LoggerFactory)
+	if err != nil {
+		return err
+	}
 	// 第一阶段：读取并校验本运行周期的独立启动配置，不订阅热更新。
 	input, err := loadConfig(ctx, this.Manager, this.scope)
 	if err != nil {
@@ -62,7 +69,7 @@ func (this *managedServer) Init(ctx context.Context) error {
 		filters:                this.Filters,
 		noRouteHandlers:        this.NoRouteHandlers,
 		noMethodHandlers:       this.NoMethodHandlers,
-		requestLogObservers:    this.RequestLogObservers,
+		loggers:                loggers,
 		requestObservers:       this.RequestObservers,
 		instrumentationBundles: this.InstrumentationBundles,
 	}
@@ -72,6 +79,7 @@ func (this *managedServer) Init(ctx context.Context) error {
 	}
 	// 第三阶段：只在完整构造成功后发布委托，避免半初始化 Server 可见。
 	this.server = server
+	logAssemblySuccess(ctx, loggers.assembly, this.scope, input, components, startedAt)
 	return nil
 }
 

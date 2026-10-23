@@ -62,7 +62,7 @@ type RequestIDConfig struct {
 
 // AccessLogConfig 描述完成态请求日志的启用和应用侧过滤策略；默认关闭。
 type AccessLogConfig struct {
-	// Enabled 决定是否把完成态快照发送给 Request Log Observer；默认 false。
+	// Enabled 决定是否把完成态快照写入根 LoggerFactory；默认 false。
 	Enabled bool `yaml:"enabled"`
 	// SkipPaths 是不写访问日志的精确请求路径；不支持通配符且不得包含 query/fragment。
 	SkipPaths []string `yaml:"skipPaths"`

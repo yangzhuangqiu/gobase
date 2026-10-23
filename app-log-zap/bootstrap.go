@@ -74,9 +74,9 @@ func (this *Bootstrap) Build(ctx context.Context, manager config.Manager) (basel
 		if err != nil {
 			return nil, errorForBootstrapBuildFailed("op=app_log_zap.bootstrap result=failed stage=new_provider reason=%w", err)
 		}
-		return provider, nil
+		return &runtimeProvider{core: provider}, nil
 	}
-	provider, err := NewProviderFromManager(ctx, manager, this.logScope, this.providerOptions...)
+	provider, err := newRuntimeProvider(ctx, manager, this.logScope, this.providerOptions)
 	if err != nil {
 		return nil, errorForBootstrapBuildFailed("op=app_log_zap.bootstrap result=failed stage=build_from_manager scope=%s reason=%w", this.logScope, err)
 	}

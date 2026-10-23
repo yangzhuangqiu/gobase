@@ -5,6 +5,7 @@ go 1.21
 require (
 	github.com/cloudwego/hertz v0.10.5
 	github.com/yangzhuangqiu/gobase/errcode v0.0.0
+	github.com/yangzhuangqiu/gobase/log v0.0.0
 	github.com/yangzhuangqiu/gobase/web v0.0.0
 )
 
@@ -27,5 +28,7 @@ require (
 )
 
 replace github.com/yangzhuangqiu/gobase/errcode => ../errcode
+
+replace github.com/yangzhuangqiu/gobase/log => ../log
 
 replace github.com/yangzhuangqiu/gobase/web => ../web

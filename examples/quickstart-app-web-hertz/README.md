@@ -2,9 +2,9 @@
 
 本示例展示 `app-web-hertz` 当前推荐的单 Server 装配路径：
 
-1. `app` 创建 Config、Logging 和 IOC Runtime；
+1. `app` 创建 Config、Logging 和 IOC Runtime，`apphlogzap.Wrap(applogzap.New())` 让业务 Logger 与 Hertz hlog 共享 Zap Provider；
 2. `WithBeanDefinitions` 注册 Controller、Filter、NoRouteHandler 和 NoMethodHandler；
-3. `appwebhertz.NewModule("")` 在 IOC Init 阶段聚合全部组件并构建唯一 `web.Server`；
+3. `appwebhertz.NewModule()` 在 IOC Init 阶段聚合全部组件并构建唯一 `web.Server`；
 4. `appwebhertz.Runner()` 解析并运行该 Server；
 5. context 取消后，由 Server 和 app Runtime 完成优雅关闭。
 
@@ -16,7 +16,7 @@ app.Run(
 		config.File(config.FileDisabled()),
 		config.Defaults(defaultConfig()),
 	),
-	app.WithLogging(applogzap.New()),
+	app.WithLogging(apphlogzap.Wrap(applogzap.New())),
 	app.WithBeanDefinitions(
 		appwebhertz.DefineController(&GreetingController{}),
 		appwebhertz.DefineFilter(&globalHeaderFilter{}),
@@ -24,7 +24,7 @@ app.Run(
 		appwebhertz.DefineNoRouteHandler(&jsonNoRouteHandler{}),
 		appwebhertz.DefineNoMethodHandler(&jsonNoMethodHandler{}),
 	),
-	app.WithModules(appwebhertz.NewModule("")),
+	app.WithModules(appwebhertz.NewModule()),
 	app.WithRunner(appwebhertz.Runner()),
 )
 ```
@@ -80,7 +80,8 @@ Invoke-WebRequest -Method Delete http://127.0.0.1:18081/api/hello
 3. Controller、全局/分组 Filter、404/405 fallback 在 provider 创建前统一校验；任一声明非法都不会发布半初始化 Server。
 4. `Runner` 只解析唯一 `web.Server` 并调用 `Run`，不复制 Hertz 生命周期状态机。
 5. app 负责信号、context 取消和 Runtime Close，因此单 Server 场景不需要自定义 Shutdown Hook。
-6. 多 Server、Metrics、pprof 或 Trace 属于应用 composition root 的高级能力，不进入该最小示例。
+6. `hlog-zap/app` 在 IOC Build 前安装 hlog，在 IOC/Server 关闭后恢复 hlog，再关闭 Zap Provider。
+7. 多 Server、Metrics、pprof 或 Trace 属于应用 composition root 的高级能力，不进入该最小示例。
 
 ## File Map
 

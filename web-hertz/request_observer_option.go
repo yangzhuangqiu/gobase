@@ -1,6 +1,10 @@
 package webhertz
 
-import "reflect"
+import (
+	"reflect"
+
+	baselog "github.com/yangzhuangqiu/gobase/log"
+)
 
 // WithRequestObservers 在声明位置安装单个完成态 Middleware，并按顺序 fan-out Observer。
 //
@@ -20,7 +24,8 @@ func WithRequestObservers(observers ...RequestObserver) Option {
 			resolved = append(resolved, observer)
 		}
 		if len(resolved) > 0 {
-			target.middleware = append(target.middleware, newRequestObservationMiddleware(resolved))
+			// Logger 在全部 Option 解析后才冻结；延迟读取避免声明顺序改变诊断出口。
+			target.middleware = append(target.middleware, newRequestObservationMiddleware(resolved, func() baselog.Logger { return target.logger }))
 		}
 		return nil
 	}

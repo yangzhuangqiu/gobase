@@ -6,13 +6,13 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/cloudwego/hertz/pkg/common/hlog"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	baselog "github.com/yangzhuangqiu/gobase/log"
 )
 
 // newRequestObservationMiddleware 构造一次计时、受控快照和同步 fan-out 的完成态 Middleware。
 // 阶段角色：调用方决定其全局链位置；本实现只负责快照一致性和 Observer 故障隔离。
-func newRequestObservationMiddleware(observers []RequestObserver) app.HandlerFunc {
+func newRequestObservationMiddleware(observers []RequestObserver, logger func() baselog.Logger) app.HandlerFunc {
 	resolved := append([]RequestObserver{}, observers...)
 	return func(ctx context.Context, request *app.RequestContext) {
 		startedAt := time.Now()
@@ -20,7 +20,7 @@ func newRequestObservationMiddleware(observers []RequestObserver) app.HandlerFun
 		// 第一阶段：仅向显式实现生命周期扩展的 Observer 发布开始事件，用于 in-flight 等瞬时状态。
 		for _, observer := range resolved {
 			if lifecycleObserver, ok := observer.(RequestLifecycleObserver); ok {
-				notifyRequestStarted(ctx, lifecycleObserver, method)
+				notifyRequestStarted(ctx, lifecycleObserver, method, logger())
 			}
 		}
 
@@ -30,11 +30,11 @@ func newRequestObservationMiddleware(observers []RequestObserver) app.HandlerFun
 			observation := buildRequestObservation(request, method, startedAt, panicValue != nil)
 			for _, observer := range resolved {
 				if provider, ok := observer.(RequestObservationMetadataProvider); ok {
-					mergeObservationMetadata(ctx, provider, request, &observation)
+					mergeObservationMetadata(ctx, provider, request, &observation, logger())
 				}
 			}
 			for _, observer := range resolved {
-				notifyRequestObserved(ctx, observer, observation)
+				notifyRequestObserved(ctx, observer, observation, logger())
 			}
 			if panicValue != nil {
 				panic(panicValue)
@@ -126,10 +126,15 @@ func outcomeForStatus(status int) RequestOutcome {
 }
 
 // mergeObservationMetadata 隔离 Provider panic，并按声明顺序采用首个非空关联值、合并 panic 标记。
-func mergeObservationMetadata(ctx context.Context, provider RequestObservationMetadataProvider, request *app.RequestContext, observation *HTTPRequestObservation) {
+func mergeObservationMetadata(ctx context.Context, provider RequestObservationMetadataProvider, request *app.RequestContext, observation *HTTPRequestObservation, logger baselog.Logger) {
 	defer func() {
 		if recover() != nil {
-			hlog.SystemLogger().CtxErrorf(ctx, "op=web_hertz.request_observation result=failed stage=metadata reason=provider_panic")
+			logError(logger, ctx, "Request observation metadata provider panicked",
+				baselog.F("op", "web_hertz.request_observation"),
+				baselog.F("result", "failed"),
+				baselog.F("stage", "metadata"),
+				baselog.F("reason", "provider_panic"),
+			)
 		}
 	}()
 	metadata := provider.RequestObservationMetadata(ctx, request)
@@ -145,20 +150,30 @@ func mergeObservationMetadata(ctx context.Context, provider RequestObservationMe
 }
 
 // notifyRequestStarted 隔离单个开始通知 panic，避免观测故障破坏请求链。
-func notifyRequestStarted(ctx context.Context, observer RequestLifecycleObserver, method string) {
+func notifyRequestStarted(ctx context.Context, observer RequestLifecycleObserver, method string, logger baselog.Logger) {
 	defer func() {
 		if recover() != nil {
-			hlog.SystemLogger().CtxErrorf(ctx, "op=web_hertz.request_observation result=failed stage=request_started reason=observer_panic")
+			logError(logger, ctx, "Request start observer panicked",
+				baselog.F("op", "web_hertz.request_observation"),
+				baselog.F("result", "failed"),
+				baselog.F("stage", "request_started"),
+				baselog.F("reason", "observer_panic"),
+			)
 		}
 	}()
 	observer.RequestStarted(ctx, method)
 }
 
 // notifyRequestObserved 隔离单个完成通知 panic，并继续 fan-out 后续 Observer。
-func notifyRequestObserved(ctx context.Context, observer RequestObserver, observation HTTPRequestObservation) {
+func notifyRequestObserved(ctx context.Context, observer RequestObserver, observation HTTPRequestObservation, logger baselog.Logger) {
 	defer func() {
 		if recover() != nil {
-			hlog.SystemLogger().CtxErrorf(ctx, "op=web_hertz.request_observation result=failed stage=request_completed reason=observer_panic")
+			logError(logger, ctx, "Request completion observer panicked",
+				baselog.F("op", "web_hertz.request_observation"),
+				baselog.F("result", "failed"),
+				baselog.F("stage", "request_completed"),
+				baselog.F("reason", "observer_panic"),
+			)
 		}
 	}()
 	observer.Observe(ctx, observation)

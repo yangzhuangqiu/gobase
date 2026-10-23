@@ -3,6 +3,7 @@ package webhertz
 import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/config"
+	baselog "github.com/yangzhuangqiu/gobase/log"
 )
 
 // Option 定义 web-hertz 构造阶段的可选声明合同。
@@ -15,6 +16,8 @@ type Option func(options *buildOptions) error
 
 // buildOptions 保存构造期分类后的原生扩展声明。
 type buildOptions struct {
+	// logger 是上层为当前 Server 实例选择的诊断出口；缺失时回退 Hertz SystemLogger。
+	logger baselog.Logger
 	// hertzOptions 在 typed Config 之后应用，允许显式覆盖 provider 默认值。
 	hertzOptions []config.Option
 	// middleware 按声明顺序在所有路由前注册。
@@ -25,6 +28,22 @@ type buildOptions struct {
 	noRoute []app.HandlerFunc
 	// noMethod 按声明顺序组成 Method 不匹配处理链，并强制开启 405 路由扫描。
 	noMethod []app.HandlerFunc
+}
+
+// WithLogger 注入当前 Server 实例使用的结构化诊断 Logger。
+//
+// 典型调用场景：app-web-hertz 从 IOC LoggerFactory 派生稳定命名 Logger 后传入，使 provider 自有日志不依赖进程全局 hlog。
+//
+// 参数:
+// - logger: 必填且不得为 typed nil；所有权仍属于调用方，Server 不执行 Close。
+func WithLogger(logger baselog.Logger) Option {
+	return func(target *buildOptions) error {
+		if isNilLogger(logger) {
+			return errorForDeclarationInvalid(messagef("op=web_hertz.option result=failed stage=declare_logger reason=logger_required"))
+		}
+		target.logger = logger
+		return nil
+	}
 }
 
 // WithHertzOptions 追加 Hertz 原生构造 Option。

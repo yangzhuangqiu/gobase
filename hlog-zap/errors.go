@@ -5,44 +5,38 @@ import (
 	"strings"
 
 	"github.com/yangzhuangqiu/gobase/errcode"
+	logzap "github.com/yangzhuangqiu/gobase/log-zap"
 )
 
 // ErrorCode 是 hlog-zap 模块统一错误码类型（字符串）。
 type ErrorCode = errcode.StringCode
 
 const (
-	ErrCodeLogInternal             ErrorCode = "log.runtime.internal"
-	ErrCodeLogModeInvalid          ErrorCode = "log.mode.invalid"
-	ErrCodeLogFormatInvalid        ErrorCode = "log.format.invalid"
-	ErrCodeLogFileFilenameRequired ErrorCode = "log.file.filename_required"
-	ErrCodeLogLevelInvalid         ErrorCode = "log.level.invalid"
+	// ErrCodeLogInternal 沿用 log-zap 的运行期内部错误码，便于调用方跨适配层统一分支。
+	ErrCodeLogInternal ErrorCode = logzap.ErrCodeLogInternal
+	// ErrCodeLogModeInvalid 沿用 log-zap 的输出模式校验错误码。
+	ErrCodeLogModeInvalid ErrorCode = logzap.ErrCodeLogModeInvalid
+	// ErrCodeLogFormatInvalid 沿用 log-zap 的编码格式校验错误码。
+	ErrCodeLogFormatInvalid ErrorCode = logzap.ErrCodeLogFormatInvalid
+	// ErrCodeLogFileFilenameRequired 沿用 log-zap 的文件路径必填错误码。
+	ErrCodeLogFileFilenameRequired ErrorCode = logzap.ErrCodeLogFileFilenameRequired
+	// ErrCodeLogLevelInvalid 沿用 log-zap 的日志级别校验错误码。
+	ErrCodeLogLevelInvalid ErrorCode = logzap.ErrCodeLogLevelInvalid
 	// ErrCodeProviderInvalid 表示共享 log-zap Provider 声明缺失。
 	ErrCodeProviderInvalid ErrorCode = "hlog_zap.provider.invalid"
+	// ErrCodeInstallConflict 表示进程中已有尚未恢复的 hlog-zap 租约。
+	ErrCodeInstallConflict ErrorCode = "hlog_zap.install.conflict"
 )
+
+// errorForInstallConflict 构造进程级 hlog 租约冲突错误。
+// 阶段角色：在修改全局 Logger 前拒绝第二个并行 owner。
+func errorForInstallConflict(msg string, cause ...error) error {
+	return buildError(ErrCodeInstallConflict, msg, cause...)
+}
 
 // errorForProviderInvalid 构造共享 Provider 声明错误。
 func errorForProviderInvalid(msg string, cause ...error) error {
 	return buildError(ErrCodeProviderInvalid, msg, cause...)
-}
-
-// errorForLogModeInvalid 构造 mode 非法错误。
-func errorForLogModeInvalid(msg string, cause ...error) error {
-	return buildError(ErrCodeLogModeInvalid, msg, cause...)
-}
-
-// errorForLogFormatInvalid 构造 format 非法错误。
-func errorForLogFormatInvalid(msg string, cause ...error) error {
-	return buildError(ErrCodeLogFormatInvalid, msg, cause...)
-}
-
-// errorForLogFileFilenameRequired 构造 file 模式缺少文件名错误。
-func errorForLogFileFilenameRequired(msg string, cause ...error) error {
-	return buildError(ErrCodeLogFileFilenameRequired, msg, cause...)
-}
-
-// errorForLogInternal 构造运行期内部错误。
-func errorForLogInternal(msg string, cause ...error) error {
-	return buildError(ErrCodeLogInternal, msg, cause...)
 }
 
 // errorForLogLevelInvalid 构造 level 非法错误。

@@ -23,7 +23,7 @@ type MiddlewareConfig struct {
 	Recovery RecoveryConfig `yaml:"recovery"`
 	// RequestID 控制请求关联标识的生成、信任和响应回写。
 	RequestID RequestIDConfig `yaml:"requestId"`
-	// AccessLog 控制 Request Log Observer 是否接收完成态快照及其过滤策略。
+	// AccessLog 控制内建结构化请求日志是否消费完成态快照及其过滤策略。
 	AccessLog AccessLogConfig `yaml:"accessLog"`
 	// CORS 控制静态跨域白名单和预检响应。
 	CORS CORSConfig `yaml:"cors"`

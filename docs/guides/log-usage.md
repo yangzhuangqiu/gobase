@@ -16,7 +16,7 @@
 | 动态 level | 不重建 Logger 即可改变输出阈值 | `ApplyRuntimeConfig` 或 `app-log-zap` | 只有 level 可热更新 | 已有 Logger 自动使用新阈值 | mode/format/caller/rotate 更新 |
 | Manager 装配 | 从最终 Snapshot 创建 Provider 并持续接收 level | `applogzap.New` 或 `NewProviderFromManager` | 默认 scope 为 `log.zap` | Runtime Logger 或返回的 Provider | 没有 ConfigManager 的进程 |
 | 零配置全局入口 | 小工具接受全局状态时减少装配代码 | 导入 `app-log-zap/global` | package init 自动初始化 | `global.Get/Logger` | 需要策略定制、重建或并发 Close |
-| Hertz 共享输出 | Hertz 与业务日志共享 level、writer 和关闭状态 | `hlogzap.NewFromProvider` | 显式启用 | `hlog.FullLogger` | 需要独立 Hertz 输出 |
+| Hertz 共享输出 | Hertz 与业务日志共享 level、writer 和关闭状态 | `hlogzap.InstallFromProvider`；app Runtime 使用 `apphlogzap.Wrap(applogzap.New(...))` | 显式启用 | Hertz `hlog` | 需要独立 Hertz 输出 |
 | Hertz 独立输出 | Hertz 单独创建或安装 Zap Logger | `hlogzap.NewLogger/Install` | 显式启用 | Hertz `hlog` | 需要根 Field/Redactor 语义 |
 
 ### 入口选择
@@ -25,8 +25,9 @@
 2. 没有 ConfigManager：直接创建 `logzap.Provider`。
 3. 已有自建 Manager：使用 `applogzap.NewProviderFromManager`，Provider 先于 Manager 关闭。
 4. 接受 package init 和全局单例的小工具：使用 `app-log-zap/global`。
-5. 已有 `*logzap.Provider` 的 Hertz 服务：优先 `hlogzap.NewFromProvider`。
-6. Hertz 确实需要独立后端：使用 `NewLogger`；只有需要修改全局 hlog 时才使用 `Install`。
+5. 已有 `*logzap.Provider` 的 Hertz Host：使用 `hlogzap.InstallFromProvider` 获取可恢复 Lease。
+6. app Runtime + Hertz：使用 `apphlogzap.Wrap(applogzap.New(...))`，显式选择 Logging，并统一 LoggerFactory、hlog 与 Provider 关闭顺序。
+7. Hertz 确实需要独立后端：使用 `NewLogger`；只有需要修改全局 hlog 时才使用 `Install`。
 
 ## 2. 最小使用闭环
 
@@ -352,31 +353,41 @@ global 初始化失败时先用标准库日志输出 degraded，再尝试默认�
 
 限制：没有构造参数，不能注入 ContextExtractor/Redactor，全进程单实例；业务停止使用全局 Logger 后才能 Close，不保证 Get/Logger/Provider 与 Close 并发安全。
 
-### 7.2 Hertz 共享 Provider
+### 7.2 Hertz 共享 Provider 与 app Runtime
 
-已有 `*logzap.Provider` 时优先复用：
+已有 `*logzap.Provider` 的 Host 使用可恢复 Lease：
 
 ```go
-hertzLogger, err := hlogzap.NewFromProvider(provider)
+lease, err := hlogzap.InstallFromProvider(provider)
 if err != nil {
     return err
 }
-hlog.SetLogger(hertzLogger)
+runErr := runHertz(ctx)
+restoreErr := lease.Close()
+providerErr := provider.Close()
+return errors.Join(runErr, restoreErr, providerErr)
+```
 
-// runHertz 返回时 Host 已停止，外层随后关闭 provider。
-return runHertz(ctx)
+app Runtime 不需要手工管理 Lease，直接选择组合 Logging：
+
+```go
+app.WithLogging(apphlogzap.Wrap(
+    applogzap.New(
+        applogzap.WithScope("log.zap"),
+    ),
+))
 ```
 
 共享路径具有以下结果：
 
-1. Hertz 与业务 Logger 写入同一 encoder/writer，并跟随同一关闭状态。
-2. Hertz `SetLevel` 更新共享 Provider，已有业务 Logger 同时生效。
-3. `SetOutput` 是 no-op，Hertz 不能绕过 Provider 替换 writer。
-4. 适配器借用 Core，不执行 Sync/Close；必须先停止 Hertz Host，再关闭 Provider。
+1. Hertz 与业务 Logger 写入同一 encoder/writer，并跟随同一动态 level。
+2. `SetOutput` 是 no-op，Hertz 不能绕过 Provider 替换 writer。
+3. Lease 只拥有进程级 hlog 恢复权，不关闭 Provider；固定顺序是 Server 停止 → hlog 恢复 → Provider 关闭。
+4. 同一进程只允许一个活跃 Lease；第二次安装返回 `hlog_zap.install.conflict`。
 5. Hertz 调用不经过根 ContextExtractor、Redactor 和字段 schema，敏感参数需要在框架边界单独审查。
 6. Trace 映射 Debug，Notice 映射 Warn；Fatal/Fatalf 保留 Zap 终止进程语义。
 
-`NewFromProvider(nil)` 返回 `hlog_zap.provider.invalid`。
+`NewFromProvider(nil)` 与 `InstallFromProvider(nil)` 返回 `hlog_zap.provider.invalid`。普通 app Runtime 使用 `app-log-zap`；只有同时运行 Hertz 时才使用 `hlog-zap/app`。
 
 ### 7.3 Hertz 独立输出
 
@@ -415,6 +426,7 @@ func runStandaloneHertz(ctx context.Context) error {
 | ConfigManager | Runtime/global/宿主 | 原创建方 | watcher/session/subscription 结束 |
 | global | package init | `global.Close` | Get 回退根 Factory |
 | Hertz shared Logger | `NewFromProvider` | 不单独关闭 | 跟随 Provider 关闭状态 |
+| Hertz hlog Lease | `InstallFromProvider` / `hlog-zap/app` | Host / Runtime | Server 停止后恢复 hlog，再关闭 Provider |
 | Hertz standalone Logger | `NewLogger/Install` | 调用方至少 Sync | 不自动恢复全局 hlog；file closer 未暴露 |
 
 普通应用的关闭顺序是：
@@ -440,7 +452,10 @@ func runStandaloneHertz(ctx context.Context) error {
 | `app_log_zap.provider.core_build_failed` | 初始 Zap 配置非法 | 修正 Snapshot 后重建 | 已取得 Subscription 已取消 |
 | `app_log_zap.provider.runtime_config_apply_failed` | 新 level 非法 | 修正并发布后续版本 | Snapshot 已发布，Provider 保留旧 level |
 | `app_log_zap.provider.close_failed` | Sync/writer Close 失败 | 保留错误并进入应用关闭结果 | 组合 Provider 已终止 |
-| `hlog_zap.provider.invalid` | `NewFromProvider(nil)` | 传入有效 `*logzap.Provider` | 未修改 hlog 全局状态 |
+| `hlog_zap.provider.invalid` | `NewFromProvider(nil)` / `InstallFromProvider(nil)` | 传入有效 `*logzap.Provider` | 未修改 hlog 全局状态 |
+| `hlog_zap.install.conflict` | 已有活跃 Lease | 先停止对应 Host 并关闭 Lease | 原 hlog 安装保持有效 |
+| `hlog_zap.app.build_failed` | Provider 构造或 hlog 安装失败 | 检查下层 app-log-zap/hlog-zap cause | 半成品已回滚 |
+| `hlog_zap.app.close_failed` | hlog 恢复或 Provider 关闭失败 | 纳入应用最终关闭结果 | 关闭事务已执行一次 |
 | global init 降级日志 | Manager/Provider 构建失败 | 检查标准错误输出和配置文件 | 可能已使用纯 Provider 或根 fallback |
 
 外层 app-log-zap 错误保留下层 config/log-zap cause；使用 `errcode.IsCode` 可以同时识别适配阶段和根因。
@@ -482,7 +497,7 @@ $env:QUICKSTART_LOG_MODE="plain-full"
 | 文件没有完整内容 | 检查 level/filename，并确认 Close/Sync error 已处理 |
 | context 取消后仍能写 | 正常：app-log-zap context 只取消 Subscription，核心由 Close 释放 |
 | global Close 后仍返回 Logger | 正常：返回根 fallback，不重新初始化 global |
-| Hertz 与业务 level 不一致 | 独立 NewLogger/Install 不共享；需要一致时使用 NewFromProvider |
+| Hertz 与业务 level 不一致 | 独立 NewLogger/Install 不共享；Host 使用 InstallFromProvider，app Runtime 使用 hlog-zap/app |
 | Hertz file 无法完整 Close | 独立 API 只暴露 Sync；改用共享 Provider 或接受当前缺口 |
 
 ## 10. 最佳实践
@@ -497,7 +512,7 @@ $env:QUICKSTART_LOG_MODE="plain-full"
 8. 只有 level 可热更新；输出拓扑变化通过重建 Provider 生效。
 9. 先停止日志生产者，再关闭 Provider，最后关闭配置来源。
 10. 关闭错误必须进入最终应用结果，不能用无返回值 defer 丢弃。
-11. Hertz 已有 Provider 时优先共享；独立 Install 只用于明确需要独立后端的场景。
+11. Hertz 已有 Provider 时通过 Lease 共享；app Runtime 使用 hlog-zap/app；独立 Install 只用于明确需要独立后端的场景。
 12. 普通服务使用显式 app-log-zap；global 只用于接受全局状态的小工具。
 
 ## 11. 相关文档
@@ -506,7 +521,8 @@ $env:QUICKSTART_LOG_MODE="plain-full"
 2. [log-zap README](../../log-zap/README.md)
 3. [app-log-zap README](../../app-log-zap/README.md)
 4. [hlog-zap README](../../hlog-zap/README.md)
-5. [Log 架构设计](../architecture/log-design.md)
-6. [Config 使用指南](config-usage.md)
-7. [App 使用指南](app-usage.md)
-8. [quickstart-log](../../examples/quickstart-log/README.md)
+5. [hlog-zap/app README](../../hlog-zap/app/README.md)
+6. [Log 架构设计](../architecture/log-design.md)
+7. [Config 使用指南](config-usage.md)
+8. [App 使用指南](app-usage.md)
+9. [quickstart-log](../../examples/quickstart-log/README.md)

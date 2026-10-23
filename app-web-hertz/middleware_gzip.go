@@ -8,14 +8,14 @@ import (
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/cloudwego/hertz/pkg/common/hlog"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	baselog "github.com/yangzhuangqiu/gobase/log"
 )
 
 // newGzipMiddleware 构造只持有当前配置快照的普通响应压缩 Handler。
 // 阶段角色：标准链最内层、应用 Filter 外层；只处理完整内存响应，不接管流式响应。
-func newGzipMiddleware(config GzipConfig, predicate GzipPredicate) app.HandlerFunc {
+func newGzipMiddleware(config GzipConfig, predicate GzipPredicate, logger baselog.Logger) app.HandlerFunc {
 	excludedContentTypes := append([]string{}, config.ExcludedContentTypes...)
 	return func(ctx context.Context, request *app.RequestContext) {
 		request.Next(ctx)
@@ -27,7 +27,9 @@ func newGzipMiddleware(config GzipConfig, predicate GzipPredicate) app.HandlerFu
 		}
 		if err := compressResponse(request, config.Level); err != nil {
 			// 压缩失败保留未压缩响应，不把实现错误升级为第二次请求失败。
-			hlog.SystemLogger().CtxErrorf(ctx, "op=app_web_hertz.gzip result=failed reason=compression_failed")
+			logger.Error(ctx, "Response compression failed",
+				baselog.F("op", "app_web_hertz.gzip"), baselog.F("result", "failed"), baselog.F("reason", "compression_failed"),
+			)
 		}
 	}
 }

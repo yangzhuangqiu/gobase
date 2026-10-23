@@ -199,16 +199,17 @@ if errors.Is(err, webhertz.ErrShutdownWaitInterrupted) {
 
 不要只用 `errors.Is(err, context.DeadlineExceeded)` 判断共享停止是否完成；底层 Hertz 停止失败也可能携带相同 cause。
 
-## 8. 集成 hlog-zap
+## 8. 集成实例 Logger 与 hlog-zap
 
-`web-hertz` 与 Hertz 内部日志统一写入当前 `hlog.SystemLogger()`，自身不创建 Zap，也不修改全局 Logger。
+`web-hertz` 的日志分成两个出口：自身的构造、生命周期和 Observer 隔离日志优先写入 `WithLogger` 注入的实例 Logger，缺失时回退当前 `hlog.SystemLogger()`；Hertz 框架内部日志始终继续使用全局 hlog。provider 自身不创建 Zap，也不修改全局 Logger。
 
 选择方式：
 
 | 场景 | 推荐入口 | 所有权 |
 |---|---|---|
-| 单 Host、进程全程使用同一 hlog | `hlogzap.Install` | composition root 安装并 Sync，不恢复对象身份 |
-| 已有 `log-zap.Provider`，需要业务日志与 Hertz 共享底层 | `hlogzap.NewFromProvider` + `appwebhertz.WithHLog` | Host 安装/恢复 hlog，调用方最后关闭 Provider |
+| 单 Host、进程全程使用同一独立 hlog | `hlogzap.Install` | composition root 安装并 Sync，不恢复对象身份 |
+| 已有 `log-zap.Provider`，需要业务日志与 Hertz 共享底层 | `hlogzap.InstallFromProvider` | Host 持有 Lease；Server 停止后恢复 hlog，最后关闭 Provider |
+| app Runtime + Hertz | `apphlogzap.Wrap(applogzap.New(...))` | Runtime 统一保证 IOC/Server Close → hlog 恢复 → Provider Close |
 | 库或纯 provider | 不安装 | 使用进程当前 hlog，避免修改全局状态 |
 
 纯 `web-hertz` 应用可以在构造 Server 前显式安装：
@@ -227,7 +228,7 @@ defer logger.Sync()
 server, err := webhertz.New(config, options...)
 ```
 
-`Install` 修改进程全局 hlog，必须由 composition root 在并发启动前调用。它不负责恢复旧 Logger；库代码、并行测试和 provider 内部不应隐式调用。应用装配场景使用 `app-web-hertz` 管理单 Host hlog 租约，并用 `hlogzap.NewFromProvider(logProvider)` 复用业务日志的同一个底层 Core。
+`Install` 修改进程全局 hlog，必须由 composition root 在并发启动前调用。它不负责恢复旧 Logger；库代码、并行测试和 provider 内部不应隐式调用。已有 Provider 时优先使用 `InstallFromProvider`，并让 Lease 生命周期覆盖全部 Hertz Server。app Runtime 场景使用 `hlog-zap/app`，不要让 `app-web-hertz` 持有进程级全局状态。
 
 ## 9. 错误处理
 
@@ -267,13 +268,10 @@ if errcode.IsCode[webhertz.ErrorCode](err, webhertz.ErrCodeRunFailed) {
 | 第二次 Run 返回状态错误 | Server 是单运行周期对象 | 重新构造 Server |
 | `WithRegistry` 构造失败 | 直接 Run 没有 Spin 注册 hook | 不在当前 provider 中配置 Registry，等待独立注册生命周期合同 |
 | Controller 无法直接传入 | provider 不定义 Controller | 使用 `app-web-hertz` 聚合 Controller/Filter |
-| Zap 日志没有生效 | hlog Logger 尚未在构造前安装 | 纯 provider 用 `Install`；应用装配用 `NewFromProvider + WithHLog` |
+| Provider 自有日志没有进入业务日志 | 未注入实例 Logger | 通过 `WithLogger(factory.Get("web.hertz"))` 注入 |
+| Hertz 内部日志没有进入 Zap | hlog 尚未在构造前安装 | 纯 provider 用 `Install`/`InstallFromProvider`；app Runtime 用 `hlog-zap/app` |
 
-## 12. RouteFunc 迁移
-
-预发布合同从 `RouteFunc(route.IRouter)` 收窄为 `RouteFunc(*route.RouterGroup)`。通常只需修改参数类型，`GET/POST/Group/Use` 调用保持不变。新合同固定传入共享根 `Group("/")`，并从类型层阻止回调断言为 `*server.Hertz` 后绕过生命周期。
-
-## 13. 相关文档
+## 12. 相关文档
 
 1. [web-hertz README](../../web-hertz/README.md)
 2. [web-hertz 架构设计](../architecture/web-hertz-design.md)

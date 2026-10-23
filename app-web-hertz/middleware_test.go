@@ -14,16 +14,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/yangzhuangqiu/gobase/errcode"
+	baselog "github.com/yangzhuangqiu/gobase/log"
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 )
-
-// requestLogObserverFunc 把测试函数适配为 Request Log Observer。
-type requestLogObserverFunc func(context.Context, webhertz.HTTPRequestObservation, bool)
-
-// ObserveRequestLog 同步执行测试回调。
-func (this requestLogObserverFunc) ObserveRequestLog(ctx context.Context, observation webhertz.HTTPRequestObservation, slow bool) {
-	this(ctx, observation, slow)
-}
 
 // TestPrepareStandardMiddlewareKeepsFixedOrder 验证 Request ID、Recovery、CORS、Gzip 与应用 Filter 的相对阶段稳定。
 // 测试方法：用 typed policy 和末端 Handler 记录可观察事件，执行真实 Hertz Handler 链并断言 before/after 顺序。
@@ -52,7 +45,7 @@ func TestPrepareStandardMiddlewareKeepsFixedOrder(t *testing.T) {
 		order = append(order, "gzip_after")
 		return false
 	}
-	plan, err := prepareStandardMiddleware(config, options)
+	plan, err := prepareStandardMiddleware(config, options, testServerLoggers().middleware)
 	if err != nil {
 		t.Fatalf("prepare standard middleware: %v", err)
 	}
@@ -92,7 +85,7 @@ func TestRecoveryProducesFinal500AndPreservesRequestID(t *testing.T) {
 	}
 	options := defaultOptions()
 	options.requestIDGenerator = func(_ context.Context, _ *app.RequestContext) (string, error) { return "stable-id", nil }
-	plan, err := prepareStandardMiddleware(config, options)
+	plan, err := prepareStandardMiddleware(config, options, testServerLoggers().middleware)
 	if err != nil {
 		t.Fatalf("prepare standard middleware: %v", err)
 	}
@@ -122,7 +115,7 @@ func TestRequestIDTrustAndGenerationFailure(t *testing.T) {
 	handler := newRequestIDMiddleware(RequestIDConfig{Header: "X-Correlation-ID", TrustIncoming: true}, func(_ context.Context, _ *app.RequestContext) (string, error) {
 		t.Fatal("generator should not run for trusted valid input")
 		return "", nil
-	})
+	}, testServerLoggers().middleware)
 	executeMiddlewareTestChain(trusted, []app.HandlerFunc{handler, func(_ context.Context, request *app.RequestContext) {
 		if GetRequestID(request) != "incoming-id" {
 			t.Fatalf("unexpected request ID: %s", GetRequestID(request))
@@ -137,7 +130,7 @@ func TestRequestIDTrustAndGenerationFailure(t *testing.T) {
 	failed := newMiddlewareTestRequest("GET", "/failed")
 	failedHandler := newRequestIDMiddleware(RequestIDConfig{Header: defaultRequestIDHeader}, func(_ context.Context, _ *app.RequestContext) (string, error) {
 		return "", errors.New("entropy unavailable")
-	})
+	}, testServerLoggers().middleware)
 	executeMiddlewareTestChain(failed, []app.HandlerFunc{failedHandler, func(_ context.Context, _ *app.RequestContext) { downstreamCalled = true }})
 	if failed.Response.StatusCode() != consts.StatusInternalServerError || downstreamCalled {
 		t.Fatalf("unexpected generation failure: status=%d downstream=%t", failed.Response.StatusCode(), downstreamCalled)
@@ -193,39 +186,32 @@ func TestCORSEnabledWithoutStaticOrTypedPolicyFailsDeclaration(t *testing.T) {
 	}
 }
 
-// TestPrepareRequestObserversRequiresAdapterAndAppliesAccessLogPolicy 验证 IOC Observer 声明与 Access Log 策略。
-// 测试方法：先断言通用 Observer 不能冒充日志适配器，再验证 skip/slow，并确认 typed nil 在构造期失败。
-func TestPrepareRequestObserversRequiresAdapterAndAppliesAccessLogPolicy(t *testing.T) {
+// TestPrepareRequestObserversRequiresFactoryAndAppliesAccessLogPolicy 验证内建 Access Log 的依赖、过滤与通用 Observer 隔离语义。
+// 测试方法：先断言启用时缺少 Factory 会失败，再验证 skip/slow 日志，并确认通用 typed nil 在构造期失败。
+func TestPrepareRequestObserversRequiresFactoryAndAppliesAccessLogPolicy(t *testing.T) {
 	requestObservers := []webhertz.RequestObserver{requestObservationBridge{}}
 	_, err := prepareRequestObservers(AccessLogConfig{Enabled: true}, nil, requestObservers, nil)
 	if !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
-		t.Fatalf("expected missing request log observer error, got=%v", err)
+		t.Fatalf("expected missing logger factory error, got=%v", err)
 	}
 
 	// 第二阶段：日志策略只过滤自身，不影响同一完成态链中的通用 Observer。
-	called := 0
-	wasSlow := false
-	requestLogObservers := []RequestLogObserver{requestLogObserverFunc(func(_ context.Context, _ webhertz.HTTPRequestObservation, slow bool) {
-		called++
-		wasSlow = slow
-	})}
-	observers, err := prepareRequestObservers(AccessLogConfig{Enabled: true, SkipPaths: []string{"/healthz"}, SlowThreshold: time.Second}, requestLogObservers, requestObservers, nil)
+	factory := &recordingLoggerFactory{}
+	observers, err := prepareRequestObservers(AccessLogConfig{Enabled: true, SkipPaths: []string{"/healthz"}, SlowThreshold: time.Second}, factory.Get(accessLoggerName), requestObservers, nil)
 	if err != nil {
 		t.Fatalf("prepare access log observers: %v", err)
 	}
 	for _, observer := range observers {
-		observer.Observe(context.Background(), webhertz.HTTPRequestObservation{Path: "/healthz", Duration: 2 * time.Second})
-		observer.Observe(context.Background(), webhertz.HTTPRequestObservation{Path: "/orders", Duration: 2 * time.Second})
+		observer.Observe(context.Background(), webhertz.HTTPRequestObservation{Path: "/healthz", Duration: 2 * time.Second, Outcome: webhertz.RequestOutcomeSuccess})
+		observer.Observe(context.Background(), webhertz.HTTPRequestObservation{Path: "/orders", Duration: 2 * time.Second, Outcome: webhertz.RequestOutcomeSuccess})
 	}
-	if called != 1 || !wasSlow {
-		t.Fatalf("unexpected access log policy result: called=%d slow=%t", called, wasSlow)
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	if len(factory.events) != 1 || factory.events[0].level != baselog.LevelWarn || factory.events[0].fields["slow"] != true {
+		t.Fatalf("unexpected access log policy events: %+v", factory.events)
 	}
 
-	// 第三阶段：组件已不经过 Option 校验，私有统一装配边界必须显式拒绝两类 typed nil。
-	var typedNilLog *recordingRequestLogObserver
-	if _, err := prepareRequestObservers(AccessLogConfig{}, []RequestLogObserver{typedNilLog}, nil, nil); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
-		t.Fatalf("expected typed nil request log observer error, got=%v", err)
-	}
+	// 第三阶段：通用组件不经过 Option 校验，私有统一装配边界必须显式拒绝 typed nil。
 	var typedNilObserver *recordingRequestObserver
 	if _, err := prepareRequestObservers(AccessLogConfig{}, nil, []webhertz.RequestObserver{typedNilObserver}, nil); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
 		t.Fatalf("expected typed nil request observer error, got=%v", err)
@@ -240,7 +226,7 @@ func TestGzipMiddlewareCompressesEligibleResponseAndRespectsGuards(t *testing.T)
 	if err != nil {
 		t.Fatalf("resolve gzip config: %v", err)
 	}
-	handler := newGzipMiddleware(config, nil)
+	handler := newGzipMiddleware(config, nil, testServerLoggers().middleware)
 	compressed := newMiddlewareTestRequest("GET", "/text")
 	compressed.Request.Header.Set("Accept-Encoding", "br, gzip")
 	executeMiddlewareTestChain(compressed, []app.HandlerFunc{handler, func(_ context.Context, request *app.RequestContext) {

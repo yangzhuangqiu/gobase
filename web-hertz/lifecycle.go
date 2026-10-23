@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cloudwego/hertz/pkg/common/hlog"
+	baselog "github.com/yangzhuangqiu/gobase/log"
 )
 
 // lifecycleState 表示 Server 单运行周期的内部阶段。
@@ -82,7 +82,12 @@ func (this *Server) Run(ctx context.Context) error {
 	// 第三阶段：统一归一化优雅停止与真实运行/停止错误。
 	result := this.resolveRunResult()
 	if result != nil {
-		hlog.SystemLogger().Errorf("op=web_hertz.run result=failed reason=lifecycle_failed error=%v", result)
+		logError(this.logger, ctx, "Hertz server lifecycle failed",
+			baselog.F("op", "web_hertz.run"),
+			baselog.F("result", "failed"),
+			baselog.F("reason", "lifecycle_failed"),
+			baselog.Err(result),
+		)
 	}
 	return result
 }
@@ -106,7 +111,11 @@ func (this *Server) Shutdown(ctx context.Context) error {
 		this.state = lifecycleStateStopped
 		this.completeShutdownLocked(nil)
 		this.mu.Unlock()
-		hlog.SystemLogger().Infof("op=web_hertz.shutdown result=ok reason=before_run")
+		logInfo(this.logger, ctx, "Hertz server stopped before run",
+			baselog.F("op", "web_hertz.shutdown"),
+			baselog.F("result", "ok"),
+			baselog.F("reason", "before_run"),
+		)
 		return nil
 	}
 	startDriver := this.requestShutdownLocked()
@@ -125,7 +134,12 @@ func (this *Server) Shutdown(ctx context.Context) error {
 			"op=web_hertz.shutdown result=failed stage=wait reason=context_done",
 			errors.Join(ErrShutdownWaitInterrupted, ctx.Err()),
 		)
-		hlog.SystemLogger().Errorf("op=web_hertz.shutdown result=failed reason=context_done error=%v", ctx.Err())
+		logError(this.logger, ctx, "Hertz shutdown wait interrupted",
+			baselog.F("op", "web_hertz.shutdown"),
+			baselog.F("result", "failed"),
+			baselog.F("reason", "context_done"),
+			baselog.Err(ctx.Err()),
+		)
 		return err
 	}
 }
@@ -195,7 +209,11 @@ func (this *Server) observeRunning() {
 				this.state = lifecycleStateRunning
 			}
 			this.mu.Unlock()
-			hlog.SystemLogger().Infof("op=web_hertz.run result=running address=%s", this.address)
+			logInfo(this.logger, context.Background(), "Hertz server running",
+				baselog.F("op", "web_hertz.run"),
+				baselog.F("result", "running"),
+				baselog.F("address", this.address),
+			)
 			return
 		}
 	}
@@ -255,9 +273,18 @@ func (this *Server) driveShutdown() {
 			<-this.runningObservationDone
 			// 最终日志必须先于 shutdownDone 发布，允许上层在稳定结果后安全恢复全局 hlog。
 			if err != nil {
-				hlog.SystemLogger().Errorf("op=web_hertz.shutdown result=failed reason=engine_shutdown_failed error=%v", err)
+				logError(this.logger, context.Background(), "Hertz engine shutdown failed",
+					baselog.F("op", "web_hertz.shutdown"),
+					baselog.F("result", "failed"),
+					baselog.F("reason", "engine_shutdown_failed"),
+					baselog.Err(err),
+				)
 			} else {
-				hlog.SystemLogger().Infof("op=web_hertz.shutdown result=ok reason=engine_stopped")
+				logInfo(this.logger, context.Background(), "Hertz engine stopped",
+					baselog.F("op", "web_hertz.shutdown"),
+					baselog.F("result", "ok"),
+					baselog.F("reason", "engine_stopped"),
+				)
 			}
 			this.completeShutdown(err)
 			return

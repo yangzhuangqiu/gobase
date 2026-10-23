@@ -121,7 +121,7 @@ func TestDefinitionFactoriesPublishApplicationSemanticInterfaces(t *testing.T) {
 		}
 	}
 	// 第二阶段：Module 只注册托管 Server；Build 时由 IOC 完成切片注入与 provider 组装。
-	if err := NewModule("").Register(container); err != nil {
+	if err := NewModule().Register(container); err != nil {
 		t.Fatalf("register web module: %v", err)
 	}
 	if err := container.Build(context.Background()); err != nil {

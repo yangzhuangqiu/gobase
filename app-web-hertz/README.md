@@ -8,10 +8,11 @@
 
 1. 定义 Controller、可选 RouteRegistrar、Filter、GroupedFilter、NoRouteHandler 和 NoMethodHandler 应用合同。
 2. 支持方法名自动路由、逻辑分组共享 Filter、Controller 局部 Middleware 隔离和稳定排序。
-3. 通过 `web.hertz.middleware` 配置化装配 Recovery、Request ID、CORS 和 Gzip。
+3. 通过 `web.hertz.middleware` 配置化装配 Recovery、Request ID、Access Log、CORS 和 Gzip。
 4. 通过 Definition 工厂声明组件角色，`NewModule` 在 IOC Build 阶段自动注入完整组件集合和 `config.Manager`。
 5. 让 IOC 构造、发布并托管唯一 `web.Server`，同时保留底层错误 cause。
 6. 通过不含 OTel 类型的 `InstrumentationBundle` 原子安装 Hertz Option/Middleware，并桥接 Trace ID。
+7. 从 IOC `LoggerFactory` 派生命名 Logger，记录组装摘要、内建 Middleware、Access Log，并向 `web-hertz` 注入实例 Logger。
 
 ### Out of Scope
 
@@ -19,7 +20,7 @@
 2. 不做包扫描或隐式 bean 发现；应用组件必须通过 Definition 工厂显式声明角色。
 3. 不自动调用阻塞型 `Run`，不安装进程信号处理器。
 4. 不创建或关闭配置 Manager、日志 Provider、Controller 或 Filter。
-5. 不管理 Hertz 全局 hlog；日志桥接由 composition root 在 IOC Build 前完成。
+5. 不管理 Hertz 全局 hlog，也不创建或关闭日志 Provider；全部自有日志只借用 IOC `LoggerFactory`。
 6. 不默认启用 Recovery、Request ID、CORS、Gzip、access-log 或 pprof；标准能力必须逐项显式开启。
 7. 不创建 Prometheus Registry、OTel Provider、Exporter、诊断 Server 或配置订阅。
 8. 不提供脱离 IOC 的 Controller/Filter 显式构造入口；原生 Hertz 场景直接使用 `web-hertz`。
@@ -35,6 +36,8 @@
 | `NoRouteHandler` / `NoMethodHandler` | 声明全局 404/405 fallback 链和稳定顺序 |
 | `Define*` | 把应用组件与 IOC 接口声明绑定为原子 Definition |
 | `Config` / `MiddlewareConfig` | 保留扁平 Server 配置，并定义标准 Middleware 装配意图 |
+| Logger 装配 | 从必需的 IOC `LoggerFactory` 一次派生 assembly、middleware、provider 和 request Logger |
+| 内建 Access Log | 使用 `web.hertz.request` Logger，把完成态快照映射为安全结构化请求事件 |
 | `Option` | 声明路径风格、标准 typed policy 和 `web-hertz` 原生扩展 |
 | `InstrumentationBundle` | 成对声明 Hertz 原生插桩 Option/Middleware，不拥有 Provider |
 | `Module` | 在 IOC Build 前注册托管 Server bean |
@@ -48,6 +51,7 @@
 ```go
 app.Main(
 	app.WithConfig(config.Defaults(defaultConfig())),
+	app.WithLogging(apphlogzap.Wrap(applogzap.New())),
 	app.WithBeanDefinitions(
 		appwebhertz.DefineController(&OrdersController{}),
 		appwebhertz.DefineFilter(&AuthFilter{}),
@@ -55,19 +59,19 @@ app.Main(
 		appwebhertz.DefineNoRouteHandler(&JSONNotFound{}),
 		appwebhertz.DefineNoMethodHandler(&JSONMethodNotAllowed{}),
 	),
-	app.WithModules(appwebhertz.NewModule("")),
+	app.WithModules(appwebhertz.NewModule()),
 	app.WithRunner(appwebhertz.Runner()),
 )
 ```
 
-`NewModule("")` 默认读取 `web.hertz`。`app` 拥有信号、取消和 Runtime Close；`Runner()` 只解析并运行唯一 Server，因此无需额外 Shutdown Hook。多 Server 监督仍由应用 composition root 负责。
+`NewModule()` 默认读取 `web.hertz`；自定义配置路径使用 `WithScope("services.api")`。`app` 拥有信号、取消和 Runtime Close；`Runner()` 只解析并运行唯一 Server，因此无需额外 Shutdown Hook。多 Server 监督仍由应用 composition root 负责。
 
 ## 公共入口与合同
 
 ```go
 const DefaultScope = "web.hertz"
 
-func NewModule(scope string, options ...Option) Module
+func NewModule(options ...Option) Module
 
 func DefineController(controller Controller, options ...ioc.RegisterOption) ioc.Definition
 func DefineFilter(filter Filter, options ...ioc.RegisterOption) ioc.Definition
@@ -75,6 +79,7 @@ func DefineNoRouteHandler(handler NoRouteHandler, options ...ioc.RegisterOption)
 func DefineNoMethodHandler(handler NoMethodHandler, options ...ioc.RegisterOption) ioc.Definition
 func Runner() app.Runner
 
+func WithScope(scope string) Option
 func WithServerOptions(options ...webhertz.Option) Option
 func WithRoutePathStyle(style RoutePathStyle) Option
 func WithRecoveryHandler(handler RecoveryHandler) Option
@@ -85,7 +90,7 @@ func GetRequestID(request *app.RequestContext) string
 func RequestPanicked(request *app.RequestContext) bool
 ```
 
-`NewModule` 只创建可重放声明；`Register` 不读取配置或构造 Hertz，真实配置读取、完整组件聚合和 provider 构造发生在 IOC `Init`。Observer 与 Instrumentation Bundle 只作为 IOC 组件注入，Option 仅承载策略和 provider 扩展。
+`NewModule` 只创建可重放声明；`Register` 不读取配置或构造 Hertz，真实配置读取、Logger 派生、完整组件聚合和 provider 构造发生在 IOC `Init`。`LoggerFactory` 是必需 IOC 依赖；app Runtime 始终注册默认或已配置的 Factory。通用 Observer 与 Instrumentation Bundle 仍作为 IOC 组件注入。
 
 ## Controller、Filter 与 fallback handler
 
@@ -164,9 +169,9 @@ web:
         excludedContentTypes: [image/, application/zip]
 ```
 
-1. `NewModule` 的 scope trim 后为空时使用 `web.hertz`。
+1. 未声明 `WithScope` 时使用 `web.hertz`；显式 scope trim 后为空同样回退该默认值。
 2. Module 在 IOC Init 阶段读取当前 Snapshot 一次；启动配置不热更新。
-3. scope 缺失、解码失败、provider 或 Middleware 配置非法会让 IOC Build 失败；Access Log 启用但缺少 Request Log Observer 也会 fail-fast。
+3. scope 缺失、解码失败、provider、Middleware 配置非法或缺少 `LoggerFactory` 会让 IOC Build fail-fast。
 4. `WithServerOptions` 在 typed Config 之后应用，最终优先级由 `web-hertz` 保证。
 5. CORS 不默认放开 Origin；静态列表为空时必须提供 `WithCORSOriginValidator`。
 6. `allowOrigins: ["*"]` 与 `allowCredentials: true` 是非法安全组合。
@@ -220,7 +225,7 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 1. 使用 Controller/Filter 应用模型时通过 `NewModule` 进入 IOC；不使用 IOC 时直接使用 `web-hertz` 原生组装。
 2. 使用 `DefineController`、`DefineFilter`、`DefineNoRouteHandler` 和 `DefineNoMethodHandler`，不要在 composition root 重复 `WithDeclare`；分组 Filter 同样使用 `DefineFilter`。
 3. 单 Server 应用使用 `appwebhertz.Runner()`；多 Server 交给 composition root 监督。首次 Close context 必须覆盖完整优雅停止窗口。
-4. hlog 在 Container Build 前安装，在 Container Close 后恢复，日志 Provider 最后关闭。
+4. Hertz 应用使用 `apphlogzap.Wrap(applogzap.New(...))` 装饰应用 Logging，在 Container Build 前安装 hlog，在 Container Close 后恢复，日志 Provider 最后关闭。
 5. 自动方法名只承载稳定静态 URL；动态和兼容性敏感路由使用 `RegisterRoutes`。
 6. Request ID 默认不信任入站值；只有代理链已经验证来源时才开启 `trustIncoming`。
 7. CORS 使用精确 Origin；凭据模式禁止通配符。Gzip 仅处理完整内存响应，不用于流式/SSE/升级连接。
@@ -231,7 +236,7 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 2. 应用组件仍需显式 Definition，不做包扫描。
 3. 启动配置不热更新，地址或 timeout 变化需要重建 Runtime。
 4. 当前按类型只适合发布一个 `web.Server`；多 Server 应先定义具名运行策略。
-5. Access Log/Metrics 通过完成态 Observation 接入，Trace 通过原子 Bundle 接入；本模块仍不创建 Logger、Registry、Provider、Exporter 或 Handler。
+5. Access Log/Metrics 通过完成态 Observation 接入，Trace 通过原子 Bundle 接入；本模块只从根 `LoggerFactory` 派生实例 Logger，不创建 Registry、Provider 或 Exporter。
 
 ## File Map
 
@@ -239,16 +244,17 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 2. `route.go`、`group_path.go`、`route_path.go`、`route_path_style.go`、`filter_plan.go`：逻辑分组、Filter/路由计划和路径映射。
 3. `configured_config.go`、`middleware_config.go`：完整配置模型、默认值和校验。
 4. `middleware*.go`：固定标准链、typed policy 和四类私有 Middleware 实现。
-5. `request_log_observer.go`、`request_observation.go`：Access Log 语义合同、过滤策略和完成态元数据桥接。
-6. `instrumentation_bundle.go`：后端无关、原子 Option/Middleware 插桩合同。
-7. `model.go`、`builder.go`、`options.go`：完整 IOC 组件快照、私有构造核心和策略 Option。
-8. `definition.go`：组件角色到 IOC Definition 的原子工厂。
-9. `module.go`：IOC Module 声明入口。
-10. `managed_server.go`：IOC 注入、Init、Run/Shutdown 和 Close 适配。
-11. `runner.go`：app 单 Server Runner 适配。
-12. `config.go`：独立 scope 单次配置读取。
-13. `errors.go`：稳定错误码和 cause 包装。
-14. `*_test.go`：配置、Middleware、Observation、原子 Bundle、路由、IOC 依赖图和真实生命周期测试。
+5. `logging.go`：命名 Logger 派生、组装摘要和安全计数字段。
+6. `access_log.go`、`request_observation.go`：内建 Access Log 映射、过滤策略和完成态元数据桥接。
+7. `instrumentation_bundle.go`：后端无关、原子 Option/Middleware 插桩合同。
+8. `model.go`、`builder.go`、`options.go`：完整 IOC 组件快照、私有构造核心和策略 Option。
+9. `definition.go`：组件角色到 IOC Definition 的原子工厂。
+10. `module.go`：IOC Module 声明入口。
+11. `managed_server.go`：IOC 注入、Init、Run/Shutdown 和 Close 适配。
+12. `runner.go`：app 单 Server Runner 适配。
+13. `config.go`：独立 scope 单次配置读取。
+14. `errors.go`：稳定错误码和 cause 包装。
+15. `*_test.go`：配置、Middleware、Observation、日志、原子 Bundle、路由、IOC 依赖图和真实生命周期测试。
 
 ## 相关文档
 

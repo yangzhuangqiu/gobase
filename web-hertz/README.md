@@ -10,6 +10,7 @@
 2. 独立配置：提供 Hertz 专属 typed Config、确定默认值、解析优先级和 fail-fast 校验。
 3. 原生扩展：按声明顺序应用 Hertz `config.Option`、全局 Middleware、NoRoute/NoMethod 和 RouteFunc。
 4. 完成态观测：复制有限基数请求快照并同步 fan-out 窄 Observer，不依赖具体日志、Metrics 或 Trace 后端。
+5. 实例诊断：接收可选 `log.Logger`，记录构造、生命周期和 Observer 隔离事件。
 
 ### Out of Scope
 
@@ -33,7 +34,7 @@ application --运行期依赖-------> web.Server
                               web-hertz
 ```
 
-`web-hertz` 实现 `web.Server`，但 `web` 不依赖 Hertz。`web-hertz` 不依赖根 `log`、`log-zap`、`hlog-zap`、app、app-runtime、IOC、config provider 或具体服务注册实现。这里的 `app.HandlerFunc` 来自 Hertz，而不是 gobase 的 `app` 模块。
+`web-hertz` 实现 `web.Server`，并只依赖根 `log` 的稳定 Logger 合同，不依赖 `log-zap`、`hlog-zap`、app、app-runtime、IOC、config provider 或具体服务注册实现。这里的 `app.HandlerFunc` 来自 Hertz，而不是 gobase 的 `app` 模块。
 
 ## 核心对象与职责
 
@@ -46,6 +47,7 @@ application --运行期依赖-------> web.Server
 | `RouterConfig` | 使用三态布尔值定义路由修正、405 和路由打印行为 |
 | `HTTPRequestObservation` | 不持有池化对象的请求完成态值快照 |
 | `RequestObserver` | 同步消费完成态；可选扩展开始通知和受控 Metadata |
+| `WithLogger` | 注入当前 Server 实例的结构化诊断 Logger；缺失时回退 Hertz SystemLogger |
 
 ## 公共入口
 
@@ -221,7 +223,7 @@ op=web_hertz.shutdown result=ok     reason=engine_stopped
 op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 ```
 
-`web-hertz` 自身生命周期日志与 Hertz 内部日志统一使用 `hlog.SystemLogger()`。需要 Zap 时由上层显式安装 `hlog.FullLogger`；`web-hertz` 不依赖 `hlog-zap`，不隐式修改进程级 hlog Logger。它只产生后端无关完成态快照，Request Log/Prometheus 映射由可选适配层承担。
+`web-hertz` 自有的构造、生命周期和 Observer 隔离日志优先写入 `WithLogger` 注入的实例 Logger；未注入时回退 `hlog.SystemLogger()`，保持 standalone 行为。Hertz 框架内部日志仍使用全局 hlog，需要 Zap 时由 composition root 安装 `hlog-zap`。`web-hertz` 不隐式修改进程级 Logger，也不创建日志 Provider。
 
 ## 验证
 
@@ -233,7 +235,7 @@ op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 2. pprof 可通过接收 RouterGroup 的 RouteFunc 注册；配置化启用与独立诊断端口由应用装配层继续设计，不暴露 Engine。
 3. 服务注册需要独立设计所有权、注册时机、失败回滚和注销语义；当前不支持。
 4. 尚不提供 Ready/Address/Status 查询；没有跨 provider 需求前不扩展根 `web.Server`。
-5. Controller、Filter、IOC 聚合、配置绑定和 `hlog.FullLogger` 安装属于 `app-web-hertz` 的职责，不进入本 provider 的稳定合同。
+5. Controller、Filter、IOC 聚合和配置绑定属于 `app-web-hertz`；进程级 `hlog.FullLogger` 安装属于独立 composition root 集成层。
 
 ## File Map
 
@@ -243,10 +245,11 @@ op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 4. `lifecycle.go`：单运行周期状态机、Run/Shutdown 协调和错误归一化。
 5. `route.go`：RouteFunc 合同。
 6. `no_route.go`、`no_method.go`：404/405 窄 Handler 声明。
-7. `options.go`：Hertz Option、Middleware、Routes 与构造计划。
-8. `errors.go`：可分支错误码和阶段包装。
-9. `request_observation.go`、`request_observer*.go`：完成态 VO、Observer 合同、Option 和私有 Middleware。
-10. `*_test.go`：配置、404/405、完成态观测、构造和生命周期合同测试。
+7. `options.go`：Hertz Option、实例 Logger、Middleware、Routes 与构造计划。
+8. `diagnostic_log.go`：实例 Logger 与 standalone hlog 降级出口。
+9. `errors.go`：可分支错误码和阶段包装。
+10. `request_observation.go`、`request_observer*.go`：完成态 VO、Observer 合同、Option 和私有 Middleware。
+11. `*_test.go`：配置、404/405、完成态观测、构造和生命周期合同测试。
 
 ## 相关文档
 

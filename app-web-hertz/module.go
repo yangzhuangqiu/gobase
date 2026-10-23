@@ -32,8 +32,6 @@ type Module interface {
 }
 
 type module struct {
-	// scope 是 Server bean Init 阶段单次读取的独立配置路径。
-	scope string
 	// options 是每次 Register 重放的纯内存 Server 装配声明。
 	options []Option
 }
@@ -41,16 +39,12 @@ type module struct {
 // NewModule 创建自动聚合应用组件并发布 web.Server 的 IOC Module。
 //
 // 参数:
-// - scope: trim 后为空时使用 `web.hertz`；非空值作为 config dotted path；
-// - options: 控制路径风格、标准 typed policy 和 web-hertz 原生扩展，不承载 IOC 应用组件。
+// - options: 控制配置 scope、路径风格、标准 typed policy 和 web-hertz 原生扩展，不承载 IOC 应用组件。
 //
 // 返回:
 // - Module: 可注册一次或在不同 Container 中重放的无资源声明对象。
-func NewModule(scope string, options ...Option) Module {
-	return &module{
-		scope:   resolveScope(scope),
-		options: append([]Option{}, options...),
-	}
+func NewModule(options ...Option) Module {
+	return &module{options: append([]Option{}, options...)}
 }
 
 // Name 返回 app-runtime 用于重复检测的稳定模块名。
@@ -78,7 +72,7 @@ func (this *module) Register(registry ioc.Registry) error {
 	}
 
 	// 第二阶段：只发布依赖图节点，配置读取和 provider 构造延迟到 IOC Init。
-	bean := &managedServer{scope: this.scope, options: resolvedOptions}
+	bean := &managedServer{scope: resolvedOptions.scope, options: resolvedOptions}
 	if err := registry.Register(bean, ioc.WithName(serverBeanName), ioc.WithDeclare[baseweb.Server]()); err != nil {
 		return errorForModuleRegisterFailed(
 			"op=app_web_hertz.module.register result=failed stage=register_server reason=ioc_register_failed",

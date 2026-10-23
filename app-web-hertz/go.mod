@@ -8,6 +8,7 @@ require (
 	github.com/yangzhuangqiu/gobase/config v0.0.0
 	github.com/yangzhuangqiu/gobase/errcode v0.0.0
 	github.com/yangzhuangqiu/gobase/ioc v0.0.0
+	github.com/yangzhuangqiu/gobase/log v0.0.0
 	github.com/yangzhuangqiu/gobase/web v0.0.0
 	github.com/yangzhuangqiu/gobase/web-hertz v0.0.0
 )
@@ -29,7 +30,6 @@ require (
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/yangzhuangqiu/gobase/app-runtime v0.0.0 // indirect
-	github.com/yangzhuangqiu/gobase/log v0.0.0 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	google.golang.org/protobuf v1.34.1 // indirect

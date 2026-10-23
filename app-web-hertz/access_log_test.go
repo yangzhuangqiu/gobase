@@ -1,4 +1,4 @@
-package webhertzobserve
+package appwebhertz
 
 import (
 	"context"
@@ -13,7 +13,9 @@ import (
 
 // recordedLogEvent 保存测试 Logger 收到的结构化事件副本。
 type recordedLogEvent struct {
-	// level 是 Observer 选择的稳定日志级别。
+	// logger 是 LoggerFactory.Get 绑定的稳定组件名。
+	logger string
+	// level 是 Access Log 根据完成态选择的稳定日志级别。
 	level baselog.Level
 	// message 是人类可读事件名。
 	message string
@@ -23,26 +25,23 @@ type recordedLogEvent struct {
 
 // recordingLoggerFactory 返回共享事件存储的测试 Logger。
 type recordingLoggerFactory struct {
-	// mu 保护名称和事件的并发读写。
+	// mu 保护事件的并发读写。
 	mu sync.Mutex
-	// name 保存最后一次 Get 的组件名。
-	name string
 	// events 保存全部结构化事件。
 	events []recordedLogEvent
 }
 
 // Get 记录组件名并返回共享 Logger。
 func (this *recordingLoggerFactory) Get(name string) baselog.Logger {
-	this.mu.Lock()
-	this.name = name
-	this.mu.Unlock()
-	return &recordingLogger{factory: this}
+	return &recordingLogger{factory: this, name: name}
 }
 
 // recordingLogger 实现最小根日志合同并保存事件。
 type recordingLogger struct {
 	// factory 是全部派生 Logger 共享的事件存储。
 	factory *recordingLoggerFactory
+	// name 是 Factory 派生时绑定的稳定组件名。
+	name string
 }
 
 // Enabled 在测试中允许全部级别。
@@ -55,7 +54,7 @@ func (this *recordingLogger) Log(_ context.Context, level baselog.Level, message
 		values[field.Key] = field.Value
 	}
 	this.factory.mu.Lock()
-	this.factory.events = append(this.factory.events, recordedLogEvent{level: level, message: message, fields: values})
+	this.factory.events = append(this.factory.events, recordedLogEvent{logger: this.name, level: level, message: message, fields: values})
 	this.factory.mu.Unlock()
 }
 
@@ -82,37 +81,40 @@ func (this *recordingLogger) Error(ctx context.Context, message string, fields .
 // With 返回共享测试 Logger；本测试不需要固定字段派生。
 func (this *recordingLogger) With(...baselog.Field) baselog.Logger { return this }
 
-// TestRequestLogObserverWritesStableSafeFields 验证日志适配器只记录完成态白名单字段，并保护核心字段不被 Enricher 覆盖。
-// 测试方法：构造慢请求快照和含保留键的 Enricher，断言 Warn、稳定字段、无 query/body 字段及应用字段保留。
-func TestRequestLogObserverWritesStableSafeFields(t *testing.T) {
-	// 第一阶段：构造自定义组件名和字段 Enricher，故意尝试覆盖核心 status。
-	factory := &recordingLoggerFactory{}
-	observer, err := NewRequestLogObserver(factory,
-		WithRequestLoggerName(" api.http "),
-		WithRequestLogEnricher(func(context.Context, webhertz.HTTPRequestObservation) []baselog.Field {
-			return []baselog.Field{baselog.F("status", 999), baselog.F("tenant_class", "internal")}
-		}),
-	)
+// testServerLoggers 返回由共享记录工厂派生的完整 Server Logger 集合。
+// 测试方法：复用生产解析入口，确保内部 builder 测试满足 Logger 前置条件。
+func testServerLoggers() serverLoggers {
+	loggers, err := resolveServerLoggers(&recordingLoggerFactory{})
 	if err != nil {
-		t.Fatalf("new request log observer: %v", err)
+		panic(err)
+	}
+	return loggers
+}
+
+// TestAccessLogWritesStableSafeFields 验证内建 Access Log 使用固定 Logger 和完成态白名单字段。
+// 测试方法：构造慢请求快照，断言 Warn、稳定字段，并确认敏感请求内容不会进入事件。
+func TestAccessLogWritesStableSafeFields(t *testing.T) {
+	factory := &recordingLoggerFactory{}
+	observer, err := newAccessLogObserver(factory.Get(accessLoggerName), AccessLogConfig{SlowThreshold: time.Second})
+	if err != nil {
+		t.Fatalf("new access log observer: %v", err)
 	}
 
-	// 第二阶段：记录慢请求，验证级别、白名单和核心字段保护。
-	observer.ObserveRequestLog(context.Background(), webhertz.HTTPRequestObservation{
+	observer.Observe(context.Background(), webhertz.HTTPRequestObservation{
 		RequestID: "request-1", TraceID: "trace-1", Method: "GET", RoutePattern: "/orders/:id", Path: "/orders/42",
 		Status: 200, Duration: 1500 * time.Millisecond, RequestBytes: 12, ResponseBytes: 34, Outcome: webhertz.RequestOutcomeSuccess,
-	}, true)
+	})
 	factory.mu.Lock()
 	defer factory.mu.Unlock()
-	if factory.name != "api.http" || len(factory.events) != 1 {
-		t.Fatalf("unexpected logger selection/events: name=%s events=%d", factory.name, len(factory.events))
+	if len(factory.events) != 1 || factory.events[0].logger != accessLoggerName {
+		t.Fatalf("unexpected logger selection/events: events=%+v", factory.events)
 	}
 	event := factory.events[0]
 	if event.level != baselog.LevelWarn || event.message != "http_request" || event.fields["reason"] != "slow" || event.fields["status"] != 200 {
 		t.Fatalf("unexpected stable request event: %+v", event)
 	}
-	if event.fields["tenant_class"] != "internal" || event.fields["request_id"] != "request-1" || event.fields["route"] != "/orders/:id" {
-		t.Fatalf("unexpected enriched request event: %+v", event.fields)
+	if event.fields["request_id"] != "request-1" || event.fields["trace_id"] != "trace-1" || event.fields["route"] != "/orders/:id" {
+		t.Fatalf("unexpected correlated request event: %+v", event.fields)
 	}
 	for _, forbidden := range []string{"query", "headers", "body", "authorization", "cookie", "stack", "error"} {
 		if _, exists := event.fields[forbidden]; exists {
@@ -121,25 +123,20 @@ func TestRequestLogObserverWritesStableSafeFields(t *testing.T) {
 	}
 }
 
-// TestRequestLogObserverUsesErrorForPanicAndRejectsNilDependencies 验证 panic 完成态使用 Error，且 nil Factory/Option 在构造期失败。
-// 测试方法：分别传入 typed nil Factory、nil Option 断言错误码，再记录 panic 快照断言 result/reason。
-func TestRequestLogObserverUsesErrorForPanicAndRejectsNilDependencies(t *testing.T) {
-	// 第一阶段：构造边界拒绝 typed nil Factory 和 nil Option。
-	var nilFactory *recordingLoggerFactory
-	if _, err := NewRequestLogObserver(nilFactory); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
+// TestAccessLogUsesErrorForPanicAndRequiresFactory 验证 panic 完成态使用 Error，且启用日志时必须提供 LoggerFactory。
+// 测试方法：先传入 typed nil Factory 断言声明错误，再记录 panic 快照断言 result/reason。
+func TestAccessLogUsesErrorForPanicAndRequiresFactory(t *testing.T) {
+	var nilLogger *recordingLogger
+	if _, err := newAccessLogObserver(nilLogger, AccessLogConfig{}); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
 		t.Fatalf("expected nil factory error, got=%v", err)
 	}
-	if _, err := NewRequestLogObserver(&recordingLoggerFactory{}, RequestLogOption(nil)); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
-		t.Fatalf("expected nil option error, got=%v", err)
-	}
 
-	// 第二阶段：panic outcome 使用 Error 且保留稳定失败原因。
 	factory := &recordingLoggerFactory{}
-	observer, err := NewRequestLogObserver(factory)
+	observer, err := newAccessLogObserver(factory.Get(accessLoggerName), AccessLogConfig{})
 	if err != nil {
-		t.Fatalf("new panic request log observer: %v", err)
+		t.Fatalf("new panic access log observer: %v", err)
 	}
-	observer.ObserveRequestLog(context.Background(), webhertz.HTTPRequestObservation{Status: 500, Outcome: webhertz.RequestOutcomePanic}, false)
+	observer.Observe(context.Background(), webhertz.HTTPRequestObservation{Status: 500, Outcome: webhertz.RequestOutcomePanic})
 	factory.mu.Lock()
 	defer factory.mu.Unlock()
 	event := factory.events[0]

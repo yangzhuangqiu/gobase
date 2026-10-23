@@ -156,6 +156,7 @@ func buildServerTestError(input Config, components serverComponents, options ...
 	if err != nil {
 		return err
 	}
+	components.loggers = testServerLoggers()
 	_, err = buildServer(input, components, resolvedOptions)
 	return err
 }

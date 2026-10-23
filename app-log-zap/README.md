@@ -11,6 +11,7 @@
 3. 独占 ConfigManager subscription，并只把运行期 level 更新传给纯 Provider。
 4. 将 subscription 与 Zap 核心组合成一个可关闭的 `log.Provider`。
 5. 在 `global` 子包提供拥有 ConfigManager、组合 Provider 与关闭事务的零配置入口。
+6. 标准 Build 结果通过 `ZapProvider()` 暴露同生命周期的窄借用能力，不向业务层扩散具名接口。
 
 ### Out of Scope
 
@@ -70,8 +71,9 @@ log:
 3. `WithProviderOptions` 按声明顺序转发构造期策略；调用方不得在 Build 并发执行期间修改 option 捕获状态。
 4. `Bootstrap.Build(ctx, manager)` 返回 `log.Provider`：manager 非 nil 时创建组合 Provider，manager 为 nil 时创建使用默认配置的纯 Provider。
 5. `NewProviderFromManager(ctx, manager, scope, options...)` 直接返回同时拥有 subscription 与 Zap 核心的 Provider；manager 必填，空 scope 回退 `log.zap`。
-6. context 取消只停止 subscription，不提前关闭 Zap 核心；核心必须由 Provider `Close` 确定性释放。
-7. 直接构建时调用方拥有返回 Provider；通过 Runtime 装配时由 Runtime 拥有并关闭它。
+6. `Build` 返回值的动态类型支持 `interface{ ZapProvider() *logzap.Provider }`；仅供包装器类型断言借用，调用方不得单独关闭底层核心。
+7. context 取消只停止 subscription，不提前关闭 Zap 核心；核心必须由 Provider `Close` 确定性释放。
+8. 直接构建时调用方拥有返回 Provider；通过 Runtime 装配时由 Runtime 拥有并关闭它。
 
 ## 配置模型与默认值
 
@@ -136,7 +138,7 @@ log:
 ## File Map
 
 1. `bootstrap.go`：scope/provider options 与结构化 Build 契约。
-2. `provider.go`：subscription、配置桥接、context 取消与组合关闭。
+2. `provider.go`：ZapProvider 窄能力、subscription、配置桥接、context 取消与组合关闭。
 3. `errors.go`：根包稳定错误码与 cause 包装。
 4. `global/`：零配置入口、Manager/Provider 所有权与全局错误码。
 5. `bootstrap_test.go`：配置回放、热更新、资源关闭和分层错误码场景。

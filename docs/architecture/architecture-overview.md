@@ -6,7 +6,7 @@
 2. [App Runtime Usage Guide](../guides/app-runtime-usage.md)：独立 Runtime、Config Options、Beans 与 Modules。
 3. [IOC Usage Guide](../guides/ioc-usage.md)：注册、注入、生命周期与循环依赖。
 4. [Web Hertz Usage Guide](../guides/web-hertz-usage.md)：Hertz 配置、原生扩展与优雅停止。
-5. [App Web Hertz Usage Guide](../guides/app-web-hertz-usage.md)：配置/IOC、Controller/Filter 与 hlog 装配。
+5. [App Web Hertz Usage Guide](../guides/app-web-hertz-usage.md)：配置/IOC、Controller/Filter 与实例日志装配。
 
 ## Design Documents
 
@@ -19,15 +19,16 @@
 7. `errcode-design.md`：泛型错误码、错误链和治理边界。
 8. `../guides/util-usage.md`：通用工具的安全使用与容量边界。
 9. `web-hertz-design.md`：Hertz provider 构造流水线、状态机与并发停止语义。
-10. `app-web-hertz-design.md`：应用 Web 装配流水线、hlog 租约与资源所有权。
+10. `app-web-hertz-design.md`：应用 Web 装配流水线、实例 Logger 与资源所有权。
 
 ## Dependency Direction
 
 ```text
 main → app → app-runtime → config / log / ioc
-  └────────→ app-log-zap → config / log / log-zap
+  ├────────→ app-log-zap → config / log / log-zap
+  └────────→ hlog-zap/app → config / log / log-zap / hlog-zap
 
-application → app-web-hertz → config / ioc / Hertz hlog
+application → app-web-hertz → config / ioc / log / web-hertz
                        └───→ web-hertz → Hertz
                                       └───→ web
 ```
@@ -37,7 +38,7 @@ application → app-web-hertz → config / ioc / Hertz hlog
 3. `config` 负责配置来源、优先级、快照、热更新与 Explain。
 4. `log` 负责日志统一契约与 provider SPI。
 5. `ioc` 负责 bean 注册、注入、Init 和逆 Init 顺序 Close。
-6. `app-log-zap` 通过结构化 `Logging` 契约接入，不依赖 app-runtime；禁止 `app-runtime → app-log-zap` 或反向依赖。
+6. `app-log-zap` 与 `hlog-zap/app` 通过结构化 `Logging` 契约接入，不依赖 app-runtime；`hlog-zap/app` 只装饰调用方传入的 Logging，不直接依赖或构造 `app-log-zap`；禁止 `app-runtime` 反向依赖具体日志适配。
 7. 禁止 `app-runtime → app`、`ioc → app-runtime`。
 
 ## Unified Runtime Semantics
@@ -62,25 +63,26 @@ application → app-web-hertz → config / ioc / Hertz hlog
 1. `app`：命令行应用启动门面，普通路径只需导入该模块。
 2. `app-runtime`：高级运行时内核，可独立 Build/Close。
 3. `config`、`config-nacos`、`config-consul`：配置内核与 provider。
-4. `log`、`log-zap`、`app-log-zap`：日志契约、实现与 Runtime 适配。
+4. `log`、`log-zap`、`app-log-zap`、`hlog-zap`（含 `app` 子包）：日志契约、实现与 Runtime/Hertz 适配。
 5. `ioc`：轻量级 bean 容器。
 6. `errcode`：泛型错误码载体与全链目标匹配。
 7. `util`：标准库基础上的独立通用工具子包。
 8. `examples`：端到端使用与编译验证。
 9. `web`：只定义 Server 运行与优雅停止语义，不包含公共配置或具体框架类型。
 10. `web-hertz`：实现 `web.Server`，独立拥有 Hertz 配置并保留原生 Middleware/Route 扩展。
-11. `app-web-hertz`：从配置与 IOC 聚合应用 Controller/Filter，并管理可选 Hertz hlog 租约。
+11. `app-web-hertz`：从配置与 IOC 聚合应用 Controller/Filter，并从 LoggerFactory 派生实例日志。
 
 ## Code Map
 
 1. `app/` 对应 `app-design.md`。
 2. `app-runtime/` 对应 `app-runtime-design.md`。
 3. `config/` 对应 `config-design.md`。
-4. `log/`、`log-zap/`、`app-log-zap/` 对应 `log-design.md`。
+4. `log/`、`log-zap/`、`app-log-zap/`、`hlog-zap/`、`hlog-zap/app/` 对应 `log-design.md`。
 5. `ioc/` 对应 `ioc-design.md`。
 6. `errcode/` 对应 `errcode-design.md`。
 7. `util/` 对应 `../guides/util-usage.md`。
 8. `examples/admin/`、`examples/quickstart-app/`、`examples/quickstart-web-hertz/` 用于端到端验证。
 9. `web/server.go` 定义框架无关的 Server 生命周期契约。
 10. `web-hertz/` 封装 Hertz 构造与单运行周期生命周期，模块入口见 `../../web-hertz/README.md`。
-11. `app-web-hertz/` 负责应用装配与 hlog 租约，模块入口见 `../../app-web-hertz/README.md`。
+11. `app-web-hertz/` 负责应用组件、实例 Logger 与 Web Server 装配，模块入口见 `../../app-web-hertz/README.md`。
+12. `hlog-zap/app/` 负责 Logging 装饰、hlog 租约与共享 Provider 生命周期。

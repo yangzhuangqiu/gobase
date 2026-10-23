@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/cloudwego/hertz/pkg/common/hlog"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	baselog "github.com/yangzhuangqiu/gobase/log"
 )
 
 const (
@@ -20,7 +20,7 @@ const (
 
 // newRequestIDMiddleware 构造无进程级状态的请求标识 Middleware。
 // 阶段角色：标准链最外层，使 Recovery、CORS、Gzip、Filter 和业务 Handler 均能读取同一标识。
-func newRequestIDMiddleware(config RequestIDConfig, generator RequestIDGenerator) app.HandlerFunc {
+func newRequestIDMiddleware(config RequestIDConfig, generator RequestIDGenerator, logger baselog.Logger) app.HandlerFunc {
 	if generator == nil {
 		generator = defaultRequestIDGenerator
 	}
@@ -36,7 +36,9 @@ func newRequestIDMiddleware(config RequestIDConfig, generator RequestIDGenerator
 		if requestID == "" {
 			generated, err := generator(ctx, request)
 			if err != nil || !validRequestID(generated) {
-				hlog.SystemLogger().CtxErrorf(ctx, "op=app_web_hertz.request_id result=failed reason=generation_failed")
+				logger.Error(ctx, "Request ID generation failed",
+					baselog.F("op", "app_web_hertz.request_id"), baselog.F("result", "failed"), baselog.F("reason", "generation_failed"),
+				)
 				request.AbortWithStatusJSON(consts.StatusInternalServerError, map[string]string{"code": "request_id_generation_failed"})
 				return
 			}

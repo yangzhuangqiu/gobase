@@ -1,6 +1,6 @@
 # gobase
 
-`gobase` 是一个多模块 Go 基础库仓库。当前模块：
+`gobase` 是一个多模块 Go 基础库仓库。当前模块与关键子包：
 
 1. `github.com/yangzhuangqiu/gobase/config`：配置内核（加载、合并、快照、热更新、Explain）。
 2. `github.com/yangzhuangqiu/gobase/config-nacos`：Nacos provider 与 SDK 适配。
@@ -8,17 +8,18 @@
 4. `github.com/yangzhuangqiu/gobase/app`：不泄漏 Cobra/Pflag、提供 Run/Main 与常用 Runtime 门面的命令行应用入口。
 5. `github.com/yangzhuangqiu/gobase/app-runtime`：按需暴露、统一托管 config、log、ioc 的高级应用运行时内核。
 6. `github.com/yangzhuangqiu/gobase/app-log-zap`：app-runtime 与 log-zap 的生命周期装配适配。
-7. `github.com/yangzhuangqiu/gobase/app-observe-webhertz`：Web 请求完成态到结构化日志/Prometheus 的按需适配。
-8. `github.com/yangzhuangqiu/gobase/log`：统一日志抽象与 SPI 接入。
-9. `github.com/yangzhuangqiu/gobase/log-zap`：zap provider 实现模块。
-10. `github.com/yangzhuangqiu/gobase/hlog-zap`：Hertz hlog 与 log-zap 集成模块。
-11. `github.com/yangzhuangqiu/gobase/ioc`：轻量级依赖注入容器模块。
-12. `github.com/yangzhuangqiu/gobase/errcode`：泛型错误码载体与错误链查询。
-13. `github.com/yangzhuangqiu/gobase/examples`：端到端示例模块。
-14. `github.com/yangzhuangqiu/gobase/util`：转换、加密、随机、重试、文件、时间等标准库工具集合。
-15. `github.com/yangzhuangqiu/gobase/web`：不包含公共配置和框架类型的 Web Server 稳定运行契约。
-16. `github.com/yangzhuangqiu/gobase/web-hertz`：Hertz 生命周期适配、独立配置和原生 Middleware/Route/Observation 扩展。
-17. `github.com/yangzhuangqiu/gobase/app-web-hertz`：配置/IOC 到 web-hertz 的应用装配与 Controller/Filter/Observer 聚合。
+7. `github.com/yangzhuangqiu/gobase/hlog-zap/app`：装饰应用 Logging，使业务 LoggerFactory 与 Hertz hlog 共享同源 Zap Provider。
+8. `github.com/yangzhuangqiu/gobase/app-observe-webhertz`：Web 请求完成态到 Prometheus/OTel 的按需适配。
+9. `github.com/yangzhuangqiu/gobase/log`：统一日志抽象与 SPI 接入。
+10. `github.com/yangzhuangqiu/gobase/log-zap`：zap provider 实现模块。
+11. `github.com/yangzhuangqiu/gobase/hlog-zap`：Hertz hlog 与 log-zap 集成模块。
+12. `github.com/yangzhuangqiu/gobase/ioc`：轻量级依赖注入容器模块。
+13. `github.com/yangzhuangqiu/gobase/errcode`：泛型错误码载体与错误链查询。
+14. `github.com/yangzhuangqiu/gobase/examples`：端到端示例模块。
+15. `github.com/yangzhuangqiu/gobase/util`：转换、加密、随机、重试、文件、时间等标准库工具集合。
+16. `github.com/yangzhuangqiu/gobase/web`：不包含公共配置和框架类型的 Web Server 稳定运行契约。
+17. `github.com/yangzhuangqiu/gobase/web-hertz`：Hertz 生命周期适配、独立配置和原生 Middleware/Route/Observation 扩展。
+18. `github.com/yangzhuangqiu/gobase/app-web-hertz`：配置/IOC 到 web-hertz 的应用装配与 Controller/Filter/Observer 聚合。
 
 ## Repository Layout
 
@@ -44,6 +45,7 @@ gobase/
     go.mod
   hlog-zap/
     go.mod
+    app/
   ioc/
     go.mod
   log-zap/
@@ -115,18 +117,19 @@ gobase/
 16. [config-nacos 模块入口](config-nacos/README.md)
 17. [config-consul 模块入口](config-consul/README.md)
 18. [app-log-zap 模块入口](app-log-zap/README.md)
-19. [errcode 模块入口](errcode/README.md)
-20. [Errcode 架构设计](docs/architecture/errcode-design.md)
-21. [util 模块入口](util/README.md)
-22. [Util 使用指南](docs/guides/util-usage.md)
-23. [web 模块入口](web/README.md)
-24. [web-hertz 模块入口](web-hertz/README.md)
-25. [web-hertz 使用指南](docs/guides/web-hertz-usage.md)
-26. [web-hertz 架构设计](docs/architecture/web-hertz-design.md)
-27. [quickstart-web-hertz](examples/quickstart-web-hertz/README.md)
-28. [app-web-hertz 模块入口](app-web-hertz/README.md)
-29. [app-web-hertz 使用指南](docs/guides/app-web-hertz-usage.md)
-30. [app-web-hertz 架构设计](docs/architecture/app-web-hertz-design.md)
-31. [quickstart-app-web-hertz](examples/quickstart-app-web-hertz/README.md)
-32. [app-observe-webhertz 模块入口](app-observe-webhertz/README.md)
-33. [Web Hertz 能力配置化与可观测性方案](docs/architecture/web-hertz-capability-observability-proposal.md)
+19. [hlog-zap/app 子包入口](hlog-zap/app/README.md)
+20. [errcode 模块入口](errcode/README.md)
+21. [Errcode 架构设计](docs/architecture/errcode-design.md)
+22. [util 模块入口](util/README.md)
+23. [Util 使用指南](docs/guides/util-usage.md)
+24. [web 模块入口](web/README.md)
+25. [web-hertz 模块入口](web-hertz/README.md)
+26. [web-hertz 使用指南](docs/guides/web-hertz-usage.md)
+27. [web-hertz 架构设计](docs/architecture/web-hertz-design.md)
+28. [quickstart-web-hertz](examples/quickstart-web-hertz/README.md)
+29. [app-web-hertz 模块入口](app-web-hertz/README.md)
+30. [app-web-hertz 使用指南](docs/guides/app-web-hertz-usage.md)
+31. [app-web-hertz 架构设计](docs/architecture/app-web-hertz-design.md)
+32. [quickstart-app-web-hertz](examples/quickstart-app-web-hertz/README.md)
+33. [app-observe-webhertz 模块入口](app-observe-webhertz/README.md)
+34. [Web Hertz 能力配置化与可观测性方案](docs/architecture/web-hertz-capability-observability-proposal.md)

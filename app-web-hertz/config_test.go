@@ -109,7 +109,7 @@ func TestResolveConfiguredConfigUsesDisabledDefaultsAndDetachesSlices(t *testing
 		t.Fatalf("expected zero input to resolve to DefaultConfig: %+v", first)
 	}
 	// 第二阶段：禁用配置不得生成 Handler，且默认集合必须按实例复制，避免跨 Server 污染。
-	plan, err := prepareStandardMiddleware(first.Middleware, defaultOptions())
+	plan, err := prepareStandardMiddleware(first.Middleware, defaultOptions(), testServerLoggers().middleware)
 	if err != nil || len(plan.beforeObservation) != 0 || len(plan.afterObservation) != 0 {
 		t.Fatalf("expected disabled middleware to build no handlers: before=%d after=%d err=%v", len(plan.beforeObservation), len(plan.afterObservation), err)
 	}
@@ -150,7 +150,7 @@ func TestResolveConfiguredConfigRejectsInvalidMiddleware(t *testing.T) {
 	}
 
 	// 第二阶段：私有统一装配核心应在稳定配置错误外保留 Server 构建阶段语义。
-	_, err := buildServer(Config{Middleware: tests["CORS credentials"]}, serverComponents{}, defaultOptions())
+	_, err := buildServer(Config{Middleware: tests["CORS credentials"]}, serverComponents{loggers: testServerLoggers()}, defaultOptions())
 	if !errcode.IsCode[ErrorCode](err, ErrCodeServerBuildFailed) || !errcode.IsCode[ErrorCode](err, ErrCodeConfigInvalid) {
 		t.Fatalf("expected layered build config error, got=%v", err)
 	}

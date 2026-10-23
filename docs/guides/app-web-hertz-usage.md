@@ -102,20 +102,15 @@ if err := container.Register(
 ); err != nil {
 	return err
 }
-if err := webhertzobserve.NewModule(
-	webhertzobserve.WithRequestLog(),
-).Register(container); err != nil {
-	return err
-}
-if err := appwebhertz.NewModule("").Register(container); err != nil {
+if err := appwebhertz.NewModule().Register(container); err != nil {
 	return err
 }
 ```
 
-空 scope 使用 `web.hertz`；自定义路径直接传给构造器：
+不声明 `WithScope` 时使用 `web.hertz`；自定义路径通过 Option 声明：
 
 ```go
-appwebhertz.NewModule("services.api")
+appwebhertz.NewModule(appwebhertz.WithScope("services.api"))
 ```
 
 Module Register 只添加一个托管 bean，不读取 Snapshot、不构造 Hertz、不启动 goroutine。真实配置读取和 Server 构造发生在 Container Build 的 Init 阶段。
@@ -148,7 +143,7 @@ app.Main(
 		appwebhertz.DefineNoRouteHandler(&JSONNotFound{}),
 		appwebhertz.DefineNoMethodHandler(&JSONMethodNotAllowed{}),
 	),
-	app.WithModules(appwebhertz.NewModule("")),
+	app.WithModules(appwebhertz.NewModule()),
 	app.WithRunner(appwebhertz.Runner()),
 )
 ```
@@ -159,7 +154,7 @@ Runtime 已注册 borrowed `config.Manager`。`appwebhertz.Runner()` 解析唯�
 
 | 入口 | 默认值 | 重复规则 | 非法值 | 生效阶段 |
 |---|---|---|---|---|
-| `NewModule(scope, ...)` | `web.hertz` | 单个构造参数 | 空白回退默认 | IOC Init |
+| `WithScope` | `web.hertz` | 后声明覆盖前声明 | 空白回退默认 | IOC Init |
 | `WithRoutePathStyle` | Kebab | 后者覆盖前者 | 不支持的枚举 fail-fast | 构造计划 |
 | `WithServerOptions` | 无 | 每次追加 | 任一 nil fail-fast | provider 构造 |
 | `WithRecoveryHandler` | 内建安全响应 | 后者覆盖 | nil fail-fast | Recovery 启用后 |
@@ -280,13 +275,16 @@ WithServerOptions 中的 advanced outer Middleware
 - 只有可信代理已经校验标识来源时才设置 `trustIncoming: true`。
 - Handler/Filter 使用 `appwebhertz.GetRequestID(request)` 读取；生成失败返回稳定 500，不让无标识请求继续。
 
-### Access Log 与完成态 Metrics
+### 实例日志、Access Log 与完成态 Metrics
 
-- `accessLog.enabled=true` 只启用请求日志调用；必须通过 IOC 提供 `RequestLogObserver`，否则 Build fail-fast。
+- `LoggerFactory` 是 Server bean 的必需 IOC 依赖；app Runtime 总会注册默认或 `WithLogging` 提供的 Factory，裸 IOC 必须显式注册。
+- Init 一次派生 `app.web.hertz.assembly`、`app.web.hertz.middleware`、`web.hertz` 和 `web.hertz.request`；运行期不重复访问 Factory。
+- `app-web-hertz` 成功组装后记录一条 Info 摘要，`web-hertz` 记录 Debug provider 摘要；构造失败只返回错误，由 IOC Build 边界统一记录。
+- `accessLog.enabled=true` 启用内建结构化请求日志。
 - `skipPaths` 使用无 query 的精确路径；`slowThreshold=0` 表示不区分慢请求。
 - Prometheus 等通用 Observer 只通过 IOC `webhertz.RequestObserver` 声明，不需要虚假的 YAML 总开关。
-- Request Log、Metrics 共享同一次完成态计时和快照；Recovery 后的 panic 记录最终 500 与 `outcome=panic`。
-- 推荐使用可选 [`app-observe-webhertz`](../../app-observe-webhertz/README.md) 完成 LoggerFactory/Prometheus 适配；`app-web-hertz` 不创建后端。
+- Access Log、Metrics 共享同一次完成态计时和快照；Recovery 后的 panic 记录最终 500 与 `outcome=panic`。
+- `app-web-hertz` 不创建或关闭日志 Provider；sink、encoder 和基础 level 仍由根日志配置决定。可选 [`app-observe-webhertz`](../../app-observe-webhertz/README.md) 只负责 Prometheus/OTel 适配。
 
 ### OpenTelemetry Trace
 
@@ -324,17 +322,14 @@ observe := webhertzobserve.NewModule(
 
 ## 6. hlog 与日志 Provider
 
-本模块不再接管 Hertz 全局 hlog。composition root 应在 Container Build 前安装，因为路由注册发生在 Server bean Init：
+本模块不接管 Hertz 全局 hlog。app Runtime 使用 `hlog-zap/app`，在 IOC Build 前安装、Server 关闭后恢复：
 
 ```go
-hertzLogger, err := hlogzap.NewFromProvider(zapProvider)
-if err != nil {
-	return err
-}
-
-previous := hlog.DefaultLogger()
-hlog.SetLogger(hertzLogger)
-defer hlog.SetLogger(previous)
+app.WithLogging(apphlogzap.Wrap(
+	applogzap.New(
+		applogzap.WithScope("log.zap"),
+	),
+))
 ```
 
 关闭顺序必须是：
@@ -347,7 +342,7 @@ web.Server Run 返回
 -> config Manager Close
 ```
 
-`NewFromProvider` 只创建借用 Logger，不关闭或 Sync Provider。全局 hlog 是进程级可变状态，安装和恢复应保持在单线程 composition 阶段；应用运行期间不要从其他路径改写它。
+`hlog-zap/app` 不创建或配置应用日志；它装饰显式传入的 Logging，通过 Build 结果的 `ZapProvider()` 窄能力复用同一个 Zap Provider，同时向 IOC 提供 LoggerFactory，并以单 owner Lease 管理 hlog。全局 hlog 是进程级可变状态，同一进程不支持两个并行 Runtime 分别安装不同 Logger。
 
 ## 7. 生命周期和依赖约束
 
