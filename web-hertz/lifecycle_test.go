@@ -6,7 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,7 +29,7 @@ const (
 // panicTransporter 模拟第三方 transport 在阻塞运行入口发生 panic。
 type panicTransporter struct {
 	// cause 是 ListenAndServe 应抛出的原始 panic 值。
-	cause error
+	cause any
 }
 
 // shutdownFailureTransporter 模拟运行正常但优雅关闭失败的底层 transport。
@@ -214,6 +214,7 @@ func TestShutdownCallerDeadlineDoesNotPoisonSharedStop(t *testing.T) {
 	shortCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	if err := instance.Shutdown(shortCtx); !errcode.IsCode[ErrorCode](err, ErrCodeShutdownFailed) ||
+		!errcode.IsCode[ErrorCode](err, ErrCodeShutdownWaitInterrupted) ||
 		!errors.Is(err, ErrShutdownWaitInterrupted) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected caller deadline error, got=%v", err)
 	}
@@ -271,6 +272,24 @@ func TestRunConvertsTransportPanicToError(t *testing.T) {
 	}
 }
 
+// TestRunConvertsNonErrorTransportPanicToCodedError 验证非 error panic 同样不会突破 web.Server 返回合同。
+// 测试方法：注入抛出字符串的 transport，断言 Run 返回稳定运行错误码和可定位的 panic 阶段。
+func TestRunConvertsNonErrorTransportPanicToCodedError(t *testing.T) {
+	instance, err := New(
+		Config{},
+		WithHertzOptions(server.WithTransport(func(_ *config.Options) network.Transporter {
+			return &panicTransporter{cause: "transport panic"}
+		})),
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	err = instance.Run(context.Background())
+	if !errcode.IsCode[ErrorCode](err, ErrCodeRunFailed) || !strings.Contains(err.Error(), "stage=engine_run") {
+		t.Fatalf("expected coded non-error panic, got=%v", err)
+	}
+}
+
 // TestShutdownFailureIsSharedWithRun 验证底层停止失败不会被任一生命周期入口吞掉。
 // 测试方法：注入关闭后返回 sentinel 的 transport，断言 Shutdown 与 Run 均返回停止错误码并保留 cause。
 func TestShutdownFailureIsSharedWithRun(t *testing.T) {
@@ -310,62 +329,6 @@ func TestHertzNotRunningErrorVersionLock(t *testing.T) {
 	}
 	if err := instance.engine.Shutdown(context.Background()); !isHertzNotRunningError(err) {
 		t.Fatalf("unexpected Hertz not-running error: %v", err)
-	}
-}
-
-// TestMiddlewareUsesNativeHertzOrder 验证 provider 保留 Hertz Middleware 声明与执行顺序。
-// 测试方法：注册两个原生 Middleware 和一个 Handler，发起真实请求并断言执行序列。
-func TestMiddlewareUsesNativeHertzOrder(t *testing.T) {
-	var mu sync.Mutex
-	order := make([]string, 0, 3)
-	appendStage := func(stage string) {
-		mu.Lock()
-		order = append(order, stage)
-		mu.Unlock()
-	}
-	instance := newStandardTestServerWithOptions(
-		t,
-		[]Option{
-			WithMiddleware(
-				func(ctx context.Context, request *app.RequestContext) {
-					appendStage("first")
-					request.Next(ctx)
-				},
-				func(ctx context.Context, request *app.RequestContext) {
-					appendStage("second")
-					request.Next(ctx)
-				},
-			),
-			WithRoutes(func(router *route.RouterGroup) error {
-				router.GET("/order", func(_ context.Context, request *app.RequestContext) {
-					appendStage("handler")
-					request.String(consts.StatusOK, "ok")
-				})
-				return nil
-			}),
-		},
-	)
-	runResult := make(chan error, 1)
-	go func() { runResult <- instance.Run(context.Background()) }()
-	waitForRunning(t, instance)
-	response, err := http.Get("http://" + instance.address + "/order")
-	if err != nil {
-		t.Fatalf("request server: %v", err)
-	}
-	_, _ = io.Copy(io.Discard, response.Body)
-	if err := response.Body.Close(); err != nil {
-		t.Fatalf("close response body: %v", err)
-	}
-	if err := instance.Shutdown(context.Background()); err != nil {
-		t.Fatalf("shutdown server: %v", err)
-	}
-	if err := waitForError(t, runResult); err != nil {
-		t.Fatalf("run result: %v", err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if !reflect.DeepEqual(order, []string{"first", "second", "handler"}) {
-		t.Fatalf("unexpected middleware order: %v", order)
 	}
 }
 

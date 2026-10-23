@@ -1,7 +1,6 @@
 package webhertz
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -10,12 +9,6 @@ import (
 
 // ErrorCode 是 web-hertz 模块稳定错误码类型。
 type ErrorCode = errcode.StringCode
-
-var (
-	// ErrShutdownWaitInterrupted 标记 Shutdown 仅因当前调用者 context 结束而提前返回。
-	// 典型场景：调用方使用 errors.Is 分支，避免把 caller timeout 误判为底层共享停止结果。
-	ErrShutdownWaitInterrupted = errors.New("web-hertz shutdown wait interrupted")
-)
 
 const (
 	// ErrCodeConfigInvalid 表示 Hertz typed Config 存在非法字段。
@@ -34,6 +27,14 @@ const (
 	ErrCodeRunFailed ErrorCode = "web_hertz.run.failed"
 	// ErrCodeShutdownFailed 表示停止事务或当前调用者等待阶段失败。
 	ErrCodeShutdownFailed ErrorCode = "web_hertz.shutdown.failed"
+	// ErrCodeShutdownWaitInterrupted 表示当前 Shutdown 调用者停止等待，但共享停止事务仍继续执行。
+	ErrCodeShutdownWaitInterrupted ErrorCode = "web_hertz.shutdown.wait_interrupted"
+)
+
+var (
+	// ErrShutdownWaitInterrupted 标记 Shutdown 仅因当前调用者 context 结束而提前返回。
+	// 典型场景：调用方使用 errors.Is 分支，避免把 caller timeout 误判为底层共享停止结果。
+	ErrShutdownWaitInterrupted = errcode.New[ErrorCode](ErrCodeShutdownWaitInterrupted, "web-hertz shutdown wait interrupted")
 )
 
 // errorForConfigInvalid 构造配置校验错误。

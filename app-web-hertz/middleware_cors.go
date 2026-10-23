@@ -2,6 +2,8 @@ package appwebhertz
 
 import (
 	"context"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -9,6 +11,123 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
+
+const (
+	// defaultCORSMaxAge 是浏览器缓存成功预检结果的默认时间。
+	defaultCORSMaxAge = 12 * time.Hour
+)
+
+var (
+	// defaultCORSMethods 是未显式声明时允许的安全常用 Method 集合。
+	defaultCORSMethods = []string{"GET", "HEAD", "POST", "OPTIONS"}
+	// defaultCORSHeaders 是未显式声明时允许浏览器发送的基础 Header 集合。
+	defaultCORSHeaders = []string{"Accept", "Content-Type", "Origin"}
+)
+
+// CORSConfig 描述静态跨域策略；默认关闭且不隐式放开任意 Origin。
+type CORSConfig struct {
+	// Enabled 决定是否安装 CORS；默认 false。
+	Enabled bool `yaml:"enabled"`
+	// AllowOrigins 是允许的 http/https Origin 精确值；"*" 表示任意 Origin。
+	AllowOrigins []string `yaml:"allowOrigins"`
+	// AllowMethods 是预检响应允许的 HTTP Method；空值使用安全常用集合。
+	AllowMethods []string `yaml:"allowMethods"`
+	// AllowHeaders 是预检响应允许客户端发送的 Header；空值使用基础集合。
+	AllowHeaders []string `yaml:"allowHeaders"`
+	// ExposeHeaders 是普通跨域响应允许浏览器读取的 Header。
+	ExposeHeaders []string `yaml:"exposeHeaders"`
+	// AllowCredentials 决定是否允许 Cookie、Authorization 等凭据；不能与 "*" Origin 组合。
+	AllowCredentials bool `yaml:"allowCredentials"`
+	// MaxAge 是预检结果缓存时间；零值使用 12h，负值非法。
+	MaxAge time.Duration `yaml:"maxAge"`
+}
+
+// resolveCORSConfig 校验静态白名单的安全组合并归一化 Method/Header。
+func resolveCORSConfig(input CORSConfig) (CORSConfig, error) {
+	// 第一阶段：先固定容量与 Origin 安全边界，通配符凭据组合不得进入 Handler 构造。
+	if input.MaxAge < 0 {
+		return CORSConfig{}, errorForConfigInvalid("op=app_web_hertz.resolve_config result=failed stage=validate_cors reason=max_age_negative")
+	}
+	if input.MaxAge == 0 {
+		input.MaxAge = defaultCORSMaxAge
+	}
+	origins, allowAll, err := normalizeCORSOrigins(input.AllowOrigins)
+	if err != nil {
+		return CORSConfig{}, err
+	}
+	if allowAll && input.AllowCredentials {
+		return CORSConfig{}, errorForConfigInvalid("op=app_web_hertz.resolve_config result=failed stage=validate_cors reason=wildcard_credentials_conflict")
+	}
+	// 第二阶段：归一化浏览器协商字段，输出 slice 与调用方输入隔离。
+	methods, err := normalizeHTTPMethods(input.AllowMethods)
+	if err != nil {
+		return CORSConfig{}, err
+	}
+	allowHeaders, err := normalizeHTTPHeaders(input.AllowHeaders, defaultCORSHeaders, "allow_headers")
+	if err != nil {
+		return CORSConfig{}, err
+	}
+	exposeHeaders, err := normalizeHTTPHeaders(input.ExposeHeaders, nil, "expose_headers")
+	if err != nil {
+		return CORSConfig{}, err
+	}
+	input.AllowOrigins, input.AllowMethods = origins, methods
+	input.AllowHeaders, input.ExposeHeaders = allowHeaders, exposeHeaders
+	return input, nil
+}
+
+// normalizeCORSOrigins 复制并校验 Origin 精确值，返回是否包含通配符。
+func normalizeCORSOrigins(input []string) ([]string, bool, error) {
+	result := make([]string, 0, len(input))
+	allowAll := false
+	// 每个 Origin 要么是唯一通配符，要么是无用户信息、路径、查询和片段的 http/https authority。
+	for _, raw := range input {
+		origin := strings.TrimSpace(raw)
+		if origin == "*" {
+			allowAll = true
+			result = append(result, origin)
+			continue
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+			return nil, false, errorForConfigInvalid("op=app_web_hertz.resolve_config result=failed stage=validate_cors reason=origin_invalid")
+		}
+		result = append(result, strings.TrimSuffix(origin, "/"))
+	}
+	return deduplicateStrings(result), allowAll, nil
+}
+
+// normalizeHTTPMethods 归一化 Method；空输入使用安全默认集合。
+func normalizeHTTPMethods(input []string) ([]string, error) {
+	if len(input) == 0 {
+		return append([]string{}, defaultCORSMethods...), nil
+	}
+	result := make([]string, 0, len(input))
+	for _, raw := range input {
+		method := strings.ToUpper(strings.TrimSpace(raw))
+		if !validHTTPToken(method) {
+			return nil, errorForConfigInvalid("op=app_web_hertz.resolve_config result=failed stage=validate_cors reason=method_invalid")
+		}
+		result = append(result, method)
+	}
+	return deduplicateStrings(result), nil
+}
+
+// normalizeHTTPHeaders 归一化 Header 名称；空输入按调用方给定默认值处理。
+func normalizeHTTPHeaders(input, defaults []string, stage string) ([]string, error) {
+	if len(input) == 0 {
+		return append([]string{}, defaults...), nil
+	}
+	result := make([]string, 0, len(input))
+	for _, raw := range input {
+		header := strings.TrimSpace(raw)
+		if !validHTTPToken(header) {
+			return nil, errorForConfigInvalid(messagef("op=app_web_hertz.resolve_config result=failed stage=validate_cors reason=%s_invalid", stage))
+		}
+		result = append(result, http.CanonicalHeaderKey(header))
+	}
+	return deduplicateStrings(result), nil
+}
 
 // corsPolicy 保存构造期归一化且请求期只读的跨域策略。
 type corsPolicy struct {

@@ -17,6 +17,10 @@ const (
 	ErrCodeConfigLoadFailed ErrorCode = "app_web_hertz.config_load_failed"
 	// ErrCodeDeclarationInvalid 表示依赖、应用组件或 Option 声明非法。
 	ErrCodeDeclarationInvalid ErrorCode = "app_web_hertz.declaration_invalid"
+	// ErrCodeRouteRegistrationFailed 表示 Controller 手工路由注册失败。
+	ErrCodeRouteRegistrationFailed ErrorCode = "app_web_hertz.route_registration_failed"
+	// ErrCodeMiddlewareExecutionFailed 表示内建请求 Middleware 的运行阶段失败。
+	ErrCodeMiddlewareExecutionFailed ErrorCode = "app_web_hertz.middleware_execution_failed"
 	// ErrCodeServerBuildFailed 表示 web-hertz Server 构建失败。
 	ErrCodeServerBuildFailed ErrorCode = "app_web_hertz.server_build_failed"
 	// ErrCodeModuleRegisterFailed 表示 IOC Module 无法注册托管 Server bean。
@@ -40,6 +44,16 @@ func errorForConfigLoadFailed(message string, cause ...error) error {
 // errorForDeclarationInvalid 构造应用装配声明错误。
 func errorForDeclarationInvalid(message string, cause ...error) error {
 	return buildError(ErrCodeDeclarationInvalid, message, cause...)
+}
+
+// errorForRouteRegistrationFailed 构造 Controller 手工路由注册阶段错误。
+func errorForRouteRegistrationFailed(message string, cause ...error) error {
+	return buildError(ErrCodeRouteRegistrationFailed, message, cause...)
+}
+
+// errorForMiddlewareExecutionFailed 构造内建请求 Middleware 运行阶段错误。
+func errorForMiddlewareExecutionFailed(message string, cause ...error) error {
+	return buildError(ErrCodeMiddlewareExecutionFailed, message, cause...)
 }
 
 // errorForServerBuildFailed 构造 web-hertz Server 构建阶段错误。

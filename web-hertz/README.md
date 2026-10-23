@@ -81,6 +81,7 @@ func ResolveConfig(input Config) (Config, error)
 func WithNoRoute(handlers ...app.HandlerFunc) Option
 func WithNoMethod(handlers ...app.HandlerFunc) Option
 func WithRequestObservers(observers ...RequestObserver) Option
+const ErrCodeShutdownWaitInterrupted ErrorCode
 var ErrShutdownWaitInterrupted error
 ```
 
@@ -194,7 +195,7 @@ new -> starting -> running -> stopping -> stopped
 2. `new` 状态调用时直接转为 `stopped` 并返回 nil，后续 Run 返回状态错误。
 3. `starting/running` 状态只触发一次底层 Hertz Shutdown；并发调用共享同一停止结果。
 4. 每次调用的 ctx 只约束当前调用者等待；一个短 deadline 不得截断其他调用者共享的停止事务。
-5. caller context 先结束时仍返回 `web_hertz.shutdown.failed` 并保留 context cause，同时可用 `errors.Is(err, webhertz.ErrShutdownWaitInterrupted)` 与底层稳定停止失败分支。
+5. caller context 先结束时仍返回 `web_hertz.shutdown.failed` 并保留 context cause；可用错误码 `web_hertz.shutdown.wait_interrupted` 或 `errors.Is(err, webhertz.ErrShutdownWaitInterrupted)` 分支，且不会污染底层稳定停止结果。
 6. 底层停止预算使用应用全部原生 Option 后的最终 `ExitWaitTimeout`；Hertz Shutdown hook、连接排空和 transport 停止均受该预算约束。
 7. 已完成停止时重复调用返回首次稳定停止结果，不重复注销或释放资源。
 8. 公共 Shutdown 不调用 Hertz `Engine.Close()`；当前没有绕过优雅停止的强制关闭入口。
@@ -210,7 +211,7 @@ new -> starting -> running -> stopping -> stopped
 | 重复或并发运行 | `transition_state` |
 | Hertz 初始化或监听失败 | `engine_run` |
 | 优雅停止失败 | `engine_shutdown` |
-| 当前 Shutdown 调用等待取消/超时 | `wait`；错误链包含 `ErrShutdownWaitInterrupted` |
+| 当前 Shutdown 调用等待取消/超时 | `wait`；错误链包含 `web_hertz.shutdown.wait_interrupted` 和 `ErrShutdownWaitInterrupted` |
 
 错误必须保留底层 cause，并携带 `op/result/reason/stage`；地址、路由模式等低风险诊断信息可以记录，TLS 私钥、registry token、请求体和完整凭据不得进入错误或日志。
 
@@ -241,15 +242,15 @@ op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 
 1. `doc.go`：package 边界摘要。
 2. `config.go`：Config、默认值、解析与 Hertz Option 映射。
-3. `server.go`：Hertz 构造、Registry 能力拒绝与路由注册事务。
+3. `server.go`：Hertz 构造与 Registry 能力拒绝。
 4. `lifecycle.go`：单运行周期状态机、Run/Shutdown 协调和错误归一化。
-5. `route.go`：RouteFunc 合同。
+5. `route.go`：RouteFunc 合同、顺序注册事务与 panic 阶段包装。
 6. `no_route.go`、`no_method.go`：404/405 窄 Handler 声明。
 7. `options.go`：Hertz Option、实例 Logger、Middleware、Routes 与构造计划。
 8. `diagnostic_log.go`：实例 Logger 与 standalone hlog 降级出口。
 9. `errors.go`：可分支错误码和阶段包装。
 10. `request_observation.go`、`request_observer*.go`：完成态 VO、Observer 合同、Option 和私有 Middleware。
-11. `*_test.go`：配置、404/405、完成态观测、构造和生命周期合同测试。
+11. `*_test.go`：配置、404/405、完成态观测、构造和生命周期合同测试；原生 Middleware 顺序归入构造测试。
 
 ## 相关文档
 

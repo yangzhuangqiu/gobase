@@ -2,7 +2,6 @@ package webhertz
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"sync"
 	"time"
@@ -10,7 +9,6 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/app/server/registry"
 	"github.com/cloudwego/hertz/pkg/common/config"
-	"github.com/cloudwego/hertz/pkg/route"
 	baselog "github.com/yangzhuangqiu/gobase/log"
 	baseweb "github.com/yangzhuangqiu/gobase/web"
 )
@@ -153,40 +151,4 @@ func validateRegistry(options *config.Options) error {
 		return nil
 	}
 	return errorForRegistryUnsupported("op=web_hertz.new result=failed stage=validate_registry reason=spin_registration_hook_unavailable")
-}
-
-// registerRoutes 执行顺序确定的路由注册事务。
-// 阶段角色：普通 error 停止构造；编程错误 panic 补充阶段语义后继续传播。
-func registerRoutes(router *route.RouterGroup, routes []RouteFunc) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			panic(&routeRegistrationPanic{cause: recovered})
-		}
-	}()
-	for index, route := range routes {
-		if err := route(router); err != nil {
-			return errorForRouteRegistrationFailed(
-				messagef("op=web_hertz.new result=failed stage=register_routes route_index=%d reason=route_error", index),
-				err,
-			)
-		}
-	}
-	return nil
-}
-
-// routeRegistrationPanic 为 Hertz 路由编程错误补充稳定构造阶段。
-type routeRegistrationPanic struct {
-	// cause 保存原始 panic 值，便于测试和故障定位。
-	cause any
-}
-
-// Error 返回包含 register_routes 阶段和原始 panic 的诊断文本。
-func (this *routeRegistrationPanic) Error() string {
-	return fmt.Sprintf("op=web_hertz.new result=panic stage=register_routes reason=%v", this.cause)
-}
-
-// Unwrap 在原始 panic 为 error 时保留其错误链身份。
-func (this *routeRegistrationPanic) Unwrap() error {
-	cause, _ := this.cause.(error)
-	return cause
 }

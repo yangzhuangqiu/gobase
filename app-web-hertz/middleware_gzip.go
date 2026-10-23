@@ -13,6 +13,65 @@ import (
 	baselog "github.com/yangzhuangqiu/gobase/log"
 )
 
+const (
+	// defaultGzipMinLength 是响应进入压缩阶段的默认最小字节数。
+	defaultGzipMinLength = 1024
+	// defaultGzipLevel 使用标准库速度与压缩率平衡策略。
+	defaultGzipLevel = gzip.DefaultCompression
+)
+
+var (
+	// defaultGzipExcludedContentTypes 是默认不重复压缩的二进制媒体类型前缀或精确值。
+	defaultGzipExcludedContentTypes = []string{
+		"image/", "audio/", "video/", "application/gzip", "application/pdf", "application/zip", "application/octet-stream",
+	}
+)
+
+// GzipConfig 描述普通内存响应压缩策略；默认关闭。
+type GzipConfig struct {
+	// Enabled 决定是否安装 Gzip；默认 false。
+	Enabled bool `yaml:"enabled"`
+	// Level 是 1..9 的 gzip 压缩级别；0 或 -1 使用标准库默认级别。
+	Level int `yaml:"level"`
+	// MinLength 是进入压缩的最小原始响应字节数；零值使用 1024，负值非法。
+	MinLength int `yaml:"minLength"`
+	// ExcludedContentTypes 是不压缩的媒体类型前缀或精确值；空值使用模块安全默认集合。
+	ExcludedContentTypes []string `yaml:"excludedContentTypes"`
+}
+
+// resolveGzipConfig 校验压缩级别和容量阈值，并复制排除类型。
+func resolveGzipConfig(input GzipConfig) (GzipConfig, error) {
+	if input.Level == 0 || input.Level == defaultGzipLevel {
+		input.Level = defaultGzipLevel
+	} else if input.Level < gzip.BestSpeed || input.Level > gzip.BestCompression {
+		return GzipConfig{}, errorForConfigInvalid(messagef("op=app_web_hertz.resolve_config result=failed stage=validate_gzip reason=level_invalid level=%d", input.Level))
+	}
+	if input.MinLength < 0 {
+		return GzipConfig{}, errorForConfigInvalid("op=app_web_hertz.resolve_config result=failed stage=validate_gzip reason=min_length_negative")
+	}
+	if input.MinLength == 0 {
+		input.MinLength = defaultGzipMinLength
+	}
+	if len(input.ExcludedContentTypes) == 0 {
+		input.ExcludedContentTypes = append([]string{}, defaultGzipExcludedContentTypes...)
+	} else {
+		input.ExcludedContentTypes = normalizeMediaTypes(input.ExcludedContentTypes)
+	}
+	return input, nil
+}
+
+// normalizeMediaTypes 归一化并去重 Gzip 排除类型；空项被忽略。
+func normalizeMediaTypes(input []string) []string {
+	result := make([]string, 0, len(input))
+	for _, raw := range input {
+		mediaType := strings.ToLower(strings.TrimSpace(raw))
+		if mediaType != "" {
+			result = append(result, mediaType)
+		}
+	}
+	return deduplicateStrings(result)
+}
+
 // newGzipMiddleware 构造只持有当前配置快照的普通响应压缩 Handler。
 // 阶段角色：标准链最内层、应用 Filter 外层；只处理完整内存响应，不接管流式响应。
 func newGzipMiddleware(config GzipConfig, predicate GzipPredicate, logger baselog.Logger) app.HandlerFunc {
@@ -29,6 +88,7 @@ func newGzipMiddleware(config GzipConfig, predicate GzipPredicate, logger baselo
 			// 压缩失败保留未压缩响应，不把实现错误升级为第二次请求失败。
 			logger.Error(ctx, "Response compression failed",
 				baselog.F("op", "app_web_hertz.gzip"), baselog.F("result", "failed"), baselog.F("reason", "compression_failed"),
+				baselog.Err(err),
 			)
 		}
 	}
@@ -63,14 +123,14 @@ func compressResponse(request *app.RequestContext, level int) error {
 	buffer := bytes.NewBuffer(make([]byte, 0, len(body)/2))
 	writer, err := gzip.NewWriterLevel(buffer, level)
 	if err != nil {
-		return err
+		return errorForMiddlewareExecutionFailed("op=app_web_hertz.gzip result=failed stage=create_writer reason=writer_create_failed", err)
 	}
 	if _, err = writer.Write(body); err != nil {
 		_ = writer.Close()
-		return err
+		return errorForMiddlewareExecutionFailed("op=app_web_hertz.gzip result=failed stage=compress_body reason=writer_write_failed", err)
 	}
 	if err = writer.Close(); err != nil {
-		return err
+		return errorForMiddlewareExecutionFailed("op=app_web_hertz.gzip result=failed stage=finalize_body reason=writer_close_failed", err)
 	}
 	// 第二阶段：压缩全部成功后一次性提交 Body/Header，避免发布半压缩响应。
 	compressed := buffer.Bytes()

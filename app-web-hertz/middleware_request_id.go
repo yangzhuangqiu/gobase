@@ -12,11 +12,35 @@ import (
 )
 
 const (
+	// defaultRequestIDHeader 是 Request ID 启用后的默认请求与响应 Header。
+	defaultRequestIDHeader = "X-Request-ID"
 	// requestIDContextKey 是 RequestContext 中保存已校验 Request ID 的私有键。
 	requestIDContextKey = "gobase.app_web_hertz.request_id"
 	// maxRequestIDLength 限制入站和生成标识容量，避免日志与 Header 放大。
 	maxRequestIDLength = 128
 )
+
+// RequestIDConfig 描述请求关联标识能力；默认关闭。
+type RequestIDConfig struct {
+	// Enabled 决定是否安装 Request ID；默认 false。
+	Enabled bool `yaml:"enabled"`
+	// Header 是读取和回写标识的 HTTP Header；空值默认 X-Request-ID。
+	Header string `yaml:"header"`
+	// TrustIncoming 决定是否复用语法合法的入站值；默认 false，避免客户端伪造内部关联标识。
+	TrustIncoming bool `yaml:"trustIncoming"`
+}
+
+// resolveRequestIDConfig 校验 Header token 并固定默认 Header。
+func resolveRequestIDConfig(input RequestIDConfig) (RequestIDConfig, error) {
+	input.Header = strings.TrimSpace(input.Header)
+	if input.Header == "" {
+		input.Header = defaultRequestIDHeader
+	}
+	if !validHTTPToken(input.Header) {
+		return RequestIDConfig{}, errorForConfigInvalid("op=app_web_hertz.resolve_config result=failed stage=validate_request_id reason=header_invalid")
+	}
+	return input, nil
+}
 
 // newRequestIDMiddleware 构造无进程级状态的请求标识 Middleware。
 // 阶段角色：标准链最外层，使 Recovery、CORS、Gzip、Filter 和业务 Handler 均能读取同一标识。
@@ -36,8 +60,17 @@ func newRequestIDMiddleware(config RequestIDConfig, generator RequestIDGenerator
 		if requestID == "" {
 			generated, err := generator(ctx, request)
 			if err != nil || !validRequestID(generated) {
+				reason := "generated_value_invalid"
+				if err != nil {
+					reason = "generator_failed"
+				}
+				executionErr := errorForMiddlewareExecutionFailed(
+					messagef("op=app_web_hertz.request_id result=failed stage=generate reason=%s", reason),
+					err,
+				)
 				logger.Error(ctx, "Request ID generation failed",
-					baselog.F("op", "app_web_hertz.request_id"), baselog.F("result", "failed"), baselog.F("reason", "generation_failed"),
+					baselog.F("op", "app_web_hertz.request_id"), baselog.F("result", "failed"), baselog.F("reason", reason),
+					baselog.Err(executionErr),
 				)
 				request.AbortWithStatusJSON(consts.StatusInternalServerError, map[string]string{"code": "request_id_generation_failed"})
 				return

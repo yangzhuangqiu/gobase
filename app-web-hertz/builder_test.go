@@ -141,7 +141,8 @@ func TestBuildServerRegistersControllersInOrderAndStopsOnError(t *testing.T) {
 		}),
 	}
 	err := buildServerTestError(Config{}, serverComponents{controllers: controllers})
-	if !errcode.IsCode[ErrorCode](err, ErrCodeServerBuildFailed) || !errors.Is(err, root) {
+	if !errcode.IsCode[ErrorCode](err, ErrCodeServerBuildFailed) ||
+		!errcode.IsCode[ErrorCode](err, ErrCodeRouteRegistrationFailed) || !errors.Is(err, root) {
 		t.Fatalf("expected layered server build error, got=%v", err)
 	}
 	if !reflect.DeepEqual(order, []string{"first", "second"}) {

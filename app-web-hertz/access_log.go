@@ -2,6 +2,8 @@ package appwebhertz
 
 import (
 	"context"
+	"strings"
+	"time"
 
 	baselog "github.com/yangzhuangqiu/gobase/log"
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
@@ -11,6 +13,33 @@ const (
 	// accessLoggerName 是根 LoggerFactory 下稳定、低基数的 HTTP Access Log 组件名。
 	accessLoggerName = "web.hertz.request"
 )
+
+// AccessLogConfig 描述完成态请求日志的启用和应用侧过滤策略；默认关闭。
+type AccessLogConfig struct {
+	// Enabled 决定是否把完成态快照写入根 LoggerFactory；默认 false。
+	Enabled bool `yaml:"enabled"`
+	// SkipPaths 是不写访问日志的精确请求路径；不支持通配符且不得包含 query/fragment。
+	SkipPaths []string `yaml:"skipPaths"`
+	// SlowThreshold 是慢请求判定阈值；零值表示不区分慢请求，负值非法。
+	SlowThreshold time.Duration `yaml:"slowThreshold"`
+}
+
+// resolveAccessLogConfig 校验慢请求阈值并把跳过路径冻结为去重的精确路径集合。
+func resolveAccessLogConfig(input AccessLogConfig) (AccessLogConfig, error) {
+	if input.SlowThreshold < 0 {
+		return AccessLogConfig{}, errorForConfigInvalid("op=app_web_hertz.resolve_config result=failed stage=validate_access_log reason=slow_threshold_negative")
+	}
+	paths := make([]string, 0, len(input.SkipPaths))
+	for _, raw := range input.SkipPaths {
+		path := strings.TrimSpace(raw)
+		if path == "" || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") {
+			return AccessLogConfig{}, errorForConfigInvalid("op=app_web_hertz.resolve_config result=failed stage=validate_access_log reason=skip_path_invalid")
+		}
+		paths = append(paths, path)
+	}
+	input.SkipPaths = deduplicateStrings(paths)
+	return input, nil
+}
 
 // accessLogObserver 把 Hertz 完成态快照映射为 app-web-hertz 自有的结构化访问日志。
 type accessLogObserver struct {

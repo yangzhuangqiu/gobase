@@ -125,15 +125,26 @@ func TestRequestIDTrustAndGenerationFailure(t *testing.T) {
 		t.Fatalf("expected trusted response header, got=%s", trusted.Response.Header.Get("X-Correlation-ID"))
 	}
 
-	// 第二阶段：关闭信任并模拟熵源失败，验证失败封闭且业务 Handler 不执行。
+	// 第二阶段：关闭信任并模拟熵源失败，验证失败封闭、错误编码且业务 Handler 不执行。
 	downstreamCalled := false
 	failed := newMiddlewareTestRequest("GET", "/failed")
+	factory := &recordingLoggerFactory{}
+	root := errors.New("entropy unavailable")
 	failedHandler := newRequestIDMiddleware(RequestIDConfig{Header: defaultRequestIDHeader}, func(_ context.Context, _ *app.RequestContext) (string, error) {
-		return "", errors.New("entropy unavailable")
-	}, testServerLoggers().middleware)
+		return "", root
+	}, factory.Get(middlewareLoggerName))
 	executeMiddlewareTestChain(failed, []app.HandlerFunc{failedHandler, func(_ context.Context, _ *app.RequestContext) { downstreamCalled = true }})
 	if failed.Response.StatusCode() != consts.StatusInternalServerError || downstreamCalled {
 		t.Fatalf("unexpected generation failure: status=%d downstream=%t", failed.Response.StatusCode(), downstreamCalled)
+	}
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	if len(factory.events) != 1 {
+		t.Fatalf("expected one request ID failure event, got=%+v", factory.events)
+	}
+	loggedErr, ok := factory.events[0].fields["error"].(error)
+	if !ok || !errcode.IsCode[ErrorCode](loggedErr, ErrCodeMiddlewareExecutionFailed) || !errors.Is(loggedErr, root) {
+		t.Fatalf("expected coded request ID failure with cause, got=%v", loggedErr)
 	}
 }
 
@@ -218,8 +229,8 @@ func TestPrepareRequestObserversRequiresFactoryAndAppliesAccessLogPolicy(t *test
 	}
 }
 
-// TestGzipMiddlewareCompressesEligibleResponseAndRespectsGuards 验证 Gzip 压缩完整响应，同时尊重 q=0 和媒体类型排除。
-// 测试方法：对合格文本响应解压校验原文，再发送 q=0 与 image/png 响应并断言保持未压缩。
+// TestGzipMiddlewareCompressesEligibleResponseAndRespectsGuards 验证 Gzip 压缩完整响应、保护条件和失败错误码。
+// 测试方法：对合格文本响应解压校验原文，再验证 q=0、image/png 和非法压缩级别的结果。
 func TestGzipMiddlewareCompressesEligibleResponseAndRespectsGuards(t *testing.T) {
 	// 第一阶段：压缩满足协商、长度和媒体类型条件的完整响应，并解压验证内容无损。
 	config, err := resolveGzipConfig(GzipConfig{Enabled: true, MinLength: 4})
@@ -262,6 +273,11 @@ func TestGzipMiddlewareCompressesEligibleResponseAndRespectsGuards(t *testing.T)
 				t.Fatalf("expected uncompressed response: headers=%s body=%q", request.Response.Header.Header(), request.Response.Body())
 			}
 		})
+	}
+
+	// 第三阶段：绕过配置校验注入非法 level，确认内部压缩失败进入稳定 Middleware 错误码。
+	if err := compressResponse(newMiddlewareTestRequest("GET", "/invalid-level"), gzip.BestCompression+1); !errcode.IsCode[ErrorCode](err, ErrCodeMiddlewareExecutionFailed) {
+		t.Fatalf("expected coded gzip execution error, got=%v", err)
 	}
 }
 

@@ -3,9 +3,9 @@ package webhertz
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
+	"github.com/yangzhuangqiu/gobase/errcode"
 	baselog "github.com/yangzhuangqiu/gobase/log"
 )
 
@@ -184,7 +184,12 @@ func (this *Server) executeEngineRun() {
 func (this *Server) callEngineRun() (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("stage=engine_run reason=panic: %w", panicAsError(recovered))
+			message := messagef("op=web_hertz.run result=failed stage=engine_run reason=panic panic=%v", recovered)
+			if cause, ok := recovered.(error); ok {
+				err = errorForRunFailed(message, cause)
+				return
+			}
+			err = errorForRunFailed(message)
 		}
 	}()
 	return this.engine.Run()
@@ -325,6 +330,10 @@ func (this *Server) resolveRunResult() error {
 	if engineErr == nil {
 		return nil
 	}
+	// callEngineRun 已为 panic 建立运行边界，普通 Hertz error 才在此补充 code。
+	if errcode.IsCode[ErrorCode](engineErr, ErrCodeRunFailed) {
+		return engineErr
+	}
 	return errorForRunFailed("op=web_hertz.run result=failed stage=engine_run reason=engine_error", engineErr)
 }
 
@@ -337,14 +346,6 @@ func (this *Server) resolveShutdownResult() error {
 		return nil
 	}
 	return errorForShutdownFailed("op=web_hertz.shutdown result=failed stage=engine_shutdown reason=shutdown_failed", err)
-}
-
-// panicAsError 把任意 panic 值转为可包装 cause。
-func panicAsError(value any) error {
-	if err, ok := value.(error); ok {
-		return err
-	}
-	return fmt.Errorf("%v", value)
 }
 
 // isHertzNotRunningError 归一化 Hertz 未导出的重复停止状态错误。

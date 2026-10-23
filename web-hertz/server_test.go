@@ -3,8 +3,11 @@ package webhertz
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -12,9 +15,69 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server/registry"
 	"github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
+	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/cloudwego/hertz/pkg/route"
 	"github.com/yangzhuangqiu/gobase/errcode"
 )
+
+// TestMiddlewareUsesNativeHertzOrder 验证 provider 构造后保留 Hertz Middleware 声明与执行顺序。
+// 测试方法：注册两个原生 Middleware 和一个 Handler，发起真实请求并断言执行序列。
+func TestMiddlewareUsesNativeHertzOrder(t *testing.T) {
+	// 第一阶段：记录两个 Middleware 与最终 Handler 的实际进入顺序。
+	var mu sync.Mutex
+	order := make([]string, 0, 3)
+	appendStage := func(stage string) {
+		mu.Lock()
+		order = append(order, stage)
+		mu.Unlock()
+	}
+	instance := newStandardTestServerWithOptions(
+		t,
+		[]Option{
+			WithMiddleware(
+				func(ctx context.Context, request *app.RequestContext) {
+					appendStage("first")
+					request.Next(ctx)
+				},
+				func(ctx context.Context, request *app.RequestContext) {
+					appendStage("second")
+					request.Next(ctx)
+				},
+			),
+			WithRoutes(func(router *route.RouterGroup) error {
+				router.GET("/order", func(_ context.Context, request *app.RequestContext) {
+					appendStage("handler")
+					request.String(consts.StatusOK, "ok")
+				})
+				return nil
+			}),
+		},
+	)
+	// 第二阶段：启动真实 Server 并完成一次命中目标路由的请求。
+	runResult := make(chan error, 1)
+	go func() { runResult <- instance.Run(context.Background()) }()
+	waitForRunning(t, instance)
+	response, err := http.Get("http://" + instance.address + "/order")
+	if err != nil {
+		t.Fatalf("request server: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("close response body: %v", err)
+	}
+	if err := instance.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown server: %v", err)
+	}
+	if err := waitForError(t, runResult); err != nil {
+		t.Fatalf("run result: %v", err)
+	}
+	// 第三阶段：停止后读取稳定快照，确认构造声明没有被 provider 重排。
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(order, []string{"first", "second", "handler"}) {
+		t.Fatalf("unexpected middleware order: %v", order)
+	}
+}
 
 // registryStub 仅用于验证 provider 拒绝 Hertz Registry 配置。
 type registryStub struct{}
@@ -148,7 +211,8 @@ func TestNewPreservesRoutePanicSemantics(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected error panic, got=%T", recovered)
 		}
-		if !strings.Contains(panicErr.Error(), "stage=register_routes") || !errors.Is(panicErr, root) {
+		if !errcode.IsCode[ErrorCode](panicErr, ErrCodeRouteRegistrationFailed) ||
+			!strings.Contains(panicErr.Error(), "stage=register_routes") || !errors.Is(panicErr, root) {
 			t.Fatalf("unexpected route panic: %v", panicErr)
 		}
 	}()

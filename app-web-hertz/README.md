@@ -203,6 +203,8 @@ advanced outer Middleware
 | `app_web_hertz.config_invalid` | Server/Middleware 字段或安全组合非法 |
 | `app_web_hertz.config_load_failed` | Manager、Snapshot、scope 解码或 provider 配置非法 |
 | `app_web_hertz.declaration_invalid` | Option、Controller、Filter、Module 或 Registry 声明非法 |
+| `app_web_hertz.route_registration_failed` | Controller 手工路由注册失败，并保留 Registrar cause |
+| `app_web_hertz.middleware_execution_failed` | Request ID、Gzip 等内建 Middleware 运行失败；通过结构化日志观测 |
 | `app_web_hertz.server_build_failed` | Controller 计划或 `web-hertz` 构造失败 |
 | `app_web_hertz.module_register_failed` | 托管 Server bean 无法注册到 IOC |
 | `app_web_hertz.server_state_invalid` | 托管代理在 IOC Init 完成前被调用 |
@@ -241,20 +243,19 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 ## File Map
 
 1. `controller.go`、`route_registrar.go`、`filter.go`、`grouped_filter.go`、`no_*_handler.go`：应用扩展合同和 fallback 排序。
-2. `route.go`、`group_path.go`、`route_path.go`、`route_path_style.go`、`filter_plan.go`：逻辑分组、Filter/路由计划和路径映射。
-3. `configured_config.go`、`middleware_config.go`：完整配置模型、默认值和校验。
-4. `middleware*.go`：固定标准链、typed policy 和四类私有 Middleware 实现。
+2. `route.go`、`automatic_route.go`、`group_path.go`、`route_path.go`、`route_path_style.go`、`filter_plan.go`：逻辑分组、Controller/Filter 计划、自动路由协议和路径映射。
+3. `config.go`、`middleware_config.go`：完整配置模型、默认值、跨能力解析调度与独立 scope 单次读取。
+4. `middleware*.go`：固定标准链、typed policy，以及各能力的配置、校验和私有 Middleware 实现。
 5. `logging.go`：命名 Logger 派生、组装摘要和安全计数字段。
-6. `access_log.go`、`request_observation.go`：内建 Access Log 映射、过滤策略和完成态元数据桥接。
-7. `instrumentation_bundle.go`：后端无关、原子 Option/Middleware 插桩合同。
+6. `access_log.go`、`request_observation.go`：内建 Access Log 配置、映射、过滤策略和完成态元数据桥接。
+7. `instrumentation_bundle.go`：后端无关的原子 Option/Middleware 插桩合同、校验与构造计划。
 8. `model.go`、`builder.go`、`options.go`：完整 IOC 组件快照、私有构造核心和策略 Option。
 9. `definition.go`：组件角色到 IOC Definition 的原子工厂。
 10. `module.go`：IOC Module 声明入口。
-11. `managed_server.go`：IOC 注入、Init、Run/Shutdown 和 Close 适配。
+11. `managed_server.go`、`managed_server_test.go`：IOC 注入、Init、Run/Shutdown、Close 适配及托管生命周期测试。
 12. `runner.go`：app 单 Server Runner 适配。
-13. `config.go`：独立 scope 单次配置读取。
-14. `errors.go`：稳定错误码和 cause 包装。
-15. `*_test.go`：配置、Middleware、Observation、日志、原子 Bundle、路由、IOC 依赖图和真实生命周期测试。
+13. `errors.go`：稳定错误码和 cause 包装。
+14. `*_test.go`：配置、Middleware、Observation、日志、原子 Bundle、路由、IOC 依赖图和真实生命周期测试。
 
 ## 相关文档
 

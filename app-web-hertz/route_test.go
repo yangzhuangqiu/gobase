@@ -412,21 +412,21 @@ func TestControllerRouteDeclarationsFailFast(t *testing.T) {
 		})
 	}
 	// 第二阶段：Any 的非法组合由方法名解析器明确拒绝，不退化成部分注册。
-	if _, _, _, err := parseAutomaticRouteMethod("AnyOrGetEverything"); err == nil {
-		t.Fatal("expected Any combination error")
+	if _, _, _, reason := parseAutomaticRouteMethod("AnyOrGetEverything"); reason != automaticRouteParseAnyCombined {
+		t.Fatalf("expected Any combination reason, got=%q", reason)
 	}
 }
 
 // TestParseAutomaticRouteMethodKeepsOrderPrefixAsPath 验证 `Or` 仅在后接完整动词时作为组合符。
 // 测试方法：解析 GetOrder 与 GetOrPostOrder，断言前者路径后缀未被误拆，后者得到两个精确动词。
 func TestParseAutomaticRouteMethodKeepsOrderPrefixAsPath(t *testing.T) {
-	verbs, suffix, matched, err := parseAutomaticRouteMethod("GetOrder")
-	if err != nil || !matched || len(verbs) != 1 || suffix != "Order" {
-		t.Fatalf("unexpected GetOrder parse verbs=%v suffix=%s matched=%t err=%v", verbs, suffix, matched, err)
+	verbs, suffix, matched, reason := parseAutomaticRouteMethod("GetOrder")
+	if reason != "" || !matched || len(verbs) != 1 || suffix != "Order" {
+		t.Fatalf("unexpected GetOrder parse verbs=%v suffix=%s matched=%t reason=%q", verbs, suffix, matched, reason)
 	}
-	verbs, suffix, matched, err = parseAutomaticRouteMethod("GetOrPostOrder")
-	if err != nil || !matched || len(verbs) != 2 || suffix != "Order" || verbs[1].method != consts.MethodPost {
-		t.Fatalf("unexpected GetOrPostOrder parse verbs=%v suffix=%s matched=%t err=%v", verbs, suffix, matched, err)
+	verbs, suffix, matched, reason = parseAutomaticRouteMethod("GetOrPostOrder")
+	if reason != "" || !matched || len(verbs) != 2 || suffix != "Order" || verbs[1].method != consts.MethodPost {
+		t.Fatalf("unexpected GetOrPostOrder parse verbs=%v suffix=%s matched=%t reason=%q", verbs, suffix, matched, reason)
 	}
 }
 

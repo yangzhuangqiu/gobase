@@ -1,21 +1,9 @@
 package appwebhertz
 
 import (
-	hertzapp "github.com/cloudwego/hertz/pkg/app"
-	hertzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	baseweb "github.com/yangzhuangqiu/gobase/web"
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 )
-
-// instrumentationPlan 保存全部 Bundle 校验后的原子 Hertz 构造片段。
-type instrumentationPlan struct {
-	// hertzOptions 先于调用方原生高级 Option 应用。
-	hertzOptions []hertzconfig.Option
-	// middleware 位于 advanced outer 与标准 Middleware 之间。
-	middleware []hertzapp.HandlerFunc
-	// metadataProviders 把 Trace ID 等完成态关联值桥接给 Request Observer。
-	metadataProviders []webhertz.RequestObservationMetadataProvider
-}
 
 // buildServer 执行配置校验和 web-hertz Server 构造事务。
 //
@@ -124,34 +112,4 @@ func buildResolvedServer(
 		)
 	}
 	return server, nil
-}
-
-// prepareInstrumentationBundles 在 provider 构造前展开并验证全部原子插桩声明。
-// 阶段角色：任何 Bundle 非法都会阻止全部 Hertz Option/Middleware 安装，避免半插桩 Server。
-func prepareInstrumentationBundles(bundles []InstrumentationBundle) (instrumentationPlan, error) {
-	plan := instrumentationPlan{}
-	for bundleIndex, bundle := range bundles {
-		if isNilInterface(bundle) {
-			return instrumentationPlan{}, errorForDeclarationInvalid(messagef("op=app_web_hertz.build result=failed stage=validate_instrumentation reason=bundle_required bundle_index=%d", bundleIndex))
-		}
-		// 先完整校验当前 Bundle，再合并到计划；失败时不会发布当前 Bundle 的任何一半。
-		nativeOptions := bundle.HertzOptions()
-		for optionIndex, option := range nativeOptions {
-			if option.F == nil {
-				return instrumentationPlan{}, errorForDeclarationInvalid(messagef("op=app_web_hertz.build result=failed stage=validate_instrumentation reason=hertz_option_required bundle_index=%d option_index=%d", bundleIndex, optionIndex))
-			}
-		}
-		middleware := bundle.Middleware()
-		for handlerIndex, handler := range middleware {
-			if handler == nil {
-				return instrumentationPlan{}, errorForDeclarationInvalid(messagef("op=app_web_hertz.build result=failed stage=validate_instrumentation reason=middleware_required bundle_index=%d handler_index=%d", bundleIndex, handlerIndex))
-			}
-		}
-		plan.hertzOptions = append(plan.hertzOptions, nativeOptions...)
-		plan.middleware = append(plan.middleware, middleware...)
-		if provider, ok := bundle.(webhertz.RequestObservationMetadataProvider); ok && !isNilInterface(provider) {
-			plan.metadataProviders = append(plan.metadataProviders, provider)
-		}
-	}
-	return plan, nil
 }

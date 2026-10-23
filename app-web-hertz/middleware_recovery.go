@@ -10,6 +10,39 @@ import (
 	baselog "github.com/yangzhuangqiu/gobase/log"
 )
 
+// RecoveryResponseStrategy 定义内建 Recovery 返回给客户端的稳定响应格式。
+type RecoveryResponseStrategy string
+
+const (
+	// RecoveryResponseJSON 返回 JSON 错误码且不暴露 panic 内容；默认策略。
+	RecoveryResponseJSON RecoveryResponseStrategy = "json"
+	// RecoveryResponseText 返回固定纯文本，不暴露 panic 内容。
+	RecoveryResponseText RecoveryResponseStrategy = "text"
+	// RecoveryResponseEmpty 只返回 HTTP 500 状态。
+	RecoveryResponseEmpty RecoveryResponseStrategy = "empty"
+)
+
+// RecoveryConfig 描述 panic 恢复能力；默认关闭。
+type RecoveryConfig struct {
+	// Enabled 决定是否安装 Recovery；默认 false，旧 New 行为不变。
+	Enabled bool `yaml:"enabled"`
+	// Response 选择内建 500 响应；空值默认 json，自定义 Handler 声明后由 Handler 接管。
+	Response RecoveryResponseStrategy `yaml:"response"`
+}
+
+// resolveRecoveryConfig 固化内建响应策略并拒绝未知未来值。
+func resolveRecoveryConfig(input RecoveryConfig) (RecoveryConfig, error) {
+	if input.Response == "" {
+		input.Response = RecoveryResponseJSON
+	}
+	switch input.Response {
+	case RecoveryResponseJSON, RecoveryResponseText, RecoveryResponseEmpty:
+		return input, nil
+	default:
+		return RecoveryConfig{}, errorForConfigInvalid(messagef("op=app_web_hertz.resolve_config result=failed stage=validate_recovery reason=response_unsupported response=%s", input.Response))
+	}
+}
+
 // newRecoveryMiddleware 构造 Hertz Recovery，并按 typed policy 或内建安全策略终结 panic 请求。
 // 阶段角色：位于 Request ID 内层、CORS/Gzip/Filter 外层，保证后续阶段 panic 均转为最终 500。
 func newRecoveryMiddleware(config RecoveryConfig, handler RecoveryHandler, logger baselog.Logger) app.HandlerFunc {
