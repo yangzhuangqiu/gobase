@@ -8,6 +8,7 @@ import (
 	hertzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/prometheus/client_golang/prometheus"
 	appwebhertz "github.com/yangzhuangqiu/gobase/app-web-hertz"
+	baseconfig "github.com/yangzhuangqiu/gobase/config"
 	"github.com/yangzhuangqiu/gobase/ioc"
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 	"go.opentelemetry.io/otel/propagation"
@@ -45,6 +46,10 @@ type moduleOptions struct {
 	tracingEnabled bool
 	// tracingConfig 是冻结的 OTel Hertz 插桩策略。
 	tracingConfig tracingOptions
+	// metricsServerEnabled 决定是否发布由 Runner 消费的独立 Metrics HTTP Server 计划。
+	metricsServerEnabled bool
+	// metricsServerOptions 是冻结的配置 scope 声明。
+	metricsServerOptions metricsServerOptions
 }
 
 // Module 定义按需注册 Metrics/Tracing 适配 bean 的合同。
@@ -69,6 +74,32 @@ func WithPrivatePrometheus(options ...PrometheusOption) ModuleOption {
 // WithSharedPrometheus 声明借用 PrometheusRegistry 并拥有自身 Collector registration 的 bean。
 func WithSharedPrometheus(options ...PrometheusOption) ModuleOption {
 	return declarePrometheusModule(prometheusRegistryShared, options)
+}
+
+// WithMetricsServer 声明独立 Metrics HTTP Server 计划；必须同时声明 private/shared Prometheus。
+//
+// 参数:
+// - options: 配置 scope 等纯声明策略；不得包含 nil。
+//
+// 说明:
+// - 本 Option 不监听端口或启动 goroutine；
+// - Runner 在业务 Server 启动前预绑定端口；
+// - 重复声明或缺少 Prometheus 能力时在 IOC Registry 修改前 fail-fast。
+func WithMetricsServer(options ...MetricsServerOption) ModuleOption {
+	return func(target *moduleOptions) error {
+		if target.metricsServerEnabled {
+			return errorForDeclarationInvalid(
+				"op=app_observe_webhertz.module result=failed stage=declare_metrics_server reason=duplicate_capability",
+			)
+		}
+		resolved, err := resolveMetricsServerOptions(options)
+		if err != nil {
+			return err
+		}
+		target.metricsServerEnabled = true
+		target.metricsServerOptions = resolved
+		return nil
+	}
 }
 
 // WithOpenTelemetry 声明借用 TracerProvider/Propagator 的 OTel Hertz Instrumentation Bundle。
@@ -129,16 +160,23 @@ func (this *module) Register(registry ioc.Registry) error {
 	if err != nil {
 		return err
 	}
+	if resolved.metricsServerEnabled && resolved.prometheusMode == prometheusRegistryDisabled {
+		return errorForDeclarationInvalid(
+			"op=app_observe_webhertz.module result=failed stage=resolve_options reason=metrics_server_requires_prometheus",
+		)
+	}
 	if resolved.prometheusMode == prometheusRegistryDisabled && !resolved.tracingEnabled {
 		return buildError(ErrCodeDeclarationInvalid, "op=app_observe_webhertz.module result=failed stage=resolve_options reason=capability_required")
 	}
 
 	// 单一 managed bean 按需声明多个语义接口，使 Registry 修改和 Init 资源创建都具备原子边界。
 	bean := &managedAdapters{
-		prometheusMode:   resolved.prometheusMode,
-		prometheusConfig: resolved.prometheusConfig,
-		tracingEnabled:   resolved.tracingEnabled,
-		tracingConfig:    resolved.tracingConfig,
+		prometheusMode:       resolved.prometheusMode,
+		prometheusConfig:     resolved.prometheusConfig,
+		tracingEnabled:       resolved.tracingEnabled,
+		tracingConfig:        resolved.tracingConfig,
+		metricsServerEnabled: resolved.metricsServerEnabled,
+		metricsServerOptions: resolved.metricsServerOptions,
 	}
 	registerOptions := []ioc.RegisterOption{ioc.WithName(adaptersBeanName)}
 	if resolved.prometheusMode != prometheusRegistryDisabled {
@@ -146,6 +184,9 @@ func (this *module) Register(registry ioc.Registry) error {
 	}
 	if resolved.tracingEnabled {
 		registerOptions = append(registerOptions, ioc.WithDeclare[appwebhertz.InstrumentationBundle]())
+	}
+	if resolved.metricsServerEnabled {
+		registerOptions = append(registerOptions, ioc.WithDeclare[metricsServerPlan]())
 	}
 	if err := registry.Register(bean, registerOptions...); err != nil {
 		return buildError(ErrCodeModuleRegisterFailed, "op=app_observe_webhertz.module result=failed stage=register_adapters reason=ioc_register_failed", err)
@@ -169,6 +210,8 @@ func resolveModuleOptions(options []ModuleOption) (moduleOptions, error) {
 
 // managedAdapters 在一个 IOC 节点内原子发布可选 Prometheus 与 Trace 适配能力。
 type managedAdapters struct {
+	// Manager 只在 Metrics Server 启用时读取并借用；默认 scope 缺失会使用安全默认值。
+	Manager baseconfig.Manager `ioc:"required=false"`
 	// Registry 只在 shared Prometheus 模式由 IOC 注入并借用。
 	Registry PrometheusRegistry `ioc:"required=false"`
 	// TraceProvider 只在 OTel 启用时注入并借用；Provider owner 负责最终 ForceFlush/Shutdown。
@@ -183,10 +226,16 @@ type managedAdapters struct {
 	tracingEnabled bool
 	// tracingConfig 是冻结的 OTel Hertz 策略。
 	tracingConfig tracingOptions
+	// metricsServerEnabled 决定是否加载并发布独立监听计划。
+	metricsServerEnabled bool
+	// metricsServerOptions 保存配置路径及默认 scope 语义。
+	metricsServerOptions metricsServerOptions
 	// prometheusRuntime 在完整 Init 成功后发布并由 Close 注销。
 	prometheusRuntime *PrometheusRuntime
 	// instrumentationBundle 在完整 Init 成功后发布，只借用 Provider/Propagator。
 	instrumentationBundle appwebhertz.InstrumentationBundle
+	// metricsServerConfig 是 Init 成功后 Runner 可见的不可变监听配置。
+	metricsServerConfig MetricsServerConfig
 }
 
 var (
@@ -197,21 +246,30 @@ var (
 	_ PrometheusHandler                           = (*managedAdapters)(nil)
 	_ appwebhertz.InstrumentationBundle           = (*managedAdapters)(nil)
 	_ webhertz.RequestObservationMetadataProvider = (*managedAdapters)(nil)
+	_ metricsServerPlan                           = (*managedAdapters)(nil)
 )
 
-// Init 先构造无资源 Trace 适配，再注册 Prometheus；全部成功后一次性发布全部委托。
-func (this *managedAdapters) Init(_ context.Context) error {
+// Init 先冻结无资源 Server/Trace 配置，再注册 Prometheus；全部成功后一次性发布委托。
+func (this *managedAdapters) Init(ctx context.Context) error {
 	var prometheusRuntime *PrometheusRuntime
 	var instrumentationBundle appwebhertz.InstrumentationBundle
+	var metricsServerConfig MetricsServerConfig
 	var err error
-	// 第一阶段：Tracing 只构造借用依赖的无资源 Bundle，必须先于 Prometheus registration 完成。
+	// 第一阶段：配置读取不占用 listener；失败时尚未创建任何注册资源。
+	if this.metricsServerEnabled {
+		metricsServerConfig, err = loadMetricsServerConfig(ctx, this.Manager, this.metricsServerOptions)
+		if err != nil {
+			return err
+		}
+	}
+	// 第二阶段：Tracing 只构造借用依赖的无资源 Bundle，必须先于 Prometheus registration 完成。
 	if this.tracingEnabled {
 		instrumentationBundle, err = newOpenTelemetryBundleFromConfig(this.TraceProvider, this.Propagator, this.tracingConfig)
 		if err != nil {
 			return err
 		}
 	}
-	// 第二阶段：Prometheus registration 是唯一资源动作，失败时尚未发布任何委托。
+	// 第三阶段：Prometheus registration 是唯一资源动作，失败时尚未发布任何委托。
 	if this.prometheusMode == prometheusRegistryPrivate {
 		prometheusRuntime, err = newPrometheusRuntimeFromConfig(prometheus.NewRegistry(), this.prometheusConfig)
 	} else if this.prometheusMode == prometheusRegistryShared {
@@ -220,9 +278,10 @@ func (this *managedAdapters) Init(_ context.Context) error {
 	if err != nil {
 		return err
 	}
-	// 第三阶段：全部构造成功后原子发布，IOC 后续 Server bean 才能开始使用。
+	// 第四阶段：全部构造成功后原子发布，IOC 后续 Server bean 和 Runner 才能开始使用。
 	this.prometheusRuntime = prometheusRuntime
 	this.instrumentationBundle = instrumentationBundle
+	this.metricsServerConfig = metricsServerConfig
 	return nil
 }
 
@@ -272,6 +331,16 @@ func (this *managedAdapters) ServeHTTP(writer http.ResponseWriter, request *http
 		return
 	}
 	this.prometheusRuntime.ServeHTTP(writer, request)
+}
+
+// metricsConfig 返回 IOC Init 已冻结的监听配置；只通过未导出的 Runner 合同使用。
+func (this *managedAdapters) metricsConfig() MetricsServerConfig {
+	return this.metricsServerConfig
+}
+
+// metricsHandler 返回与当前 Registry 相同的 Gather Handler，避免 Server 再次查找全局状态。
+func (this *managedAdapters) metricsHandler() PrometheusHandler {
+	return this
 }
 
 // Close 注销本 bean 的 Collector，不关闭 shared Registry 或任何 HTTP Server。

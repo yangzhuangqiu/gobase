@@ -53,9 +53,9 @@ Hertz hlog 是进程级可变状态，不属于单个 Server bean。本模块不
 
 ### 3.6 标准 Middleware 使用固定阶段和实例私有状态
 
-约束是配置需要表达 Recovery、Request ID、Access Log、CORS、Gzip，但不能允许任意 Order 形成不可验证组合，也不能让第三方包级可变状态造成多 Server 互相污染。当前选择由 `app-web-hertz` 公开稳定 Config/typed policy，Middleware 实现保持私有且只持有当前构造快照；Recovery 复用锁定版本的 Hertz 内置实现。
+约束是配置需要表达 Recovery、Request ID、Access Log、CORS、Gzip 等可选基础组件，但不能允许任意 Order 形成不可验证组合，也不能让第三方包级可变状态造成多 Server 互相污染。Access Log 的模块归属和安装方式与这些基础组件一致：由 `app-web-hertz` 实现、通过 `web.hertz.middleware.accessLog` 显式启用，不依赖 Prometheus、OTel 或 `app-observe-webhertz`。
 
-固定链为 `advanced outer -> instrumentation -> Request ID -> completion Observation -> Recovery -> CORS -> Gzip -> global Filters -> grouped Filters -> Controller-local Middleware`。LoggerFactory 是必需依赖，Init 一次派生 assembly、middleware、provider 和 request Logger；Metrics Observer 与 Instrumentation Bundle 由 IOC 按对象存在性启用。Log/Metrics 共享一次完成态快照。`app-web-hertz` 不创建日志 Provider、Registry 或 Trace Provider。
+当前选择由 `app-web-hertz` 公开稳定 Config/typed policy，Middleware 实现保持私有且只持有当前构造快照；Recovery 复用锁定版本的 Hertz 内置实现。固定链为 `advanced outer -> instrumentation -> Request ID -> completion event -> Recovery -> CORS -> Gzip -> global Filters -> grouped Filters -> Controller-local Middleware`。LoggerFactory 是必需依赖，Init 一次派生 assembly、middleware、provider 和 request Logger；内建 Access Log 与 IOC Observer 共享一次请求完成事件，Instrumentation Bundle 由 IOC 按对象存在性启用。`app-web-hertz` 不创建日志 Provider、Registry 或 Trace Provider。
 
 ## 4. 依赖方向
 
@@ -90,6 +90,7 @@ flowchart LR
 | `web-hertz.Server` | Server bean Init | Server bean | `Close -> Shutdown` |
 | hlog / 日志 Provider | composition root | composition root | Server 停止后恢复/关闭 |
 | 实例 Logger | app Runtime 的 LoggerFactory | 日志 Provider/Runtime | app-web-hertz 只借用，不关闭 Provider |
+| Access Log | app-web-hertz | 托管 Server 请求链 | 无独立资源；借用 request Logger |
 | Metrics Observer | 可选适配模块/应用 | 适配 bean 所有者 | app-web-hertz 只借用；注册资源由适配 bean 回收 |
 | Instrumentation Bundle | 可选 Trace 适配器 | 适配 bean | app-web-hertz 只借用；Bundle 不拥有 Provider |
 | OTel Provider/Exporter | 应用 Provider managed bean | 应用/IOC | Server/adapter 关闭后 ForceFlush、Shutdown |
@@ -103,7 +104,7 @@ flowchart LR
 | Module scope | 空白为 `web.hertz` | 构造时固定 | Server bean Init | `config_load_failed` |
 | `webhertz.Config` | provider 默认；Router bool 为三态 | typed Config 后由原生 Option 覆盖；WithNoMethod 可达性除外 | provider 构造 | 保留 web-hertz cause |
 | `appwebhertz.Config` | Server 默认 + 标准能力全关闭 | Server YAML inline；Middleware 使用子段 | Server Init | `config_invalid` / `config_load_failed` |
-| Recovery / Request ID / Access Log / CORS / Gzip | enabled=false | Snapshot 配置后由 typed policy/LoggerFactory 补充策略 | 标准链构造 | 配置非法或 typed 依赖缺失 fail-fast |
+| Recovery / Request ID / Access Log / CORS / Gzip 可选基础组件 | enabled=false | Snapshot 配置后由 typed policy/LoggerFactory 补充策略 | 标准链构造 | 配置非法或 typed 依赖缺失 fail-fast |
 | 通用 RequestObserver | 空集合 | IOC 注册顺序 | 完成态阶段 | nil fail-fast；无 YAML 总开关 |
 | Instrumentation Bundle | 空集合（Trace 默认关闭） | IOC 注册顺序 | provider 构造前 | Option/Middleware 任一非法则整体 fail-fast |
 | `WithRoutePathStyle` | Kebab | 后者覆盖 | Controller plan | `declaration_invalid` |
@@ -176,7 +177,7 @@ Controller 计划分三个阶段：
 
 Filter 在构造期先按接口类型分类，再在各自作用域内按 `(Order, IOC/input index)` 稳定排序。普通 Filter 注册到 Engine 全局链；GroupedFilter 注册到 GroupPath 对应的基础 group，根 GroupPath 仍不是全局。请求期直接执行 `DoFilter` 方法值，不创建适配对象。
 
-标准 Middleware 在 Filter 计划之前构造，但最终由 `web-hertz` 一次性冻结。advanced outer 来源于既有 `WithServerOptions`；Instrumentation Bundle 紧随其后，Request ID 与 Recovery 之间只安装一个完成态 Observation；全部 Filter 位于 Gzip 内层。Bundle 先完整验证 Option/Middleware，再进入构造计划。Access Log 缺少 `LoggerFactory`、CORS 缺少动态策略、Bundle 任一半非法均以 `declaration_invalid` 在 Engine 创建前失败。
+标准 Middleware 在 Filter 计划之前构造，但最终由 `web-hertz` 一次性冻结。advanced outer 来源于既有 `WithServerOptions`；Instrumentation Bundle 紧随其后，Request ID 与 Recovery 之间只安装一个请求完成事件边界；全部 Filter 位于 Gzip 内层。Bundle 先完整验证 Option/Middleware，再进入构造计划。Access Log 缺少 `LoggerFactory`、CORS 缺少动态策略、Bundle 任一半非法均以 `declaration_invalid` 在 Engine 创建前失败。
 
 ## 10. 生命周期与并发
 
@@ -188,15 +189,16 @@ Filter 在构造期先按接口类型分类，再在各自作用域内按 `(Orde
 4. Server 单运行周期、并发 Shutdown、caller 等待中断和稳定结果均由 `web-hertz` 定义。
 5. Module 不创建后台 goroutine；唯一运行 goroutine由调用方选择。
 
-独立诊断端口不改变上述 Server bean 合同。Phase 4 quickstart 在应用 composition root 创建一个 Workload
-Controller，把业务 `web.Server` 与应用 owned 的诊断 `net/http.Server` 作为同级成员接入 `app` Runner 和
-Shutdown Hook；`app-web-hertz` 不依赖诊断配置、Prometheus Handler 或 pprof。
+独立诊断端口不改变上述 Server bean 合同。应用 composition root 可以把业务
+`web.Server` 与 owned 诊断 `net/http.Server` 作为同级工作负载交给自定义 Runner
+监督；`app-web-hertz` 不依赖诊断配置、Prometheus Handler 或 pprof。Metrics/Tracing
+的具体装配见 [Web 可观测性提案](web-observability-proposal.md)。
 
 如果 Run 因 context 取消已正常停止，后续 Container Close 再次 Shutdown 是幂等操作。
 
 首次 Container Close context 必须覆盖 Server 的完整优雅停止窗口。IOC 的 Closer 等待若先超时，会按容器合同继续关闭后续 bean；因此短 deadline 不能保证 Server 后台停止期间 Controller/Filter 仍保持可用。
 
-## 11. 错误与可观测性
+## 11. 错误与诊断日志
 
 | 稳定错误码 | 阶段 | 状态语义 |
 |---|---|---|
@@ -229,7 +231,7 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 | IOC 配置只读一次并产生真实请求行为 | managed Init 单次 Current + 共用 build | `TestModuleBuildsConfiguredMiddlewareFromSingleSnapshot` |
 | CORS 不允许通配符凭据组合 | resolve 阶段安全校验 | `TestResolveConfiguredConfigRejectsInvalidMiddleware`、`TestCORSMiddlewareAppliesSafePreflightAndRejectsUnknownOrigin` |
 | Gzip 尊重协议与内容保护条件 | 完成态基础检查 | `TestGzipMiddlewareCompressesEligibleResponseAndRespectsGuards` |
-| Access Log 与 Metrics 共享最终 panic 快照 | 单 Observation + 元数据桥接 + IOC 接口切片 | `TestModuleBuildsConfiguredMiddlewareFromSingleSnapshot` |
+| Access Log 与其他 Observer 共享最终 panic 快照 | 单 completion event + 元数据桥接 + IOC 接口切片 | `TestModuleBuildsConfiguredMiddlewareFromSingleSnapshot` |
 | Access Log 不依赖 Metrics adapter | 直接借用 LoggerFactory，通用 Observer 保持独立 | `TestPrepareRequestObserversRequiresFactoryAndAppliesAccessLogPolicy` |
 | 成功组装只发布一次高层摘要 | Init 完整提交后记录 assembly Info | `TestManagedServerLogsAssemblySummaryOnce` |
 | LoggerFactory 缺失在 Init 前失败 | required interface 依赖 | `TestModuleRequiresManagerAndRejectsControllerServerCycle` |
@@ -251,7 +253,7 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 4. 启动配置和路由计划不热更新；变化需要重建 Container/Runtime。
 5. 自动路由把方法名作为公开 URL 声明，兼容性敏感接口应使用显式路由。
 6. 标准 Middleware 只处理启动期静态策略；动态配置刷新需要独立原子策略合同，不能订阅整个 Config。
-7. Gzip 只处理完整内存响应，不接管流式/SSE/升级连接；Access Log/Metrics 使用完成态 Observation，Trace 使用原子 Instrumentation Bundle。
+7. Gzip 只处理完整内存响应，不接管流式/SSE/升级连接；Access Log 与通用 Observer 使用请求完成事件，Trace 使用原子 Instrumentation Bundle。Prometheus/OTel 的后端适配不属于本模块。
 
 ## 14. File Map
 
@@ -276,4 +278,4 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 2. [使用指南](../guides/app-web-hertz-usage.md)
 3. [Quickstart](../../examples/quickstart-app-web-hertz/README.md)
 4. [web-hertz 架构设计](web-hertz-design.md)
-5. [能力配置化与可观测性演进提案](web-hertz-capability-observability-proposal.md)
+5. [Web 可观测性提案](web-observability-proposal.md)

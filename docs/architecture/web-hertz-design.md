@@ -21,7 +21,7 @@
 1. 不抽象跨框架 Router、Handler、Context、Middleware、Controller 或 Filter。
 2. 不读取 config.Manager、YAML、环境变量或固定 scope。
 3. 不管理 IOC、Controller 扫描、字段注入或应用模块发现。
-4. 不安装 recovery、CORS、gzip、request-id、access-log 等默认 Middleware；完成态 Observation 也只有显式 Observer 时安装。
+4. 不安装 recovery、CORS、gzip、request-id、access-log 等默认 Middleware；请求完成事件也只有显式 Observer 时安装。
 5. 不管理 OS signal、Hertz Registry、Nacos/Consul Client 或凭据。
 6. 不创建 Zap Logger，也不调用 `hlog.SetLogger`。
 7. 不暴露可以绕过状态机的原生 Run/Spin/Shutdown/Close 入口。
@@ -160,7 +160,7 @@ provider 不读取配置来源，也不承担热更新。Server 构造后配置�
 
 `WithMiddleware` 接受 `app.HandlerFunc`，保持声明顺序。provider 不把 Handler 包装为 Filter，也不判断 recovery/access-log 等业务优先级。Middleware 的 before/after 嵌套语义完全遵循 Hertz。
 
-`WithRequestObservers` 是完成态观测的窄例外：它在声明位置生成单个私有 Middleware，一次计时并复制 Method、模板 Route、无 query Path、最终 Status/Duration/Body 大小和有限 Outcome，再同步 fan-out。未知路由固定 `_unmatched`，非标准 Method 固定 `_other`。可选生命周期扩展只接收 Method；Metadata 扩展只能补充 Request ID、Trace ID 和 panic 标记，不能覆盖 label 维度。
+`WithRequestObservers` 是请求完成事件的窄例外：它在声明位置生成单个私有 Middleware，一次计时并复制 Method、模板 Route、无 query Path、最终 Status/Duration/Body 大小和有限 Outcome，再同步 fan-out。该合同是后端无关的通用扩展点，本身不等于可观测性适配模块；Access Log、Prometheus 或其他快速本地消费者可以分别复用。未知路由固定 `_unmatched`，非标准 Method 固定 `_other`。可选生命周期扩展只接收 Method；Metadata 扩展只能补充 Request ID、Trace ID 和 panic 标记，不能覆盖稳定维度。
 
 ### NoRoute 与 NoMethod
 
@@ -298,7 +298,7 @@ Hertz v0.10.5 的未运行错误 sentinel 未导出。provider 对文本 `engine
 4. driver 在发布 `shutdownDone` 前等待 running observer 退出并完成最终日志；稳定结果发布后 provider 不再读取实例 Logger 或 hlog fallback，应用装配层才可恢复进程级 hlog。
 5. stopped 是不可逆终态，不能迁回 new、starting 或 running。
 
-## 12. 可观测性
+## 12. 诊断日志与请求完成事件
 
 provider 自有的构造、生命周期和 Observer 隔离日志优先写入 `WithLogger` 注入的实例 `log.Logger`；未注入时回退 `hlog.SystemLogger()`。字段统一包含 `op/result`，失败或重要分支增加 `reason`：
 
@@ -311,7 +311,7 @@ op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 
 稳定错误 code 和底层 cause 是调用方的主要失败观测入口；日志用于运行诊断，不替代错误分支。provider 不创建日志后端，也不安装全局 hlog。纯应用可在 composition root 使用 `hlog-zap.Install` 或 `InstallFromProvider`；app Runtime 使用 `hlog-zap/app` 管理 hlog Lease。Hertz 框架内部日志仍由 hlog 输出，不经过实例 Logger。
 
-provider 不自动安装 access-log、指标、trace 或健康检查后端。完成态 Observer 由调用方显式提供；provider 只复制值快照，不依赖 Logger、Prometheus 或 OTel。当前也不提供 Ready、Address、Status 查询，外部探针只能基于应用显式注册的健康路由和进程编排结果判断。日志不得记录请求体、token、TLS 私钥或完整凭据。
+provider 不自动安装 Access Log、Metrics、Tracing 或健康检查后端。请求完成事件 Observer 由调用方显式提供；provider 只复制值快照，不依赖 Logger、Prometheus 或 OTel。`app-web-hertz` 可把 Access Log 作为可选基础组件消费该事件；Prometheus/OTel 适配边界由独立的 [Web 可观测性提案](web-observability-proposal.md) 定义。当前也不提供 Ready、Address、Status 查询，外部探针只能基于应用显式注册的健康路由和进程编排结果判断。日志不得记录请求体、token、TLS 私钥或完整凭据。
 
 ## 13. 容量与性能边界
 
@@ -326,8 +326,8 @@ provider 不自动安装 access-log、指标、trace 或健康检查后端。完
 1. 尚无 Ready/Address/Status 查询；没有跨 provider 需求前不扩展根接口。
 2. 尚无服务注册合同；需要先定义注册、失败回滚、注销和所有权。
 3. 初始化阶段永久阻塞无法被 Hertz Shutdown 中断。
-4. pprof 已可通过接收 RouterGroup 的 RouteFunc 表达；配置化启用、独立管理面和可观测性扩展按
-   [能力配置化与可观测性演进提案](web-hertz-capability-observability-proposal.md) 评审，不直接暴露 Engine。
+4. pprof 已可通过接收 RouterGroup 的 RouteFunc 表达；独立诊断端口与 Metrics/Tracing 适配按
+   [Web 可观测性提案](web-observability-proposal.md) 处理，不直接暴露 Engine。
 5. Controller、Filter、IOC 和配置绑定由 `app-web-hertz` 实现；进程级 hlog 安装与恢复由 composition root 或 `hlog-zap/app` 实现。
 
 ## 15. File Map
@@ -350,4 +350,4 @@ provider 不自动安装 access-log、指标、trace 或健康检查后端。完
 3. [根 web 合同](../../web/README.md)
 4. [quickstart-web-hertz](../../examples/quickstart-web-hertz/README.md)
 5. [app-web-hertz 架构设计](app-web-hertz-design.md)
-6. [能力配置化与可观测性演进提案](web-hertz-capability-observability-proposal.md)
+6. [Web 可观测性提案](web-observability-proposal.md)

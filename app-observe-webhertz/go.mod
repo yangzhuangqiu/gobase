@@ -7,9 +7,14 @@ require (
 	github.com/prometheus/client_golang v1.19.1
 	github.com/prometheus/client_model v0.5.0
 	github.com/prometheus/common v0.48.0
+	github.com/yangzhuangqiu/gobase/app v0.0.0
+	github.com/yangzhuangqiu/gobase/app-runtime v0.0.0
 	github.com/yangzhuangqiu/gobase/app-web-hertz v0.0.0
+	github.com/yangzhuangqiu/gobase/config v0.0.0
 	github.com/yangzhuangqiu/gobase/errcode v0.0.0
 	github.com/yangzhuangqiu/gobase/ioc v0.0.0
+	github.com/yangzhuangqiu/gobase/log v0.0.0
+	github.com/yangzhuangqiu/gobase/web v0.0.0
 	github.com/yangzhuangqiu/gobase/web-hertz v0.0.0
 	go.opentelemetry.io/otel v1.24.0
 	go.opentelemetry.io/otel/sdk v1.24.0
@@ -37,11 +42,6 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
-	github.com/yangzhuangqiu/gobase/app v0.0.0 // indirect
-	github.com/yangzhuangqiu/gobase/app-runtime v0.0.0 // indirect
-	github.com/yangzhuangqiu/gobase/config v0.0.0 // indirect
-	github.com/yangzhuangqiu/gobase/log v0.0.0 // indirect
-	github.com/yangzhuangqiu/gobase/web v0.0.0 // indirect
 	go.opentelemetry.io/otel/metric v1.24.0 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/sys v0.30.0 // indirect

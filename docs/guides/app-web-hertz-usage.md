@@ -253,7 +253,7 @@ IOC 统一使用 `DefineFilter(&APIAuditFilter{})`；装配阶段根据对象是
 WithServerOptions 中的 advanced outer Middleware
 -> Instrumentation Bundle Middleware（对象存在性启用）
 -> Request ID
--> completion Observation（Access Log + Metrics fan-out）
+-> 请求完成事件（Access Log + IOC Observer fan-out）
 -> Recovery
 -> CORS
 -> Gzip
@@ -275,36 +275,46 @@ WithServerOptions 中的 advanced outer Middleware
 - 只有可信代理已经校验标识来源时才设置 `trustIncoming: true`。
 - Handler/Filter 使用 `appwebhertz.GetRequestID(request)` 读取；生成失败返回稳定 500，不让无标识请求继续。
 
-### 实例日志、Access Log 与完成态 Metrics
+### 实例日志与 Access Log
 
 - `LoggerFactory` 是 Server bean 的必需 IOC 依赖；app Runtime 总会注册默认或 `WithLogging` 提供的 Factory，裸 IOC 必须显式注册。
 - Init 一次派生 `app.web.hertz.assembly`、`app.web.hertz.middleware`、`web.hertz` 和 `web.hertz.request`；运行期不重复访问 Factory。
 - `app-web-hertz` 成功组装后记录一条 Info 摘要，`web-hertz` 记录 Debug provider 摘要；构造失败只返回错误，由 IOC Build 边界统一记录。
 - `accessLog.enabled=true` 启用内建结构化请求日志。
 - `skipPaths` 使用无 query 的精确路径；`slowThreshold=0` 表示不区分慢请求。
-- Prometheus 等通用 Observer 只通过 IOC `webhertz.RequestObserver` 声明，不需要虚假的 YAML 总开关。
-- Access Log、Metrics 共享同一次完成态计时和快照；Recovery 后的 panic 记录最终 500 与 `outcome=panic`。
+- Recovery 后的 panic 记录最终 500 与 `outcome=panic`。
 - `app-web-hertz` 不创建或关闭日志 Provider；sink、encoder 和基础 level 仍由根日志配置决定。可选 [`app-observe-webhertz`](../../app-observe-webhertz/README.md) 只负责 Prometheus/OTel 适配。
 
-### OpenTelemetry Trace
+Access Log 在模块归属和安装方式上是 `app-web-hertz` 的可选基础组件，不属于
+`app-observe-webhertz`。它在系统信号层面仍可用于运行诊断；若安装了 OTel Bundle，
+完成事件中的 Trace ID 可以进入 Access Log，实现日志与 Span 关联。
 
-- Trace 不进入 `web.hertz` YAML；应用显式声明 Provider owner 和 `app-observe-webhertz.WithOpenTelemetry(...)` 才启用。
-- Provider owner 创建 SDK Provider/Exporter/Sampler，并在 IOC 关闭阶段执行 `ForceFlush -> Shutdown`；Web adapter 只借用 Provider/Propagator。
-- Bundle 的 Hertz tracer Option 与 Server Middleware 在 Engine 创建前原子校验，任一半非法都不会发布 Server。
-- 默认 Span 名称为 `METHOD route`，未匹配路由固定为 `_unmatched`；只记录 method、route、status、受控 error.type 和安全 Enricher 字段。
-- 完整 URL、query、Header、Cookie、Body、panic 值和 Stack 默认不进入 Span。ignore path 使用无 query 的精确绝对路径。
-- Request ID 默认独立生成。需要对齐时显式把 `NewTraceAlignedRequestIDGenerator(fallback)` 交给 `WithRequestIDGenerator`；无有效 Span 时 fallback 保持响应 Header 合同。
+### 请求完成事件扩展
 
-```go
-observe := webhertzobserve.NewModule(
-	webhertzobserve.WithOpenTelemetry(
-		webhertzobserve.WithSamplingPolicyReference("parentbased_ratio_10"),
-		webhertzobserve.WithTracingIgnoredPaths("/healthz", "/readyz"),
-	),
-)
-```
+`webhertz.HTTPRequestObservation` 是后端无关的通用请求完成事件，不等同于可观测性
+适配模块。内建 Access Log 与 IOC 注入的 Observer 共享同一次计时和值快照：
 
-采样比例不是 Web Middleware 配置：它必须在 Provider owner 创建 SDK Sampler 时固定。`sampling policy reference` 只验证 adapter 是否接到了预期 Provider，避免看似配置成功、实际采样策略错配。
+- Prometheus 等 Observer 只通过 IOC `webhertz.RequestObserver` 声明，不设置 YAML 总开关；
+- Observer 必须快速、并发安全，不得保留 Hertz 池化对象；
+- Request ID、Trace ID 和原始 Path 不得作为默认 Metrics Label；
+- 使用 `app-web-hertz` 时不要再安装第二个 `WithRequestObservers`，避免重复通知。
+
+直接使用 provider 时如何声明自定义 Observer，见
+[web-hertz 使用指南](web-hertz-usage.md#请求完成事件扩展)。
+
+### Metrics 与 Tracing
+
+Prometheus Metrics 与 OpenTelemetry Tracing 不是标准 Middleware 配置项，而是由
+IOC 对象存在性启用的跨模块能力：
+
+- Metrics adapter 发布 `RequestObserver` 与 `PrometheusHandler`；
+- OTel adapter 借用应用 owned Provider/Propagator，并发布原子
+  `InstrumentationBundle`；
+- Registry、Provider、Exporter 与诊断 Server 的所有权始终属于应用或对应
+  managed bean。
+
+完整安装、采样策略、独立 `/metrics` 端口与关闭顺序见
+[Web 可观测性使用指南](web-observability.md)。
 
 ### CORS
 
@@ -355,23 +365,13 @@ web.Server Run 返回
 
 ### 7.1 独立诊断端口与统一监督
 
-Metrics/pprof 不应注册到业务 Hertz Router。多 Server 应用由 composition root 显式装配：
+`Runner()` 只监督唯一业务 Server。需要业务 Server 与诊断 Server 等多个工作负载时，
+composition root 应提供自定义 Runner：任一成员意外退出就取消其他成员，并在 Runner
+返回前等待全部 Run/Shutdown 结果收敛。
 
-1. 应用 owned 的 private Registry 显式聚合 IOC/业务 Collector，`app-observe-webhertz.WithSharedPrometheus()`
-   再注册 Web Collector 并发布 borrowed `PrometheusHandler`；
-2. 应用在 BeforeRun 阶段构造独立 `http.Server` 和私有 `http.ServeMux`，此时不获取 listener；
-3. `/metrics` 显式挂载 Handler，pprof 默认关闭且只注册到该私有 mux；
-4. 应用 Workload Controller 同时监督业务 `web.Server` 和诊断 Server，并把同一个实例分别接入 Runner 与
-   Shutdown Hook；
-5. 任一成员意外退出会取消其他成员；Shutdown Hook 在全部成员 Run 返回后才允许 Runtime Close；
-6. 诊断地址默认使用 loopback。对 Pod 外开放时，必须显式修改地址并配置 NetworkPolicy、sidecar 或鉴权。
-
-Go/Process Collector 默认也不注册。只有应用明确选择后才加入同一 Registry，禁止用 DefaultGatherer 把未知
-全局 Collector 隐式带入诊断端口。
-
-诊断地址、Metrics path、pprof 开关和 Header timeout 属于具体应用配置，不进入 `web.hertz`，也不形成新的
-框架固定 `management`/`observability` scope。当前只有一个真实使用方，因此不抽取
-`app-diagnostics-http`。
+Metrics Handler、私有 ServeMux、listener 获取顺序和诊断端口安全策略见
+[Web 可观测性使用指南](web-observability.md#独立诊断-server)。当前只有一个真实
+复用方，不抽取通用诊断 Server 模块。
 
 ## 8. 错误排查
 
@@ -379,7 +379,7 @@ Go/Process Collector 默认也不注册。只有应用明确选择后才加入�
 |---|---|---|
 | `app_web_hertz.config_invalid` | Middleware 字段、CORS 安全组合或 provider Config 非法 | 检查对应 stage/reason 和底层 web-hertz cause |
 | `app_web_hertz.config_load_failed` | Manager/Snapshot 不可用、scope 缺失、配置非法 | 检查 scope 和底层 config/web-hertz cause |
-| `app_web_hertz.declaration_invalid` | nil Option/Registry/Observer、非法 Controller/Filter/路径风格或 Access Log 缺少适配器 | 修正启动声明 |
+| `app_web_hertz.declaration_invalid` | nil Option/Observer、非法 Controller/Filter/路径风格或 Access Log 缺少 LoggerFactory | 修正启动声明 |
 | `app_web_hertz.server_build_failed` | provider 构造或路由注册失败 | 检查 web-hertz code 和 Controller cause |
 | `app_web_hertz.module_register_failed` | Server bean 名称或类型重复 | 每个 Container 只注册一次 Module |
 | `app_web_hertz.server_state_invalid` | 绕过 IOC，在 Init 前调用代理 | 只在 Build 成功后 Resolve Server |
@@ -395,7 +395,7 @@ Go/Process Collector 默认也不注册。只有应用明确选择后才加入�
 5. 错误断言同时检查 app-web-hertz、IOC、config 或 web-hertz 分层错误码。
 6. CORS 至少覆盖允许/拒绝 Origin 与通配符凭据冲突；Gzip 覆盖 q=0、媒体类型和解压原文。
 7. Observation 覆盖模板路由、未知路由基数、Recovery 最终状态、Request ID、skip path 和 Observer 并发。
-7. Recovery 与 Request ID 联合测试最终 500 和关联 Header；Manager 路径断言只调用一次 Current 且不 Subscribe。
+8. Recovery 与 Request ID 联合测试最终 500 和关联 Header；Manager 路径断言只调用一次 Current 且不 Subscribe。
 
 ## 10. 相关文档
 
@@ -403,3 +403,6 @@ Go/Process Collector 默认也不注册。只有应用明确选择后才加入�
 2. [架构设计](../architecture/app-web-hertz-design.md)
 3. [web-hertz 指南](web-hertz-usage.md)
 4. [Quickstart](../../examples/quickstart-app-web-hertz/README.md)
+5. [Web 可观测性使用指南](web-observability.md)
+6. [高级可观测性 Quickstart](../../examples/quickstart-app-observe-webhertz/README.md)
+7. [Web 可观测性提案](../architecture/web-observability-proposal.md)

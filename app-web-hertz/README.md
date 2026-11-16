@@ -21,7 +21,7 @@
 3. 不自动调用阻塞型 `Run`，不安装进程信号处理器。
 4. 不创建或关闭配置 Manager、日志 Provider、Controller 或 Filter。
 5. 不管理 Hertz 全局 hlog，也不创建或关闭日志 Provider；全部自有日志只借用 IOC `LoggerFactory`。
-6. 不默认启用 Recovery、Request ID、CORS、Gzip、access-log 或 pprof；标准能力必须逐项显式开启。
+6. 不默认启用 Recovery、Request ID、Access Log、CORS、Gzip 或 pprof；可选基础组件必须逐项显式开启。
 7. 不创建 Prometheus Registry、OTel Provider、Exporter、诊断 Server 或配置订阅。
 8. 不提供脱离 IOC 的 Controller/Filter 显式构造入口；原生 Hertz 场景直接使用 `web-hertz`。
 
@@ -178,13 +178,18 @@ web:
 
 Router 布尔值采用 optional bool：未配置时使用 `web-hertz` 固化默认值，显式 `false` 不会被默认回填覆盖。
 
+Recovery、Request ID、Access Log、CORS 和 Gzip 是本模块的可选基础组件，默认全部
+关闭。其中 Access Log 直接借用 IOC 根 `LoggerFactory`，不依赖 Prometheus、OTel
+或 `app-observe-webhertz`。它仍可作为运行诊断信号，并在 OTel Bundle 存在时通过
+完成事件中的 Trace ID 与 Span 关联。
+
 标准链固定为：
 
 ```text
 advanced outer Middleware
 -> instrumentation Middleware（例如 OTel Server Span；按 Bundle 存在性启用）
 -> Request ID
--> completion Observation（Access Log + Metrics fan-out）
+-> 请求完成事件（Access Log + IOC Observer fan-out）
 -> Recovery
 -> CORS
 -> Gzip
@@ -238,7 +243,7 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 2. 应用组件仍需显式 Definition，不做包扫描。
 3. 启动配置不热更新，地址或 timeout 变化需要重建 Runtime。
 4. 当前按类型只适合发布一个 `web.Server`；多 Server 应先定义具名运行策略。
-5. Access Log/Metrics 通过完成态 Observation 接入，Trace 通过原子 Bundle 接入；本模块只从根 `LoggerFactory` 派生实例 Logger，不创建 Registry、Provider 或 Exporter。
+5. Access Log 通过请求完成事件接入；通用 Observer 与原子 Bundle 只由本模块聚合，Prometheus/OTel 后端适配由独立模块负责。本模块只从根 `LoggerFactory` 派生实例 Logger，不创建 Registry、Provider 或 Exporter。
 
 ## File Map
 
@@ -263,3 +268,7 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 2. [架构设计](../docs/architecture/app-web-hertz-design.md)
 3. [Quickstart](../examples/quickstart-app-web-hertz/README.md)
 4. [web-hertz provider](../web-hertz/README.md)
+5. [可观测性入门](../docs/guides/observability-primer.md)
+6. [Web 可观测性使用指南](../docs/guides/web-observability.md)
+7. [高级可观测性 Quickstart](../examples/quickstart-app-observe-webhertz/README.md)
+8. [Web 可观测性提案](../docs/architecture/web-observability-proposal.md)

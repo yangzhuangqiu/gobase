@@ -132,4 +132,7 @@ gobase/
 31. [app-web-hertz 架构设计](docs/architecture/app-web-hertz-design.md)
 32. [quickstart-app-web-hertz](examples/quickstart-app-web-hertz/README.md)
 33. [app-observe-webhertz 模块入口](app-observe-webhertz/README.md)
-34. [Web Hertz 能力配置化与可观测性方案](docs/architecture/web-hertz-capability-observability-proposal.md)
+34. [可观测性入门](docs/guides/observability-primer.md)
+35. [Web 可观测性提案](docs/architecture/web-observability-proposal.md)
+36. [Web 可观测性使用指南](docs/guides/web-observability.md)
+37. [quickstart-app-observe-webhertz](examples/quickstart-app-observe-webhertz/README.md)

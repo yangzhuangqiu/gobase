@@ -9,7 +9,7 @@
 1. 生命周期适配：封装 `*server.Hertz`，归一化 Hertz `Run/Shutdown` 与 `web.Server` 的状态、错误和资源释放语义。
 2. 独立配置：提供 Hertz 专属 typed Config、确定默认值、解析优先级和 fail-fast 校验。
 3. 原生扩展：按声明顺序应用 Hertz `config.Option`、全局 Middleware、NoRoute/NoMethod 和 RouteFunc。
-4. 完成态观测：复制有限基数请求快照并同步 fan-out 窄 Observer，不依赖具体日志、Metrics 或 Trace 后端。
+4. 请求完成事件：复制有限基数请求快照并同步 fan-out 窄 Observer，不依赖具体日志、Metrics 或 Trace 后端。
 5. 实例诊断：接收可选 `log.Logger`，记录构造、生命周期和 Observer 隔离事件。
 
 ### Out of Scope
@@ -146,11 +146,14 @@ Middleware；未声明时完全保留 Hertz 默认行为。`WithNoMethod` 自动
 因 Config 或原生 Option 关闭 `HandleMethodNotAllowed` 而静默不可达。nil Handler 在构造阶段返回
 `web_hertz.declaration.invalid`。
 
-### 请求完成态 Observation
+### 请求完成事件 Observation
 
 `WithRequestObservers` 在声明位置安装一个完成态 Middleware，并按声明顺序同步 fan-out。快照复制 Method、模板 Route、无 query Path、最终 Status/Duration/Body 大小和有限 Outcome；未匹配路由固定为 `_unmatched`，非标准 Method 固定为 `_other`。
 
 Observer 不得持有 `RequestContext`。可选 `RequestLifecycleObserver` 只接收开始 Method，用于 in-flight Gauge；可选 `RequestObservationMetadataProvider` 只能补充 Request ID、Trace ID 和已由 Recovery 收敛的 panic 标记，不能改写指标维度。单个 Observer/Metadata Provider panic 会被隔离，原始业务 panic 在通知后继续传播。
+
+该合同是通用请求完成事件扩展，本身不等于可观测性适配模块。`app-web-hertz`
+可以用它实现可选基础 Access Log，Prometheus adapter 也可以独立消费同一快照。
 
 ### RouteFunc
 
@@ -200,7 +203,7 @@ new -> starting -> running -> stopping -> stopped
 7. 已完成停止时重复调用返回首次稳定停止结果，不重复注销或释放资源。
 8. 公共 Shutdown 不调用 Hertz `Engine.Close()`；当前没有绕过优雅停止的强制关闭入口。
 
-## 错误与可观测性
+## 错误与诊断日志
 
 错误边界：
 
@@ -250,7 +253,7 @@ op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 8. `diagnostic_log.go`：实例 Logger 与 standalone hlog 降级出口。
 9. `errors.go`：可分支错误码和阶段包装。
 10. `request_observation.go`、`request_observer*.go`：完成态 VO、Observer 合同、Option 和私有 Middleware。
-11. `*_test.go`：配置、404/405、完成态观测、构造和生命周期合同测试；原生 Middleware 顺序归入构造测试。
+11. `*_test.go`：配置、404/405、请求完成事件、构造和生命周期合同测试；原生 Middleware 顺序归入构造测试。
 
 ## 相关文档
 
@@ -258,3 +261,6 @@ op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 2. [web-hertz 架构设计](../docs/architecture/web-hertz-design.md)
 3. [quickstart-web-hertz](../examples/quickstart-web-hertz/README.md)
 4. [根 web 生命周期合同](../web/README.md)
+5. [可观测性入门](../docs/guides/observability-primer.md)
+6. [Web 可观测性使用指南](../docs/guides/web-observability.md)
+7. [Web 可观测性提案](../docs/architecture/web-observability-proposal.md)

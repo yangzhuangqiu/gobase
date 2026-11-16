@@ -105,7 +105,7 @@ webhertz.WithHertzOptions(
 
 ```go
 webhertz.WithMiddleware(
-	accessLog(),
+	timingMiddleware(),
 	recovery.Recovery(),
 )
 ```
@@ -117,7 +117,35 @@ webhertz.WithMiddleware(
 3. nil Handler 在 `New` 阶段返回声明错误。
 4. group 级 Middleware 在 RouteFunc 内通过 Hertz `router.Group(...handlers)` 或 `group.Use` 声明。
 
-当 access log 需要记录 panic 恢复后的 500 状态时，把 access log 放在 recovery 外层。Quickstart 展示了该顺序。
+需要让外层 Middleware 读取 panic 恢复后的最终 500 状态时，应把它放在 recovery
+外层。`web-hertz` 不提供 Access Log 实现；IOC 应用使用 `app-web-hertz` 的可选
+基础组件。
+
+### 请求完成事件扩展
+
+`WithRequestObservers` 在声明位置安装一个请求完成事件 Middleware，并按声明顺序
+同步 fan-out：
+
+```go
+server, err := webhertz.New(
+	cfg,
+	webhertz.WithRequestObservers(metricsObserver, auditObserver),
+)
+```
+
+该合同是 provider 的通用扩展点，本身不属于 Prometheus、OTel 或 Access Log：
+
+1. 快照只包含复制后的 Method、模板 Route、Path、最终 Status/Duration/Bytes 和有限 Outcome。
+2. Observer 不得持有 `RequestContext`、Header 或 Body。
+3. Observer 必须快速、并发安全；远程发送应交给独立 SDK/batch exporter。
+4. `RequestLifecycleObserver` 可接收请求开始 Method；Metadata Provider 只能补充
+   Request ID、Trace ID 和 panic 标记。
+5. 同一个 Server 应只安装一个完成事件边界；多个消费者放进同一次
+   `WithRequestObservers`。
+
+`app-web-hertz` 会从 IOC 聚合 Observer，使用该装配入口时不要额外安装第二个
+`WithRequestObservers`。Prometheus/OTel 的具体接入见
+[Web 可观测性使用指南](web-observability.md)。
 
 ## 6. 注册路由
 
@@ -280,3 +308,5 @@ if errcode.IsCode[webhertz.ErrorCode](err, webhertz.ErrCodeRunFailed) {
 5. [hlog-zap](../../hlog-zap/README.md)
 6. [测试规范](../testing/testing.md)
 7. [app-web-hertz 使用指南](app-web-hertz-usage.md)
+8. [Web 可观测性使用指南](web-observability.md)
+9. [Web 可观测性提案](../architecture/web-observability-proposal.md)

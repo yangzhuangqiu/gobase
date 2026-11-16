@@ -104,14 +104,17 @@ func TestSharedPrometheusModuleRequiresRegistryAndUnregistersCollector(t *testin
 	}
 }
 
-// TestModuleRejectsEmptyAndConflictingDeclarationsBeforeRegistration 验证空 Module、nil Option 和双 Registry 模式在修改 IOC Registry 前失败。
+// TestModuleRejectsEmptyAndConflictingDeclarationsBeforeRegistration 验证空能力、nil Option、重复能力及 Metrics Server 缺失 Prometheus 在修改 IOC Registry 前失败。
 // 测试方法：表驱动调用 Register 断言 declaration_invalid；随后向同一 Container 注册探针，确认 Registry 仍处于可用状态。
 func TestModuleRejectsEmptyAndConflictingDeclarationsBeforeRegistration(t *testing.T) {
 	tests := map[string]Module{
-		"empty":         NewModule(),
-		"nil option":    NewModule(ModuleOption(nil)),
-		"dual registry": NewModule(WithPrivatePrometheus(), WithSharedPrometheus()),
-		"dual tracing":  NewModule(WithOpenTelemetry(), WithOpenTelemetry()),
+		"empty":                     NewModule(),
+		"nil option":                NewModule(ModuleOption(nil)),
+		"dual registry":             NewModule(WithPrivatePrometheus(), WithSharedPrometheus()),
+		"dual tracing":              NewModule(WithOpenTelemetry(), WithOpenTelemetry()),
+		"metrics server only":       NewModule(WithMetricsServer()),
+		"dual metrics server":       NewModule(WithPrivatePrometheus(), WithMetricsServer(), WithMetricsServer()),
+		"nil metrics server option": NewModule(WithPrivatePrometheus(), WithMetricsServer(MetricsServerOption(nil))),
 	}
 	for name, module := range tests {
 		t.Run(name, func(t *testing.T) {
