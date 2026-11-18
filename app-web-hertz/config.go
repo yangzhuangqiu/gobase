@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	baseconfig "github.com/yangzhuangqiu/gobase/config"
+	"github.com/yangzhuangqiu/gobase/errcode"
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 )
 
@@ -100,6 +101,7 @@ func resolveScope(scope string) string {
 // loadConfig 从 Manager 当前快照读取并校验一次 Server/标准 Middleware 启动配置。
 //
 // 阶段角色：IOC Server bean 初始化时读取一次；监听地址等启动配置不订阅热更新。
+// 语义：DefaultScope 缺失时使用 DefaultConfig；自定义 scope 缺失或任何已存在配置非法时 fail-fast。
 func loadConfig(ctx context.Context, manager baseconfig.Manager, scope string) (Config, error) {
 	if ctx == nil {
 		return Config{}, errorForConfigLoadFailed(
@@ -124,9 +126,12 @@ func loadConfig(ctx context.Context, manager baseconfig.Manager, scope string) (
 		)
 	}
 
-	// 第一阶段：scope 缺失或类型不匹配由 config 保留稳定 cause。
+	// 第一阶段：默认 scope 缺失表示应用接受内建配置；自定义 scope 缺失仍视为部署拼写错误。
 	var input Config
 	if err := snapshot.Decode(scope, &input); err != nil {
+		if scope == DefaultScope && errcode.IsCode[baseconfig.ErrorCode](err, baseconfig.ErrCodeConfigDecodeScopeNotFound) {
+			return DefaultConfig(), nil
+		}
 		return Config{}, errorForConfigLoadFailed(
 			messagef("op=app_web_hertz.load_config result=failed stage=decode scope=%s reason=decode_failed", scope),
 			err,

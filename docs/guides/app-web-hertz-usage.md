@@ -107,7 +107,8 @@ if err := appwebhertz.NewModule().Register(container); err != nil {
 }
 ```
 
-不声明 `WithScope` 时使用 `web.hertz`；自定义路径通过 Option 声明：
+不声明 `WithScope` 时使用 `web.hertz`；该默认 scope 缺失时直接使用
+`appwebhertz.DefaultConfig()`。自定义路径通过 Option 声明，并在缺失时 fail-fast：
 
 ```go
 appwebhertz.NewModule(appwebhertz.WithScope("services.api"))
@@ -135,7 +136,6 @@ IOC 自动注入 `[]Controller`、`[]Filter`、`[]NoRouteHandler` 和 `[]NoMetho
 
 ```go
 app.Main(
-	app.WithConfig(config.Defaults(defaultConfig())),
 	app.WithBeanDefinitions(
 		appwebhertz.DefineController(&OrdersController{}),
 		appwebhertz.DefineFilter(&AuthFilter{}),
@@ -148,7 +148,7 @@ app.Main(
 )
 ```
 
-Runtime 已注册 borrowed `config.Manager`。`appwebhertz.Workload()` 解析唯一 `web.Server`：app 并发执行 `Run`，关闭时调用 `Shutdown`，并继续等待 `Run` 真正返回，之后才关闭 IOC Runtime。多 Server 可声明多个具有唯一名称的 Workload 适配器。
+Runtime 已注册 borrowed `config.Manager`；未声明 `web.hertz` 时 Server 使用完整内建默认值。`appwebhertz.Workload()` 解析唯一 `web.Server`：app 并发执行 `Run`，关闭时调用 `Shutdown`，并继续等待 `Run` 真正返回，之后才关闭 IOC Runtime。多 Server 可声明多个具有唯一名称的 Workload 适配器。
 
 ### 2.3 Option 归并
 
@@ -378,7 +378,7 @@ Metrics Handler、私有 ServeMux、listener 获取顺序和诊断端口安全�
 | 错误码 | 常见原因 | 处理 |
 |---|---|---|
 | `app_web_hertz.config_invalid` | Middleware 字段、CORS 安全组合或 provider Config 非法 | 检查对应 stage/reason 和底层 web-hertz cause |
-| `app_web_hertz.config_load_failed` | Manager/Snapshot 不可用、scope 缺失、配置非法 | 检查 scope 和底层 config/web-hertz cause |
+| `app_web_hertz.config_load_failed` | Manager/Snapshot 不可用、自定义 scope 缺失、配置非法 | 检查 scope 和底层 config/web-hertz cause；默认 `web.hertz` 缺失会使用内建值 |
 | `app_web_hertz.declaration_invalid` | nil Option/Observer、非法 Controller/Filter/路径风格或 Access Log 缺少 LoggerFactory | 修正启动声明 |
 | `app_web_hertz.server_build_failed` | provider 构造或路由注册失败 | 检查 web-hertz code 和 Controller cause |
 | `app_web_hertz.module_register_failed` | Server bean 名称或类型重复 | 每个 Container 只注册一次 Module |

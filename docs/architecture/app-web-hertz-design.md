@@ -224,7 +224,7 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 | fallback handler 稳定排序且拒绝 typed nil | `(Order, registration index)` 稳定计划 | `TestPrepareFallbackHandlersSortsStablyAndRejectsTypedNil` |
 | Container Close 能停止正在运行的 Server | managed bean Close 委托 Shutdown | `TestContainerCloseStopsManagedRunningServer` |
 | Controller/Filter 按注册顺序注入 | IOC slice 注入 | `TestModuleAutomaticallyAssemblesControllerFilterAndServer` |
-| scope trim、默认、最后声明和配置错误链稳定 | WithScope + Init 单次 loadConfig | `TestWithScopeUsesDefaultAndLastDeclaration`、`TestModuleUsesCustomScopeAndPreservesConfigFailures` |
+| 默认 scope 缺失回退、自定义 scope 缺失失败、trim/最后声明和错误链稳定 | WithScope + Init 单次 loadConfig | `TestLoadConfigUsesDefaultsWhenDefaultScopeMissing`、`TestLoadConfigRejectsMissingCustomScope`、`TestWithScopeUsesDefaultAndLastDeclaration`、`TestModuleUsesCustomScopeAndPreservesConfigFailures` |
 | 旧扁平字段与 middleware 子段同源解码 | Config.Server YAML inline | `TestLoadConfigPreservesFlatScopeAndDecodesRouterConfig` |
 | Go 配置值与 Snapshot 解析一致且无订阅 | 共用 resolveConfiguredConfig | `TestGoValueAndSnapshotConfigResolveIdentically` |
 | 标准链顺序和 panic 最终 500 稳定 | 固定 Handler 阶段 + Recovery 外层 | `TestPrepareStandardMiddlewareKeepsFixedOrder`、`TestRecoveryProducesFinal500AndPreservesRequestID` |

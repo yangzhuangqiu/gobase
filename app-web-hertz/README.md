@@ -50,8 +50,6 @@
 
 ```go
 app.Main(
-	app.WithConfig(config.Defaults(defaultConfig())),
-	app.WithLogging(apphlogzap.Wrap(applogzap.New())),
 	app.WithBeanDefinitions(
 		appwebhertz.DefineController(&OrdersController{}),
 		appwebhertz.DefineFilter(&AuthFilter{}),
@@ -64,7 +62,7 @@ app.Main(
 )
 ```
 
-`NewModule()` 默认读取 `web.hertz`；自定义配置路径使用 `WithScope("services.api")`。`app` 拥有信号、Workload 收敛和 Runtime Close；`Workload()` 显式桥接唯一 Server 的 Run/Shutdown，因此无需额外 Shutdown Hook。多 Server 应声明多个具有唯一名称的 Workload。
+默认 `web.hertz` scope 缺失时，`NewModule()` 直接使用 `DefaultConfig()`，因此最小应用不需要配置文件或 `WithConfig`。自定义配置路径使用 `WithScope("services.api")`；该路径缺失时仍 fail-fast，避免部署拼写错误被默认值掩盖。`app` 拥有信号、Workload 收敛和 Runtime Close；`Workload()` 显式桥接唯一 Server 的 Run/Shutdown，因此无需额外 Shutdown Hook。多 Server 应声明多个具有唯一名称的 Workload。
 
 ## 公共入口与合同
 
@@ -169,9 +167,9 @@ web:
         excludedContentTypes: [image/, application/zip]
 ```
 
-1. 未声明 `WithScope` 时使用 `web.hertz`；显式 scope trim 后为空同样回退该默认值。
+1. 未声明 `WithScope` 时使用 `web.hertz`；显式 scope trim 后为空同样回退该默认值；该默认 scope 缺失时直接采用 `DefaultConfig()`。
 2. Module 在 IOC Init 阶段读取当前 Snapshot 一次；启动配置不热更新。
-3. scope 缺失、解码失败、provider、Middleware 配置非法或缺少 `LoggerFactory` 会让 IOC Build fail-fast。
+3. 自定义 scope 缺失、已存在 scope 解码失败、provider、Middleware 配置非法或缺少 `LoggerFactory` 会让 IOC Build fail-fast。
 4. `WithServerOptions` 在 typed Config 之后应用，最终优先级由 `web-hertz` 保证。
 5. CORS 不默认放开 Origin；静态列表为空时必须提供 `WithCORSOriginValidator`。
 6. `allowOrigins: ["*"]` 与 `allowCredentials: true` 是非法安全组合。

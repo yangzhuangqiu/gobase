@@ -3,6 +3,7 @@ package appwebhertz
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,39 @@ import (
 	"github.com/yangzhuangqiu/gobase/errcode"
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 )
+
+// TestLoadConfigUsesDefaultsWhenDefaultScopeMissing 验证默认模块可以在零 web.hertz 配置下启动。
+//
+// 测试方法：构建不含默认 scope 的 Snapshot，调用 loadConfig(DefaultScope)，断言直接得到
+// 独立的完整 DefaultConfig，且不会把 scope 缺失包装成启动错误。
+func TestLoadConfigUsesDefaultsWhenDefaultScopeMissing(t *testing.T) {
+	manager := newTestManager(t, map[string]any{"service": map[string]any{"name": "orders"}})
+	defer func() { _ = manager.Close() }()
+
+	actual, err := loadConfig(context.Background(), manager, DefaultScope)
+	if err != nil {
+		t.Fatalf("load missing default scope: %v", err)
+	}
+	if !reflect.DeepEqual(actual, DefaultConfig()) {
+		t.Fatalf("expected default config fallback: actual=%+v expected=%+v", actual, DefaultConfig())
+	}
+}
+
+// TestLoadConfigRejectsMissingCustomScope 验证显式自定义路径不会因默认回退掩盖部署拼写错误。
+//
+// 测试方法：构建不含 services.api 的 Snapshot，以自定义 scope 加载；断言同时保留
+// app-web-hertz config_load_failed 与 config scope_not_found，并携带自定义 scope。
+func TestLoadConfigRejectsMissingCustomScope(t *testing.T) {
+	manager := newTestManager(t, map[string]any{"service": map[string]any{"name": "orders"}})
+	defer func() { _ = manager.Close() }()
+
+	_, err := loadConfig(context.Background(), manager, "services.api")
+	if !errcode.IsCode[ErrorCode](err, ErrCodeConfigLoadFailed) ||
+		!errcode.IsCode[baseconfig.ErrorCode](err, baseconfig.ErrCodeConfigDecodeScopeNotFound) ||
+		!strings.Contains(err.Error(), "scope=services.api") {
+		t.Fatalf("expected custom scope failure with layered cause, got=%v", err)
+	}
+}
 
 // countingManager 包装真实 Manager，用于验证 app-web-hertz 只读取一次 Snapshot 且不建立订阅。
 type countingManager struct {
