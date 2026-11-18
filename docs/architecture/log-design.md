@@ -291,7 +291,7 @@ Provider 构建和 Close 是业务可见错误边界；单次 Logger 写入不�
 
 ### 配置与宿主适配
 
-- `app-log-zap/bootstrap.go`：scope、Provider options 与结构化 Build 契约。
+- `app-log-zap/bootstrap.go`：config scope、Provider options 与结构化 Build 契约。
 - `app-log-zap/provider.go`：`ZapProvider()` 窄能力、Subscription、配置桥接、commit 和组合生命周期。
 - `app-log-zap/errors.go`：适配层错误码与 cause 包装。
 - `app-log-zap/global/api.go`、`runtime.go`、`errors.go`：全局入口、降级和资源所有权。

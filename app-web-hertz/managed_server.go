@@ -30,8 +30,8 @@ type managedServer struct {
 	// InstrumentationBundles 由 IOC 注入成对 Option/Middleware；缺失表示不启用 Tracing 等插桩。
 	InstrumentationBundles []InstrumentationBundle `ioc:"required=false"`
 
-	// scope 是 Init 阶段读取一次的独立 Hertz 配置路径。
-	scope string
+	// configScope 是 Init 阶段读取一次的独立 Hertz 配置路径。
+	configScope string
 	// options 是 Module 注册前已校验并冻结的应用装配声明。
 	options *buildOptions
 	// server 是 Init 成功后发布的底层单周期实现。
@@ -59,7 +59,7 @@ func (this *managedServer) Init(ctx context.Context) error {
 		return err
 	}
 	// 第一阶段：读取并校验本运行周期的独立启动配置，不订阅热更新。
-	input, err := loadConfig(ctx, this.Manager, this.scope)
+	input, err := loadConfig(ctx, this.Manager, this.configScope)
 	if err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func (this *managedServer) Init(ctx context.Context) error {
 	}
 	// 第三阶段：只在完整构造成功后发布委托，避免半初始化 Server 可见。
 	this.server = server
-	logAssemblySuccess(ctx, loggers.assembly, this.scope, input, components, startedAt)
+	logAssemblySuccess(ctx, loggers.assembly, this.configScope, input, components, startedAt)
 	return nil
 }
 

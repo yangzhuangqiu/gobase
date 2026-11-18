@@ -281,7 +281,7 @@ logger.Debug(ctx, "visible after update")
 
 ```go
 app.WithLogging(applogzap.New(
-    applogzap.WithScope("log.zap"),
+    applogzap.WithConfigScope("log.zap"),
     applogzap.WithProviderOptions(
         logzap.WithContextExtractors(extractTrace),
         logzap.WithRedactor(log.NewKeyRedactor("token")),
@@ -289,7 +289,7 @@ app.WithLogging(applogzap.New(
 ))
 ```
 
-`WithScope` 默认是 `log.zap`，空白值不覆盖默认；配置位于其他 scope 时才显式调整。`WithProviderOptions` 按声明顺序追加，每次 Build 转发给 Zap Provider。
+`WithConfigScope` 默认是 `log.zap`，空白值不覆盖默认；配置位于其他 dotted path 时才显式调整。`WithProviderOptions` 按声明顺序追加，每次 Build 转发给 Zap Provider。
 
 app-log-zap 先订阅并同步接收完整初始 Config，再创建核心；后续 Snapshot 只应用 level。ConfigManager 的 Defaults/File/Remote/Pinned 优先级和 Config Flag 由 Config/App 模块负责，详见 [Config 使用指南](config-usage.md) 与 [App 使用指南](app-usage.md)。
 
@@ -373,7 +373,7 @@ app Runtime 不需要手工管理 Lease，直接选择组合 Logging：
 ```go
 app.WithLogging(apphlogzap.Wrap(
     applogzap.New(
-        applogzap.WithScope("log.zap"),
+        applogzap.WithConfigScope("log.zap"),
     ),
 ))
 ```

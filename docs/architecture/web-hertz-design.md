@@ -323,8 +323,10 @@ provider 不自动安装 Access Log、Metrics、Tracing 或健康检查后端。
 
 ## 14. Open Gaps / Future Improvements
 
-1. 尚无 Ready/Address/Status 查询；没有跨 provider 需求前不扩展根接口。
-2. 尚无服务注册合同；需要先定义注册、失败回滚、注销和所有权。
+1. 尚无 Ready/Address/Status 查询；后续服务注册 feature 已形成具体的 Ready/Endpoint 窄接口需求，
+   但仍不计划扩展根 `web.Server`，详见[服务注册能力提案](service-registration-proposal.md)。
+2. 尚无服务注册合同；注册、失败回滚、注销、所有权和摘流量顺序记录在
+   [服务注册能力提案](service-registration-proposal.md)，当前仍保持未实现状态。
 3. 初始化阶段永久阻塞无法被 Hertz Shutdown 中断。
 4. pprof 已可通过接收 RouterGroup 的 RouteFunc 表达；独立诊断端口与 Metrics/Tracing 适配按
    [Web 可观测性提案](web-observability-proposal.md) 处理，不直接暴露 Engine。
@@ -351,3 +353,4 @@ provider 不自动安装 Access Log、Metrics、Tracing 或健康检查后端。
 4. [quickstart-web-hertz](../../examples/quickstart-web-hertz/README.md)
 5. [app-web-hertz 架构设计](app-web-hertz-design.md)
 6. [Web 可观测性提案](web-observability-proposal.md)
+7. [服务注册能力提案（TODO Feature）](service-registration-proposal.md)

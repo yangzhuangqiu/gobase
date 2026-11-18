@@ -32,7 +32,7 @@ func runQuickstartLog() error {
 		app.WithName("quickstart-log"),
 		app.WithDescription("Minimal quickstart for gobase/log"),
 		app.WithVersion("v0.1.0"),
-		app.WithLogging(applogzap.New(applogzap.WithScope("log"))),
+		app.WithLogging(applogzap.New(applogzap.WithConfigScope("log"))),
 		app.WithConfig(config.Defaults(defaultQuickstartLogMinimalConfig())),
 		app.WithWorkloads(app.Runner(runQuickstartLogMinimal)),
 	)

@@ -107,9 +107,9 @@ func (this *globalRuntime) buildManagerForGlobal() (config.Manager, error) {
 // buildProviderFromManager 通过 app-log-zap 适配入口构建组合 Provider。
 // 阶段角色：global bootstrap 的第二资源获取阶段。
 func (this *globalRuntime) buildProviderFromManager(manager config.Manager) (baselog.Provider, error) {
-	provider, err := applogzap.NewProviderFromManager(context.Background(), manager, applogzap.DefaultManagerScope)
+	provider, err := applogzap.NewProviderFromManager(context.Background(), manager, applogzap.DefaultConfigScope)
 	if err != nil {
-		return nil, errorForGlobalProviderBuildFailed("op=app_log_zap.global.provider result=failed stage=build_from_manager scope=%s reason=%w", applogzap.DefaultManagerScope, err)
+		return nil, errorForGlobalProviderBuildFailed("op=app_log_zap.global.provider result=failed stage=build_from_manager scope=%s reason=%w", applogzap.DefaultConfigScope, err)
 	}
 	return provider, nil
 }

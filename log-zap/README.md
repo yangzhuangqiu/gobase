@@ -128,7 +128,7 @@ provider, err := logzap.NewProvider(cfg,
 ## 破坏性迁移
 
 1. `RuntimeConfigWatcher` 与 `WithWatcher` 已删除。自有配置来源的宿主改为调用 `ApplyRuntimeConfig`；ConfigManager 场景改用 `app-log-zap`。
-2. `log-zap/bootstrap` 已删除，入口迁移到 `applogzap.NewProviderFromManager(ctx, manager, scope, options...)`。
+2. `log-zap/bootstrap` 已删除，入口迁移到 `applogzap.NewProviderFromManager(ctx, manager, configScope, options...)`。
 3. `log-zap/global` 已迁移到 `app-log-zap/global`。
 
 ## File Map

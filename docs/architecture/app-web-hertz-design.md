@@ -13,13 +13,13 @@
 目标：
 
 1. 保持根 `web.Server` 只有稳定生命周期合同。
-2. 保持 `web-hertz` 不知道 Controller、Filter、IOC 和配置 scope。
+2. 保持 `web-hertz` 不知道 Controller、Filter、IOC 和 config scope。
 3. 让全部 IOC 组件进入同一个私有构造核心，避免参数、Option 与容器依赖形成多套组件入口。
 4. 让 IOC 拓扑保证组件先初始化、Server 后初始化，关闭时顺序相反。
 5. 保留 app-web-hertz、config、IOC 和 web-hertz 的可分支错误链。
 6. 以不含 OTel 类型的原子 Bundle 接受成对 Hertz 插桩，并保持 Provider/Exporter 所有权在外部。
 
-非目标：包扫描、隐式接口发现、自动 Run、通用 workload SPI、默认启用 Middleware、hlog 生命周期、启动配置热更新、服务注册、观测后端资源创建和信号处理。
+非目标：包扫描、隐式接口发现、自动 Run、通用 workload SPI、默认启用 Middleware、hlog 生命周期、启动配置热更新、当前版本的服务注册、观测后端资源创建和信号处理。后续服务注册作为独立 TODO feature 设计，不改变本文描述的现状，详见[服务注册能力提案](service-registration-proposal.md)。
 
 ## 3. 核心决策
 
@@ -37,7 +37,7 @@ Controller/Filter/fallback handler 本来就是该模块的应用合同，自动
 
 ### 3.3 Module 只声明，Init 才获取资源
 
-`NewModule` 只复制 Option；`Register` 归一化 scope/Option 并注册 bean。Snapshot 读取、Controller 反射计划和 Hertz 构造均发生在 IOC Init。
+`NewModule` 只复制 Option；`Register` 归一化 config scope/Option 并注册 bean。Snapshot 读取、Controller 反射计划和 Hertz 构造均发生在 IOC Init。
 
 这保持 app-runtime Module 的纯声明合同，使 Registry 失败没有外部资源需要回滚，Init 失败则由 IOC 统一回滚此前成功组件。
 
@@ -101,7 +101,7 @@ flowchart LR
 
 | 输入 | 默认/零值 | 归并规则 | 生效阶段 | 失败语义 |
 |---|---|---|---|---|
-| Module scope | 空白为 `web.hertz` | 构造时固定 | Server bean Init | `config_load_failed` |
+| Module config scope | 空白为 `web.hertz` | 构造时固定 | Server bean Init | `config_load_failed` |
 | `webhertz.Config` | provider 默认；Router bool 为三态 | typed Config 后由原生 Option 覆盖；WithNoMethod 可达性除外 | provider 构造 | 保留 web-hertz cause |
 | `appwebhertz.Config` | Server 默认 + 标准能力全关闭 | Server YAML inline；Middleware 使用子段 | Server Init | `config_invalid` / `config_load_failed` |
 | Recovery / Request ID / Access Log / CORS / Gzip 可选基础组件 | enabled=false | Snapshot 配置后由 typed policy/LoggerFactory 补充策略 | 标准链构造 | 配置非法或 typed 依赖缺失 fail-fast |
@@ -112,7 +112,7 @@ flowchart LR
 | Controller/Filter | 可为空 | IOC 注册顺序 | Build 注入 | typed nil 在 plan 阶段失败 |
 | NoRoute/NoMethod Handler | 可为空 | 先按 IOC 注册顺序注入，再按 Order 稳定排序 | Build 注入 | typed nil 在 fallback plan 阶段失败 |
 
-Module 只读取当前 Snapshot 一次且不调用 Subscribe。旧的扁平 Server 字段与新增 `router`、`middleware` 子段从同一 scope 解码；即使 Manager 后续发布新 Snapshot，已构造 Server 的地址、timeout、Middleware 和路由也不改变。
+Module 只读取当前 Snapshot 一次且不调用 Subscribe。旧的扁平 Server 字段与新增 `router`、`middleware` 子段从同一 config scope 解码；即使 Manager 后续发布新 Snapshot，已构造 Server 的地址、timeout、Middleware 和路由也不改变。
 
 ## 7. 构建事务
 
@@ -224,8 +224,8 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 | fallback handler 稳定排序且拒绝 typed nil | `(Order, registration index)` 稳定计划 | `TestPrepareFallbackHandlersSortsStablyAndRejectsTypedNil` |
 | Container Close 能停止正在运行的 Server | managed bean Close 委托 Shutdown | `TestContainerCloseStopsManagedRunningServer` |
 | Controller/Filter 按注册顺序注入 | IOC slice 注入 | `TestModuleAutomaticallyAssemblesControllerFilterAndServer` |
-| 默认 scope 缺失回退、自定义 scope 缺失失败、trim/最后声明和错误链稳定 | WithScope + Init 单次 loadConfig | `TestLoadConfigUsesDefaultsWhenDefaultScopeMissing`、`TestLoadConfigRejectsMissingCustomScope`、`TestWithScopeUsesDefaultAndLastDeclaration`、`TestModuleUsesCustomScopeAndPreservesConfigFailures` |
-| 旧扁平字段与 middleware 子段同源解码 | Config.Server YAML inline | `TestLoadConfigPreservesFlatScopeAndDecodesRouterConfig` |
+| 默认 config scope 缺失回退、自定义 config scope 缺失失败、trim/最后声明和错误链稳定 | WithConfigScope + Init 单次 loadConfig | `TestLoadConfigUsesDefaultsWhenDefaultConfigScopeMissing`、`TestLoadConfigRejectsMissingCustomConfigScope`、`TestWithConfigScopeUsesDefaultAndLastDeclaration`、`TestModuleUsesCustomConfigScopeAndPreservesConfigFailures` |
+| 旧扁平字段与 middleware 子段同源解码 | Config.Server YAML inline | `TestLoadConfigPreservesFlatConfigScopeAndDecodesRouterConfig` |
 | Go 配置值与 Snapshot 解析一致且无订阅 | 共用 resolveConfiguredConfig | `TestGoValueAndSnapshotConfigResolveIdentically` |
 | 标准链顺序和 panic 最终 500 稳定 | 固定 Handler 阶段 + Recovery 外层 | `TestPrepareStandardMiddlewareKeepsFixedOrder`、`TestRecoveryProducesFinal500AndPreservesRequestID` |
 | IOC 配置只读一次并产生真实请求行为 | managed Init 单次 Current + 共用 build | `TestModuleBuildsConfiguredMiddlewareFromSingleSnapshot` |
@@ -253,6 +253,7 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 4. 自动路由把方法名作为公开 URL 声明，兼容性敏感接口应使用显式路由。
 5. 标准 Middleware 只处理启动期静态策略；动态配置刷新需要独立原子策略合同，不能订阅整个 Config。
 6. Gzip 只处理完整内存响应，不接管流式/SSE/升级连接；Access Log 与通用 Observer 使用请求完成事件，Trace 使用原子 Instrumentation Bundle。Prometheus/OTel 的后端适配不属于本模块。
+7. 当前不聚合服务 Registrar，也不协调 Ready 后注册和关闭前注销；候选模块边界、Workload 内部顺序和验收标准见[服务注册能力提案](service-registration-proposal.md)。
 
 ## 14. File Map
 
@@ -267,7 +268,7 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 9. `app-web-hertz/module.go`：IOC Module 和 Server bean 注册。
 10. `app-web-hertz/managed_server.go`：依赖注入、Init、生命周期委托和 Close。
 11. `app-web-hertz/workload.go`：唯一 Server 的 Workload Run/Shutdown 适配。
-12. `app-web-hertz/config.go`：独立 scope 配置加载。
+12. `app-web-hertz/config.go`：独立 config scope 配置加载。
 13. `app-web-hertz/errors.go`：稳定错误码。
 14. `app-web-hertz/*_test.go`：配置、Middleware、Observation、Bundle、依赖图、路由和真实生命周期测试。
 
@@ -278,3 +279,4 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 3. [Quickstart](../../examples/quickstart-app-web-hertz/README.md)
 4. [web-hertz 架构设计](web-hertz-design.md)
 5. [Web 可观测性提案](web-observability-proposal.md)
+6. [服务注册能力提案（TODO Feature）](service-registration-proposal.md)

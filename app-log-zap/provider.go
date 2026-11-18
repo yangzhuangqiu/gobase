@@ -14,7 +14,7 @@ import (
 type runtimeProvider struct {
 	// core 是不感知配置来源的 Zap 日志核心。
 	core *logzap.Provider
-	// subscription 是 app-log-zap 独占的日志 scope 配置订阅。
+	// subscription 是 app-log-zap 独占的日志配置路径订阅。
 	subscription config.Subscription
 	// watchCancel 只终止等待 lifecycle context 的辅助 goroutine。
 	watchCancel context.CancelFunc
@@ -43,36 +43,36 @@ var _ baselog.Provider = (*runtimeProvider)(nil)
 // 参数：
 // - ctx：订阅生命周期 context；取消后停止配置推送，但不会提前关闭日志核心；
 // - manager：已完成首次 Snapshot 发布的配置管理器，必填；
-// - scope：日志配置 dotted path；空值回退 DefaultManagerScope；
+// - configScope：ConfigManager 中的日志配置 dotted path；空值回退 DefaultConfigScope；
 // - options：仅用于 Zap 核心构造的 Provider Option。
 //
 // 返回：
 // - Provider：同时拥有 ConfigManager subscription 与 Zap 核心，调用方必须 Close；
 // - error：订阅、初始配置解码或核心创建失败时返回，并回滚已取得资源。
-func NewProviderFromManager(ctx context.Context, manager config.Manager, scope string, options ...logzap.Option) (baselog.Provider, error) {
-	return newRuntimeProvider(ctx, manager, scope, options)
+func NewProviderFromManager(ctx context.Context, manager config.Manager, configScope string, options ...logzap.Option) (baselog.Provider, error) {
+	return newRuntimeProvider(ctx, manager, configScope, options)
 }
 
 // newRuntimeProvider 从 ConfigManager 当前版本原子衔接 Zap 核心，并接管订阅生命周期。
 // 阶段角色：app-log-zap 的配置来源适配与资源所有权边界。
-func newRuntimeProvider(ctx context.Context, manager config.Manager, scope string, options []logzap.Option) (baselog.Provider, error) {
-	resolvedScope := strings.TrimSpace(scope)
-	if resolvedScope == "" {
-		resolvedScope = defaultLogScope
+func newRuntimeProvider(ctx context.Context, manager config.Manager, configScope string, options []logzap.Option) (baselog.Provider, error) {
+	resolvedConfigScope := strings.TrimSpace(configScope)
+	if resolvedConfigScope == "" {
+		resolvedConfigScope = DefaultConfigScope
 	}
 	bridge := &runtimeConfigBridge{}
 
 	// 阶段一：先订阅并同步接收当前版本，避免读取 Snapshot 与注册监听之间丢失更新。
-	subscription, err := config.Subscribe[logzap.Config](manager, resolvedScope, bridge.onUpdate)
+	subscription, err := config.Subscribe[logzap.Config](manager, resolvedConfigScope, bridge.onUpdate)
 	if err != nil {
-		return nil, errorForProviderSubscribeFailed("op=app_log_zap.provider result=failed stage=subscribe scope=%s reason=%w", resolvedScope, err)
+		return nil, errorForProviderSubscribeFailed("op=app_log_zap.provider result=failed stage=subscribe scope=%s reason=%w", resolvedConfigScope, err)
 	}
 
 	// 阶段二：在通知串行锁内基于最新完整配置创建纯 Zap 核心；失败时补偿订阅。
 	core, err := bridge.buildCore(options)
 	if err != nil {
 		subscription.Cancel()
-		return nil, errorForProviderCoreBuildFailed("op=app_log_zap.provider result=failed stage=new_core scope=%s reason=%w", resolvedScope, err)
+		return nil, errorForProviderCoreBuildFailed("op=app_log_zap.provider result=failed stage=new_core scope=%s reason=%w", resolvedConfigScope, err)
 	}
 
 	// 阶段三：lifecycle context 只停止后台订阅；核心输出资源仍由 Runtime.Close 确定性释放。

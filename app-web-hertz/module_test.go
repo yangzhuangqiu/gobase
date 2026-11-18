@@ -233,16 +233,16 @@ func TestModuleBuildsConfiguredMiddlewareFromSingleSnapshot(t *testing.T) {
 	}
 }
 
-// TestModuleUsesCustomScopeAndPreservesConfigFailures 验证 Module scope 和配置错误在 IOC Init 阶段保持分层语义。
-// 测试方法：先用 trim 后的自定义 scope 成功 Build，再用非法 provider 配置 Build，断言 app、IOC 和 web-hertz 错误码均可分支。
-func TestModuleUsesCustomScopeAndPreservesConfigFailures(t *testing.T) {
-	// 第一阶段：自定义 scope trim 后应完成正常 Build 和 Close。
+// TestModuleUsesCustomConfigScopeAndPreservesConfigFailures 验证 Module config scope 和配置错误在 IOC Init 阶段保持分层语义。
+// 测试方法：先用 trim 后的自定义 config scope 成功 Build，再用非法 provider 配置 Build，断言 app、IOC 和 web-hertz 错误码均可分支。
+func TestModuleUsesCustomConfigScopeAndPreservesConfigFailures(t *testing.T) {
+	// 第一阶段：自定义 config scope trim 后应完成正常 Build 和 Close。
 	customManager := newTestManager(t, map[string]any{
 		"services": map[string]any{"api": map[string]any{"address": "127.0.0.1:0"}},
 	})
 	customContainer := ioc.New()
 	registerBorrowedManager(t, customContainer, customManager)
-	if err := NewModule(WithScope(" services.api ")).Register(customContainer); err != nil {
+	if err := NewModule(WithConfigScope(" services.api ")).Register(customContainer); err != nil {
 		t.Fatalf("register custom module: %v", err)
 	}
 	if err := customContainer.Build(context.Background()); err != nil {
@@ -255,7 +255,7 @@ func TestModuleUsesCustomScopeAndPreservesConfigFailures(t *testing.T) {
 		t.Fatalf("close custom manager: %v", err)
 	}
 
-	// 第二阶段：默认 scope 中的非法 provider 字段应保留三层错误码。
+	// 第二阶段：默认 config scope 中的非法 provider 字段应保留三层错误码。
 	invalidManager := newTestManager(t, map[string]any{
 		"web": map[string]any{"hertz": map[string]any{"maxRequestBodySize": -1}},
 	})
@@ -273,25 +273,25 @@ func TestModuleUsesCustomScopeAndPreservesConfigFailures(t *testing.T) {
 	}
 }
 
-// TestWithScopeUsesDefaultAndLastDeclaration 验证 scope Option 保留默认回退与标量 Option 的最后声明优先级。
-// 测试方法：分别解析无 Option、空白 scope 和两个连续 scope，断言默认值、trim 与最后声明结果。
-func TestWithScopeUsesDefaultAndLastDeclaration(t *testing.T) {
+// TestWithConfigScopeUsesDefaultAndLastDeclaration 验证 config scope Option 保留默认回退与标量 Option 的最后声明优先级。
+// 测试方法：分别解析无 Option、空白 config scope 和两个连续 config scope，断言默认值、trim 与最后声明结果。
+func TestWithConfigScopeUsesDefaultAndLastDeclaration(t *testing.T) {
 	tests := map[string]struct {
 		options  []Option
 		expected string
 	}{
-		"default":   {expected: DefaultScope},
-		"blank":     {options: []Option{WithScope("  ")}, expected: DefaultScope},
-		"last wins": {options: []Option{WithScope("services.first"), WithScope(" services.second ")}, expected: "services.second"},
+		"default":   {expected: DefaultConfigScope},
+		"blank":     {options: []Option{WithConfigScope("  ")}, expected: DefaultConfigScope},
+		"last wins": {options: []Option{WithConfigScope("services.first"), WithConfigScope(" services.second ")}, expected: "services.second"},
 	}
 	for name, item := range tests {
 		t.Run(name, func(t *testing.T) {
 			resolved, err := resolveOptions(item.options)
 			if err != nil {
-				t.Fatalf("resolve scope options: %v", err)
+				t.Fatalf("resolve config scope options: %v", err)
 			}
-			if resolved.scope != item.expected {
-				t.Fatalf("unexpected scope: got=%q expected=%q", resolved.scope, item.expected)
+			if resolved.configScope != item.expected {
+				t.Fatalf("unexpected config scope: got=%q expected=%q", resolved.configScope, item.expected)
 			}
 		})
 	}

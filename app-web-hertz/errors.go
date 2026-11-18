@@ -13,7 +13,7 @@ type ErrorCode = errcode.StringCode
 const (
 	// ErrCodeConfigInvalid 表示 Snapshot 解码后的标准配置语义非法。
 	ErrCodeConfigInvalid ErrorCode = "app_web_hertz.config_invalid"
-	// ErrCodeConfigLoadFailed 表示配置快照、自定义 scope 解码或 provider 配置校验失败。
+	// ErrCodeConfigLoadFailed 表示配置快照、自定义 config scope 解码或 provider 配置校验失败。
 	ErrCodeConfigLoadFailed ErrorCode = "app_web_hertz.config_load_failed"
 	// ErrCodeDeclarationInvalid 表示依赖、应用组件或 Option 声明非法。
 	ErrCodeDeclarationInvalid ErrorCode = "app_web_hertz.declaration_invalid"

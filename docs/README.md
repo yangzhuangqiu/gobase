@@ -399,3 +399,4 @@ Architecture 不承担以下职责：
 33. [app-web-hertz 架构设计](architecture/app-web-hertz-design.md)
 34. [quickstart-app-web-hertz](../examples/quickstart-app-web-hertz/README.md)
 35. [quickstart-app-observe-webhertz](../examples/quickstart-app-observe-webhertz/README.md)
+36. [服务注册能力提案（TODO Feature）](architecture/service-registration-proposal.md)

@@ -62,12 +62,12 @@ app.Main(
 )
 ```
 
-默认 `web.hertz` scope 缺失时，`NewModule()` 直接使用 `DefaultConfig()`，因此最小应用不需要配置文件或 `WithConfig`。自定义配置路径使用 `WithScope("services.api")`；该路径缺失时仍 fail-fast，避免部署拼写错误被默认值掩盖。`app` 拥有信号、Workload 收敛和 Runtime Close；`Workload()` 显式桥接唯一 Server 的 Run/Shutdown，因此无需额外 Shutdown Hook。多 Server 应声明多个具有唯一名称的 Workload。
+默认 `web.hertz` config scope 缺失时，`NewModule()` 直接使用 `DefaultConfig()`，因此最小应用不需要配置文件。自定义配置路径使用 `WithConfigScope("services.api")`；该路径缺失时仍 fail-fast，避免部署拼写错误被默认值掩盖。`app` 拥有信号、Workload 收敛和 Runtime Close；`Workload()` 显式桥接唯一 Server 的 Run/Shutdown，因此无需额外 Shutdown Hook。多 Server 应声明多个具有唯一名称的 Workload。
 
 ## 公共入口与合同
 
 ```go
-const DefaultScope = "web.hertz"
+const DefaultConfigScope = "web.hertz"
 
 func NewModule(options ...Option) Module
 
@@ -77,7 +77,7 @@ func DefineNoRouteHandler(handler NoRouteHandler, options ...ioc.RegisterOption)
 func DefineNoMethodHandler(handler NoMethodHandler, options ...ioc.RegisterOption) ioc.Definition
 func Workload() app.Workload
 
-func WithScope(scope string) Option
+func WithConfigScope(configScope string) Option
 func WithServerOptions(options ...webhertz.Option) Option
 func WithRoutePathStyle(style RoutePathStyle) Option
 func WithRecoveryHandler(handler RecoveryHandler) Option
@@ -167,9 +167,9 @@ web:
         excludedContentTypes: [image/, application/zip]
 ```
 
-1. 未声明 `WithScope` 时使用 `web.hertz`；显式 scope trim 后为空同样回退该默认值；该默认 scope 缺失时直接采用 `DefaultConfig()`。
+1. 未声明 `WithConfigScope` 时使用 `web.hertz`；显式 config scope trim 后为空同样回退该默认值；该默认 config scope 缺失时直接采用 `DefaultConfig()`。
 2. Module 在 IOC Init 阶段读取当前 Snapshot 一次；启动配置不热更新。
-3. 自定义 scope 缺失、已存在 scope 解码失败、provider、Middleware 配置非法或缺少 `LoggerFactory` 会让 IOC Build fail-fast。
+3. 自定义 config scope 缺失、已存在 config scope 解码失败、provider、Middleware 配置非法或缺少 `LoggerFactory` 会让 IOC Build fail-fast。
 4. `WithServerOptions` 在 typed Config 之后应用，最终优先级由 `web-hertz` 保证。
 5. CORS 不默认放开 Origin；静态列表为空时必须提供 `WithCORSOriginValidator`。
 6. `allowOrigins: ["*"]` 与 `allowCredentials: true` 是非法安全组合。
@@ -204,7 +204,7 @@ advanced outer Middleware
 | ErrorCode | 语义 |
 |---|---|
 | `app_web_hertz.config_invalid` | Server/Middleware 字段或安全组合非法 |
-| `app_web_hertz.config_load_failed` | Manager、Snapshot、scope 解码或 provider 配置非法 |
+| `app_web_hertz.config_load_failed` | Manager、Snapshot、config scope 解码或 provider 配置非法 |
 | `app_web_hertz.declaration_invalid` | Option、Controller、Filter、Module 或 Registry 声明非法 |
 | `app_web_hertz.route_registration_failed` | Controller 手工路由注册失败，并保留 Registrar cause |
 | `app_web_hertz.middleware_execution_failed` | Request ID、Gzip 等内建 Middleware 运行失败；通过结构化日志观测 |
@@ -247,7 +247,7 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 
 1. `controller.go`、`route_registrar.go`、`filter.go`、`grouped_filter.go`、`no_*_handler.go`：应用扩展合同和 fallback 排序。
 2. `route.go`、`automatic_route.go`、`group_path.go`、`route_path.go`、`route_path_style.go`、`filter_plan.go`：逻辑分组、Controller/Filter 计划、自动路由协议和路径映射。
-3. `config.go`、`middleware_config.go`：完整配置模型、默认值、跨能力解析调度与独立 scope 单次读取。
+3. `config.go`、`middleware_config.go`：完整配置模型、默认值、跨能力解析调度与独立 config scope 单次读取。
 4. `middleware*.go`：固定标准链、typed policy，以及各能力的配置、校验和私有 Middleware 实现。
 5. `logging.go`：命名 Logger 派生、组装摘要和安全计数字段。
 6. `access_log.go`、`request_observation.go`：内建 Access Log 配置、映射、过滤策略和完成态元数据桥接。

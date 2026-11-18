@@ -25,7 +25,7 @@
 app.WithLogging(
 	apphlogzap.Wrap(
 		applogzap.New(
-			applogzap.WithScope("log.zap"),
+			applogzap.WithConfigScope("log.zap"),
 		),
 	),
 )

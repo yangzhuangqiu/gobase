@@ -12,15 +12,15 @@ import (
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 )
 
-// TestLoadConfigUsesDefaultsWhenDefaultScopeMissing 验证默认模块可以在零 web.hertz 配置下启动。
+// TestLoadConfigUsesDefaultsWhenDefaultConfigScopeMissing 验证默认模块可以在零 web.hertz 配置下启动。
 //
-// 测试方法：构建不含默认 scope 的 Snapshot，调用 loadConfig(DefaultScope)，断言直接得到
-// 独立的完整 DefaultConfig，且不会把 scope 缺失包装成启动错误。
-func TestLoadConfigUsesDefaultsWhenDefaultScopeMissing(t *testing.T) {
+// 测试方法：构建不含默认 config scope 的 Snapshot，调用 loadConfig(DefaultConfigScope)，断言直接得到
+// 独立的完整 DefaultConfig，且不会把 config scope 缺失包装成启动错误。
+func TestLoadConfigUsesDefaultsWhenDefaultConfigScopeMissing(t *testing.T) {
 	manager := newTestManager(t, map[string]any{"service": map[string]any{"name": "orders"}})
 	defer func() { _ = manager.Close() }()
 
-	actual, err := loadConfig(context.Background(), manager, DefaultScope)
+	actual, err := loadConfig(context.Background(), manager, DefaultConfigScope)
 	if err != nil {
 		t.Fatalf("load missing default scope: %v", err)
 	}
@@ -29,11 +29,11 @@ func TestLoadConfigUsesDefaultsWhenDefaultScopeMissing(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRejectsMissingCustomScope 验证显式自定义路径不会因默认回退掩盖部署拼写错误。
+// TestLoadConfigRejectsMissingCustomConfigScope 验证显式自定义路径不会因默认回退掩盖部署拼写错误。
 //
-// 测试方法：构建不含 services.api 的 Snapshot，以自定义 scope 加载；断言同时保留
-// app-web-hertz config_load_failed 与 config scope_not_found，并携带自定义 scope。
-func TestLoadConfigRejectsMissingCustomScope(t *testing.T) {
+// 测试方法：构建不含 services.api 的 Snapshot，以自定义 config scope 加载；断言同时保留
+// app-web-hertz config_load_failed 与 config scope_not_found，并携带自定义 config scope。
+func TestLoadConfigRejectsMissingCustomConfigScope(t *testing.T) {
 	manager := newTestManager(t, map[string]any{"service": map[string]any{"name": "orders"}})
 	defer func() { _ = manager.Close() }()
 
@@ -66,9 +66,9 @@ func (this *countingManager) Subscribe(subscriber baseconfig.Subscriber) (baseco
 	return this.Manager.Subscribe(subscriber)
 }
 
-// TestLoadConfigPreservesFlatScopeAndDecodesRouterConfig 验证旧扁平 Server 配置继续可用，并能从同一 scope 解码新增 Router 配置。
+// TestLoadConfigPreservesFlatConfigScopeAndDecodesRouterConfig 验证旧扁平 Server 配置继续可用，并能从同一 config scope 解码新增 Router 配置。
 // 测试方法：构造包含旧 address 字段和嵌套 router 显式 false/true 的 Snapshot，调用 loadConfig 后断言默认回填与三态值。
-func TestLoadConfigPreservesFlatScopeAndDecodesRouterConfig(t *testing.T) {
+func TestLoadConfigPreservesFlatConfigScopeAndDecodesRouterConfig(t *testing.T) {
 	// 第一阶段：构造同时包含旧扁平 Server 字段与新增 Middleware 的单一配置快照。
 	manager := newTestManager(t, map[string]any{
 		"web": map[string]any{
@@ -94,7 +94,7 @@ func TestLoadConfigPreservesFlatScopeAndDecodesRouterConfig(t *testing.T) {
 	defer func() { _ = manager.Close() }()
 
 	// 第二阶段：通过生产 loadConfig 入口解析，验证兼容字段、三态路由值与 Middleware 同步生效。
-	resolved, err := loadConfig(context.Background(), manager, DefaultScope)
+	resolved, err := loadConfig(context.Background(), manager, DefaultConfigScope)
 	if err != nil {
 		t.Fatalf("load configured Hertz server: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestGoValueAndSnapshotConfigResolveIdentically(t *testing.T) {
 	}}})
 	defer func() { _ = manager.Close() }()
 	counted := &countingManager{Manager: manager}
-	actual, err := loadConfig(context.Background(), counted, DefaultScope)
+	actual, err := loadConfig(context.Background(), counted, DefaultConfigScope)
 	if err != nil {
 		t.Fatalf("load snapshot config: %v", err)
 	}

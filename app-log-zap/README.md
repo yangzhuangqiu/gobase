@@ -7,7 +7,7 @@
 ### In Scope
 
 1. 提供与 `app-runtime.Logging` 结构化兼容的 `Build` 方法，从 `config.Manager` 读取日志配置。
-2. 默认从 `log.zap` scope 构建 `log-zap.Provider`。
+2. 默认从 `log.zap` 配置路径构建 `log-zap.Provider`。
 3. 独占 ConfigManager subscription，并只把运行期 level 更新传给纯 Provider。
 4. 将 subscription 与 Zap 核心组合成一个可关闭的 `log.Provider`。
 5. 在 `global` 子包提供拥有 ConfigManager、组合 Provider 与关闭事务的零配置入口。
@@ -24,10 +24,11 @@
 
 | 对象 | 职责 |
 |---|---|
-| `Bootstrap` | 保存日志 scope，并在 Runtime Build 阶段创建 provider |
+| `Bootstrap` | 保存日志配置路径，并在 Runtime Build 阶段创建 provider |
 | `runtimeProvider` | 组合 Zap 核心、subscription 与幂等关闭状态 |
 | `runtimeConfigBridge` | 原子衔接初次配置回放、核心创建和后续 level 更新 |
-| `WithScope` | 覆盖默认 `log.zap` scope |
+| `DefaultConfigScope` | 声明默认日志配置路径 `log.zap` |
+| `WithConfigScope` | 覆盖默认 `log.zap` 配置路径 |
 | `WithProviderOptions` | 转发 ContextExtractor、Redactor 等 Provider 构造期策略 |
 | `New` | 构建结构化兼容 `app-runtime.Logging` 的 Bootstrap |
 | `NewProviderFromManager` | 不使用 app-runtime 时直接创建组合 Provider |
@@ -66,11 +67,11 @@ log:
 
 ## 公共入口与核心契约
 
-1. `New(options...)` 返回默认 scope 为 `log.zap` 的 Bootstrap；nil option 被忽略。
-2. `WithScope(scope)` 会 trim 输入；空值不覆盖当前 scope。
+1. `New(options...)` 返回默认配置路径为 `DefaultConfigScope`（`log.zap`）的 Bootstrap；nil option 被忽略。
+2. `WithConfigScope(configScope)` 会 trim 输入；空值不覆盖当前配置路径。
 3. `WithProviderOptions` 按声明顺序转发构造期策略；调用方不得在 Build 并发执行期间修改 option 捕获状态。
 4. `Bootstrap.Build(ctx, manager)` 返回 `log.Provider`：manager 非 nil 时创建组合 Provider，manager 为 nil 时创建使用默认配置的纯 Provider。
-5. `NewProviderFromManager(ctx, manager, scope, options...)` 直接返回同时拥有 subscription 与 Zap 核心的 Provider；manager 必填，空 scope 回退 `log.zap`。
+5. `NewProviderFromManager(ctx, manager, configScope, options...)` 直接返回同时拥有 subscription 与 Zap 核心的 Provider；manager 必填，空配置路径回退 `log.zap`。
 6. `Build` 返回值的动态类型支持 `interface{ ZapProvider() *logzap.Provider }`；仅供包装器类型断言借用，调用方不得单独关闭底层核心。
 7. context 取消只停止 subscription，不提前关闭 Zap 核心；核心必须由 Provider `Close` 确定性释放。
 8. 直接构建时调用方拥有返回 Provider；通过 Runtime 装配时由 Runtime 拥有并关闭它。
@@ -79,7 +80,7 @@ log:
 
 本模块没有独立配置结构，完整复用 `logzap.Config`：
 
-1. 默认 scope 为 `log.zap`；使用 `log` 等其他 scope 时必须显式 `WithScope("log")`。
+1. 默认配置路径为 `log.zap`；使用 `log` 等其他路径时必须显式 `WithConfigScope("log")`。
 2. provider 默认 `level=info`、`mode=console`、`format=json`、caller 开启。
 3. 初次回放使用完整 `logzap.Config` 创建核心；后续只投递 `logzap.RuntimeConfig{Level: ...}`。
 4. mode、format、caller、轮转、ContextExtractor 和 Redactor 保持启动期值。
@@ -131,13 +132,13 @@ log:
 ## 破坏性迁移
 
 1. `AsRuntimeOption(options...)` 已删除，迁移为 `appruntime.WithLogging(applogzap.New(options...))`。
-2. `log-zap/bootstrap.NewProviderFromManager` 已迁移为 `applogzap.NewProviderFromManager(ctx, manager, scope, options...)`。
+2. `log-zap/bootstrap.NewProviderFromManager` 已迁移为 `applogzap.NewProviderFromManager(ctx, manager, configScope, options...)`。
 3. `log-zap/global` 已迁移为 `app-log-zap/global`。
 4. `logzap.WithWatcher` 已删除；Manager 驱动场景使用 app-log-zap，其他宿主直接调用 `Provider.ApplyRuntimeConfig`。
 
 ## File Map
 
-1. `bootstrap.go`：scope/provider options 与结构化 Build 契约。
+1. `bootstrap.go`：config scope、Provider options 与结构化 Build 契约。
 2. `provider.go`：ZapProvider 窄能力、subscription、配置桥接、context 取消与组合关闭。
 3. `errors.go`：根包稳定错误码与 cause 包装。
 4. `global/`：零配置入口、Manager/Provider 所有权与全局错误码。

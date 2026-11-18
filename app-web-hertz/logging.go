@@ -45,12 +45,12 @@ func resolveServerLoggers(factory baselog.LoggerFactory) (serverLoggers, error) 
 
 // logAssemblySuccess 记录应用组件和标准能力已经冻结的单次高层摘要。
 // 阶段角色：只在底层 Server 完整构造并发布后执行，失败路径由 IOC Build 边界统一记录。
-func logAssemblySuccess(ctx context.Context, logger baselog.Logger, scope string, input Config, components serverComponents, startedAt time.Time) {
+func logAssemblySuccess(ctx context.Context, logger baselog.Logger, configScope string, input Config, components serverComponents, startedAt time.Time) {
 	globalFilters, groupedFilters, logicalGroups := filterAssemblyCounts(components.filters)
 	// 单条事件同时覆盖 IOC 聚合规模、标准能力开关和构造耗时，不展开高基数声明明细。
 	logger.Info(ctx, "Application Hertz server assembled",
 		baselog.F("op", "app_web_hertz.assemble"), baselog.F("result", "ok"), baselog.F("stage", "complete"),
-		baselog.F("scope", scope), baselog.F("provider", "hertz"), baselog.F("controller_count", len(components.controllers)),
+		baselog.F("scope", configScope), baselog.F("provider", "hertz"), baselog.F("controller_count", len(components.controllers)),
 		baselog.F("global_filter_count", globalFilters), baselog.F("grouped_filter_count", groupedFilters), baselog.F("logical_group_count", logicalGroups),
 		baselog.F("no_route_handler_count", len(components.noRouteHandlers)), baselog.F("no_method_handler_count", len(components.noMethodHandlers)),
 		baselog.F("request_observer_count", len(components.requestObservers)), baselog.F("instrumentation_bundle_count", len(components.instrumentationBundles)),

@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	// DefaultScope 是 IOC Module 默认读取的独立 Hertz 配置路径。
-	DefaultScope = "web.hertz"
+	// DefaultConfigScope 是 IOC Module 默认读取的独立 Hertz 配置路径。
+	DefaultConfigScope = "web.hertz"
 )
 
 // Config 定义 app-web-hertz 单个运行周期的 Server 与标准 Middleware 装配意图。
@@ -21,7 +21,7 @@ const (
 // 2. Middleware 各能力默认关闭，只有 enabled=true 才进入请求链；
 // 3. 配置只在 IOC Init 阶段解析一次，不支持运行期热更新。
 type Config struct {
-	// Server 保留 web-hertz 的启动配置合同；YAML 解码时内联到当前 scope。
+	// Server 保留 web-hertz 的启动配置合同；YAML 解码时内联到当前 config scope。
 	Server webhertz.Config `yaml:",inline"`
 	// Middleware 描述标准请求链装配；默认全部关闭且不持有外部资源。
 	Middleware MiddlewareConfig `yaml:"middleware"`
@@ -88,52 +88,52 @@ func resolveConfiguredConfig(input Config) (Config, error) {
 	return Config{Server: serverConfig, Middleware: middlewareConfig}, nil
 }
 
-// resolveScope 归一化 IOC Module 的独立配置路径。
-// 阶段角色：空白声明回退稳定默认值，非空值原样作为 dotted scope 使用。
-func resolveScope(scope string) string {
-	scope = strings.TrimSpace(scope)
-	if scope == "" {
-		return DefaultScope
+// resolveConfigScope 归一化 IOC Module 的独立配置路径。
+// 阶段角色：空白声明回退稳定默认值，非空值原样作为 dotted config scope 使用。
+func resolveConfigScope(configScope string) string {
+	configScope = strings.TrimSpace(configScope)
+	if configScope == "" {
+		return DefaultConfigScope
 	}
-	return scope
+	return configScope
 }
 
 // loadConfig 从 Manager 当前快照读取并校验一次 Server/标准 Middleware 启动配置。
 //
 // 阶段角色：IOC Server bean 初始化时读取一次；监听地址等启动配置不订阅热更新。
-// 语义：DefaultScope 缺失时使用 DefaultConfig；自定义 scope 缺失或任何已存在配置非法时 fail-fast。
-func loadConfig(ctx context.Context, manager baseconfig.Manager, scope string) (Config, error) {
+// 语义：DefaultConfigScope 缺失时使用 DefaultConfig；自定义 config scope 缺失或任何已存在配置非法时 fail-fast。
+func loadConfig(ctx context.Context, manager baseconfig.Manager, configScope string) (Config, error) {
 	if ctx == nil {
 		return Config{}, errorForConfigLoadFailed(
-			messagef("op=app_web_hertz.load_config result=failed stage=precheck scope=%s reason=context_required", scope),
+			messagef("op=app_web_hertz.load_config result=failed stage=precheck scope=%s reason=context_required", configScope),
 		)
 	}
 	if isNilInterface(manager) {
 		return Config{}, errorForConfigLoadFailed(
-			messagef("op=app_web_hertz.load_config result=failed stage=precheck scope=%s reason=manager_required", scope),
+			messagef("op=app_web_hertz.load_config result=failed stage=precheck scope=%s reason=manager_required", configScope),
 		)
 	}
 	if err := ctx.Err(); err != nil {
 		return Config{}, errorForConfigLoadFailed(
-			messagef("op=app_web_hertz.load_config result=failed stage=precheck scope=%s reason=context_done", scope),
+			messagef("op=app_web_hertz.load_config result=failed stage=precheck scope=%s reason=context_done", configScope),
 			err,
 		)
 	}
 	snapshot := manager.Current()
 	if snapshot == nil {
 		return Config{}, errorForConfigLoadFailed(
-			messagef("op=app_web_hertz.load_config result=failed stage=current scope=%s reason=snapshot_not_initialized", scope),
+			messagef("op=app_web_hertz.load_config result=failed stage=current scope=%s reason=snapshot_not_initialized", configScope),
 		)
 	}
 
-	// 第一阶段：默认 scope 缺失表示应用接受内建配置；自定义 scope 缺失仍视为部署拼写错误。
+	// 第一阶段：默认 config scope 缺失表示应用接受内建配置；自定义 config scope 缺失仍视为部署拼写错误。
 	var input Config
-	if err := snapshot.Decode(scope, &input); err != nil {
-		if scope == DefaultScope && errcode.IsCode[baseconfig.ErrorCode](err, baseconfig.ErrCodeConfigDecodeScopeNotFound) {
+	if err := snapshot.Decode(configScope, &input); err != nil {
+		if configScope == DefaultConfigScope && errcode.IsCode[baseconfig.ErrorCode](err, baseconfig.ErrCodeConfigDecodeScopeNotFound) {
 			return DefaultConfig(), nil
 		}
 		return Config{}, errorForConfigLoadFailed(
-			messagef("op=app_web_hertz.load_config result=failed stage=decode scope=%s reason=decode_failed", scope),
+			messagef("op=app_web_hertz.load_config result=failed stage=decode scope=%s reason=decode_failed", configScope),
 			err,
 		)
 	}
@@ -141,7 +141,7 @@ func loadConfig(ctx context.Context, manager baseconfig.Manager, scope string) (
 	resolved, err := resolveConfiguredConfig(input)
 	if err != nil {
 		return Config{}, errorForConfigLoadFailed(
-			messagef("op=app_web_hertz.load_config result=failed stage=validate_config scope=%s reason=config_invalid", scope),
+			messagef("op=app_web_hertz.load_config result=failed stage=validate_config scope=%s reason=config_invalid", configScope),
 			err,
 		)
 	}

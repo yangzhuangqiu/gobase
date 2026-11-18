@@ -44,7 +44,7 @@ $env:QUICKSTART_LOG_MODE="plain-full"; ./scripts/go.ps1 -C examples run ./quicks
 2. `app` 入口下业务层通过 `app.Runtime.Logger(this)` 写日志，无需导入 app-runtime，也无需手工初始化与关闭。
 3. `app-runtime` 在 config 后初始化日志，并在 IOC 后、config 前关闭日志 provider。
 4. provider 的运行期更新只支持 level，其余字段按启动期语义处理。
-5. `app-log-zap` 默认读取 `log.zap` scope；本示例为了与非 app 入口共用 `application.yaml`，显式传入 `applogzap.WithScope("log")`。
+5. `app-log-zap` 默认读取 `log.zap` 配置路径；本示例为了与非 app 入口共用 `application.yaml`，显式传入 `applogzap.WithConfigScope("log")`。
 6. 非 `app` 场景推荐使用 `logzap.NewProvider(cfg)`；需要动态调级时由宿主显式调用 `ApplyRuntimeConfig(logzap.RuntimeConfig{Level: ...})`。
 
 ## 配置说明
@@ -52,7 +52,7 @@ $env:QUICKSTART_LOG_MODE="plain-full"; ./scripts/go.ps1 -C examples run ./quicks
 1. `application.yaml` 提供了 console 示例（默认可直接运行）。
 2. 文件日志示例以注释给出，取消注释后可观察落盘输出。
 3. request/user 等调用链信息以结构化 Field 显式记录；生产装配可使用 typed ContextExtractor。
-4. app 两个入口通过 `applogzap.WithScope("log")` 让 `log.*` 同时驱动 Runtime provider；因此配置文件和 `--log.level=debug` 等 Config Flag 会实际改变日志行为。
+4. app 两个入口通过 `applogzap.WithConfigScope("log")` 让 `log.*` 同时驱动 Runtime provider；因此配置文件和 `--log.level=debug` 等 Config Flag 会实际改变日志行为。
 5. 新应用仍推荐使用默认 `log.zap` scope；只有需要兼容既有 `log.*` 配置时才覆盖 scope。
 
 ## 相关文档

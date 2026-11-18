@@ -39,7 +39,7 @@ type module struct {
 // NewModule 创建自动聚合应用组件并发布 web.Server 的 IOC Module。
 //
 // 参数:
-// - options: 控制配置 scope、路径风格、标准 typed policy 和 web-hertz 原生扩展，不承载 IOC 应用组件。
+// - options: 控制 config scope、路径风格、标准 typed policy 和 web-hertz 原生扩展，不承载 IOC 应用组件。
 //
 // 返回:
 // - Module: 可注册一次或在不同 Container 中重放的无资源声明对象。
@@ -72,7 +72,7 @@ func (this *module) Register(registry ioc.Registry) error {
 	}
 
 	// 第二阶段：只发布依赖图节点，配置读取和 provider 构造延迟到 IOC Init。
-	bean := &managedServer{scope: resolvedOptions.scope, options: resolvedOptions}
+	bean := &managedServer{configScope: resolvedOptions.configScope, options: resolvedOptions}
 	if err := registry.Register(bean, ioc.WithName(serverBeanName), ioc.WithDeclare[baseweb.Server]()); err != nil {
 		return errorForModuleRegisterFailed(
 			"op=app_web_hertz.module.register result=failed stage=register_server reason=ioc_register_failed",

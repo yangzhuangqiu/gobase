@@ -32,7 +32,7 @@
 
 ### 2.1 配置和组件声明
 
-Module 默认读取独立 scope：
+Module 默认读取独立 config scope：
 
 ```yaml
 web:
@@ -73,7 +73,7 @@ web:
         minLength: 1024
 ```
 
-Server 字段仍处于原有扁平 `web.hertz` scope；Router 和标准能力分别位于 `router`、`middleware` 子段。Router 布尔值支持未配置、显式 true 和显式 false 三态。
+Server 字段仍处于原有扁平 `web.hertz` config scope；Router 和标准能力分别位于 `router`、`middleware` 子段。Router 布尔值支持未配置、显式 true 和显式 false 三态。
 
 普通 IOC Container 需要显式注册 borrowed Manager、组件 Definitions 和 Module：
 
@@ -107,11 +107,11 @@ if err := appwebhertz.NewModule().Register(container); err != nil {
 }
 ```
 
-不声明 `WithScope` 时使用 `web.hertz`；该默认 scope 缺失时直接使用
+不声明 `WithConfigScope` 时使用 `web.hertz`；该默认 config scope 缺失时直接使用
 `appwebhertz.DefaultConfig()`。自定义路径通过 Option 声明，并在缺失时 fail-fast：
 
 ```go
-appwebhertz.NewModule(appwebhertz.WithScope("services.api"))
+appwebhertz.NewModule(appwebhertz.WithConfigScope("services.api"))
 ```
 
 Module Register 只添加一个托管 bean，不读取 Snapshot、不构造 Hertz、不启动 goroutine。真实配置读取和 Server 构造发生在 Container Build 的 Init 阶段。
@@ -154,7 +154,7 @@ Runtime 已注册 borrowed `config.Manager`；未声明 `web.hertz` 时 Server �
 
 | 入口 | 默认值 | 重复规则 | 非法值 | 生效阶段 |
 |---|---|---|---|---|
-| `WithScope` | `web.hertz` | 后声明覆盖前声明 | 空白回退默认 | IOC Init |
+| `WithConfigScope` | `web.hertz` | 后声明覆盖前声明 | 空白回退默认 | IOC Init |
 | `WithRoutePathStyle` | Kebab | 后者覆盖前者 | 不支持的枚举 fail-fast | 构造计划 |
 | `WithServerOptions` | 无 | 每次追加 | 任一 nil fail-fast | provider 构造 |
 | `WithRecoveryHandler` | 内建安全响应 | 后者覆盖 | nil fail-fast | Recovery 启用后 |
@@ -337,7 +337,7 @@ IOC 对象存在性启用的跨模块能力：
 ```go
 app.WithLogging(apphlogzap.Wrap(
 	applogzap.New(
-		applogzap.WithScope("log.zap"),
+		applogzap.WithConfigScope("log.zap"),
 	),
 ))
 ```
@@ -378,7 +378,7 @@ Metrics Handler、私有 ServeMux、listener 获取顺序和诊断端口安全�
 | 错误码 | 常见原因 | 处理 |
 |---|---|---|
 | `app_web_hertz.config_invalid` | Middleware 字段、CORS 安全组合或 provider Config 非法 | 检查对应 stage/reason 和底层 web-hertz cause |
-| `app_web_hertz.config_load_failed` | Manager/Snapshot 不可用、自定义 scope 缺失、配置非法 | 检查 scope 和底层 config/web-hertz cause；默认 `web.hertz` 缺失会使用内建值 |
+| `app_web_hertz.config_load_failed` | Manager/Snapshot 不可用、自定义 config scope 缺失、配置非法 | 检查 config scope 和底层 config/web-hertz cause；默认 `web.hertz` 缺失会使用内建值 |
 | `app_web_hertz.declaration_invalid` | nil Option/Observer、非法 Controller/Filter/路径风格或 Access Log 缺少 LoggerFactory | 修正启动声明 |
 | `app_web_hertz.server_build_failed` | provider 构造或路由注册失败 | 检查 web-hertz code 和 Controller cause |
 | `app_web_hertz.module_register_failed` | Server bean 名称或类型重复 | 每个 Container 只注册一次 Module |

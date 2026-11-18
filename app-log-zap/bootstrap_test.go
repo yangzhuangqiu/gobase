@@ -131,15 +131,15 @@ func waitForAppLogZapCondition(timeout time.Duration, check func() bool) bool {
 // TestUseCaseAppLogZapBootstrapAndClose 验证 Bootstrap 可基于 ConfigManager 初始化并关闭日志 Provider。
 //
 // 测试方法：
-// 1. 构建包含 Zap 默认配置的 Manager；
-// 2. 通过 Bootstrap.Build 创建日志 Provider，并注入 Redactor；
+// 1. 构建包含自定义日志配置路径的 Manager；
+// 2. 通过 WithConfigScope 选择该路径，再由 Bootstrap.Build 创建日志 Provider 并注入 Redactor；
 // 3. 断言 Provider 关闭后仅 error 被写入文件，且敏感字段已替换。
 func TestUseCaseAppLogZapBootstrapAndClose(t *testing.T) {
 	// 第一步：声明文件输出，并构建由适配器消费的配置 Manager。
 	logFile := filepath.Join(t.TempDir(), "auto.log")
 	defaultCfg := map[string]any{
-		"log": map[string]any{
-			"zap": map[string]any{
+		"logging": map[string]any{
+			"primary": map[string]any{
 				"mode":   "file",
 				"format": "text",
 				"level":  "error",
@@ -158,9 +158,10 @@ func TestUseCaseAppLogZapBootstrapAndClose(t *testing.T) {
 		t.Fatalf("build config manager failed: %v", err)
 	}
 	t.Cleanup(func() { _ = manager.Close() })
-	bootstrap := New(WithProviderOptions(
-		logzap.WithRedactor(baselog.NewKeyRedactor("token")),
-	))
+	bootstrap := New(
+		WithConfigScope("logging.primary"),
+		WithProviderOptions(logzap.WithRedactor(baselog.NewKeyRedactor("token"))),
+	)
 	provider, err := bootstrap.Build(context.Background(), manager)
 	if err != nil {
 		t.Fatalf("build logging provider failed: %v", err)
@@ -322,7 +323,7 @@ func TestRuntimeProviderCloseCancelsSubscriptionBeforeManager(t *testing.T) {
 		t.Fatalf("build config manager failed: %v", err)
 	}
 	t.Cleanup(func() { _ = manager.Close() })
-	provider, err := newRuntimeProvider(context.Background(), manager, defaultLogScope, nil)
+	provider, err := newRuntimeProvider(context.Background(), manager, DefaultConfigScope, nil)
 	if err != nil {
 		t.Fatalf("build runtime provider failed: %v", err)
 	}
@@ -383,7 +384,7 @@ func TestNewProviderFromManagerSubscribeFailureUsesErrorCode(t *testing.T) {
 	if err = manager.Close(); err != nil {
 		t.Fatalf("close config manager failed: %v", err)
 	}
-	provider, buildErr := NewProviderFromManager(context.Background(), manager, DefaultManagerScope)
+	provider, buildErr := NewProviderFromManager(context.Background(), manager, DefaultConfigScope)
 	if buildErr == nil || provider != nil {
 		t.Fatalf("expected subscription failure: provider=%T err=%v", provider, buildErr)
 	}
