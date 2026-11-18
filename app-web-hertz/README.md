@@ -42,8 +42,7 @@
 | `InstrumentationBundle` | 成对声明 Hertz 原生插桩 Option/Middleware，不拥有 Provider |
 | `Module` | 在 IOC Build 前注册托管 Server bean |
 | `NewModule` | 从 IOC 自动聚合依赖并发布 `web.Server` |
-| `Workload` | 推荐入口；从 app Runtime 解析唯一 `web.Server`，声明 Run/Shutdown 语义 |
-| `Runner` | 兼容入口；只解析唯一 `web.Server` 并进入阻塞 Run |
+| `Workload` | 从 app Runtime 解析唯一 `web.Server`，声明 Run/Shutdown 语义 |
 
 ## 最小使用
 
@@ -65,7 +64,7 @@ app.Main(
 )
 ```
 
-`NewModule()` 默认读取 `web.hertz`；自定义配置路径使用 `WithScope("services.api")`。`app` 拥有信号、Workload 收敛和 Runtime Close；`Workload()` 显式桥接唯一 Server 的 Run/Shutdown，因此无需额外 Shutdown Hook。`Runner()` 仅返回函数式兼容适配器，调用时还需用 `app.Runner(...)` 包装；多 Server 应声明多个 Workload。
+`NewModule()` 默认读取 `web.hertz`；自定义配置路径使用 `WithScope("services.api")`。`app` 拥有信号、Workload 收敛和 Runtime Close；`Workload()` 显式桥接唯一 Server 的 Run/Shutdown，因此无需额外 Shutdown Hook。多 Server 应声明多个具有唯一名称的 Workload。
 
 ## 公共入口与合同
 
@@ -79,7 +78,6 @@ func DefineFilter(filter Filter, options ...ioc.RegisterOption) ioc.Definition
 func DefineNoRouteHandler(handler NoRouteHandler, options ...ioc.RegisterOption) ioc.Definition
 func DefineNoMethodHandler(handler NoMethodHandler, options ...ioc.RegisterOption) ioc.Definition
 func Workload() app.Workload
-func Runner() func(context.Context, app.Runtime) error
 
 func WithScope(scope string) Option
 func WithServerOptions(options ...webhertz.Option) Option
@@ -215,7 +213,7 @@ advanced outer Middleware
 | `app_web_hertz.server_build_failed` | Controller 计划或 `web-hertz` 构造失败 |
 | `app_web_hertz.module_register_failed` | 托管 Server bean 无法注册到 IOC |
 | `app_web_hertz.server_state_invalid` | 托管代理在 IOC Init 完成前被调用 |
-| `app_web_hertz.server_resolve_failed` | App Workload/兼容 Runner 无法从 Runtime 解析唯一 `web.Server` |
+| `app_web_hertz.server_resolve_failed` | App Workload 无法从 Runtime 解析唯一 `web.Server` |
 
 IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web-hertz、config、IOC 和 web-hertz cause 均保留在错误链中。
 
@@ -233,7 +231,7 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 
 1. 使用 Controller/Filter 应用模型时通过 `NewModule` 进入 IOC；不使用 IOC 时直接使用 `web-hertz` 原生组装。
 2. 使用 `DefineController`、`DefineFilter`、`DefineNoRouteHandler` 和 `DefineNoMethodHandler`，不要在 composition root 重复 `WithDeclare`；分组 Filter 同样使用 `DefineFilter`。
-3. 单 Server 应用使用 `appwebhertz.Workload()`；函数式兼容代码使用 `app.WithWorkloads(app.Runner(appwebhertz.Runner()))`。多 Server 为每个适配器声明唯一 Workload 名称。
+3. 单 Server 应用使用 `appwebhertz.Workload()`；多 Server 为每个适配器声明唯一 Workload 名称。
 4. Hertz 应用使用 `apphlogzap.Wrap(applogzap.New(...))` 装饰应用 Logging，在 Container Build 前安装 hlog，在 Container Close 后恢复，日志 Provider 最后关闭。
 5. 自动方法名只承载稳定静态 URL；动态和兼容性敏感路由使用 `RegisterRoutes`。
 6. Request ID 默认不信任入站值；只有代理链已经验证来源时才开启 `trustIncoming`。
@@ -260,7 +258,7 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 9. `definition.go`：组件角色到 IOC Definition 的原子工厂。
 10. `module.go`：IOC Module 声明入口。
 11. `managed_server.go`、`managed_server_test.go`：IOC 注入、Init、Run/Shutdown、Close 适配及托管生命周期测试。
-12. `workload.go`、`runner.go`：推荐 Workload 与兼容 Runner 适配。
+12. `workload.go`：唯一 Server 的 Workload Run/Shutdown 适配。
 13. `errors.go`：稳定错误码和 cause 包装。
 14. `*_test.go`：配置、Middleware、Observation、日志、原子 Bundle、路由、IOC 依赖图和真实生命周期测试。
 

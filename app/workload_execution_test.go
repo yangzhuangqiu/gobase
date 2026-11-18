@@ -59,7 +59,7 @@ func (this *testWorkload) Shutdown(ctx context.Context, runtime Runtime, command
 // 测试方法：用 Runner 包装函数，通过 app 执行后断言固定名称为 runner、函数只调用一次且正常关闭 Runtime。
 func TestRunnerWrapsOneShotFunction(t *testing.T) {
 	called := 0
-	workload := Runner(func(context.Context, Runtime) error {
+	workload := Runner(func(context.Context, Runtime, CommandContext) error {
 		called++
 		return nil
 	})
@@ -244,8 +244,8 @@ func TestWithWorkloadsRejectsAmbiguousDeclarations(t *testing.T) {
 		{
 			name: "runner duplicate name",
 			app: New(WithWorkloads(
-				Runner(func(context.Context, Runtime) error { return nil }),
-				Runner(func(context.Context, Runtime) error { return nil }),
+				Runner(func(context.Context, Runtime, CommandContext) error { return nil }),
+				Runner(func(context.Context, Runtime, CommandContext) error { return nil }),
 			)),
 			reason: "name_duplicate",
 		},

@@ -19,26 +19,34 @@ type ShutdownHook func(ctx context.Context, runtime Runtime, command CommandCont
 // WithShutdownHook 注册无法建模为 Workload/Resource 的高级关闭逃生口。
 //
 // 参数：
-// - name：应用内非空且唯一的稳定组件名称；
+// - name：当前节点内非空且唯一，并且在有效继承路径内不与祖先重复的稳定组件名称；
 // - hook：满足 graceful→force→wait 返回强契约的关闭函数。
 //
 // 说明：常规 Server/Consumer/Scheduler 应优先声明 Workload；常规资源应实现 Resource。
-func WithShutdownHook(name string, hook ShutdownHook) Option {
-	return func(app *App) {
+func WithShutdownHook(name string, hook ShutdownHook) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) {
 		name = strings.TrimSpace(name)
 		if name == "" {
-			app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_shutdown_hook reason=name_empty")))
+			command.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_shutdown_hook reason=name_empty")))
 			return
 		}
 		if hook == nil {
-			app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_shutdown_hook reason=hook_is_nil name=%s", name)))
+			command.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_shutdown_hook reason=hook_is_nil name=%s", name)))
 			return
 		}
-		if _, exists := app.shutdown.HookNames[name]; exists {
-			app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_shutdown_hook reason=name_duplicate name=%s", name)))
+		if _, exists := command.ShutdownHookNames[name]; exists {
+			command.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_shutdown_hook reason=name_duplicate name=%s", name)))
 			return
 		}
-		app.shutdown.HookNames[name] = struct{}{}
-		app.shutdown.Hooks = append(app.shutdown.Hooks, namedShutdownHook{Name: name, Hook: hook})
-	}
+		command.ShutdownHookNames[name] = struct{}{}
+		command.ShutdownHooks = append(command.ShutdownHooks, namedShutdownHook{Name: name, Hook: hook})
+	})
+}
+
+// WithoutInheritedShutdownHooks 清空当前子命令继承的祖先高级 Hook。
+// 说明：本节点通过 WithShutdownHook 声明的 Hook 仍会执行；Runtime Close 不受影响。
+func WithoutInheritedShutdownHooks() CommandOption {
+	return commandOptionFunc(func(command *commandConfiguration) {
+		command.DisableInheritedShutdownHooks = true
+	})
 }

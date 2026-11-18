@@ -46,7 +46,7 @@ type moduleOptions struct {
 	tracingEnabled bool
 	// tracingConfig 是冻结的 OTel Hertz 插桩策略。
 	tracingConfig tracingOptions
-	// metricsServerEnabled 决定是否发布由 Runner 消费的独立 Metrics HTTP Server 计划。
+	// metricsServerEnabled 决定是否发布由 Workload 消费的独立 Metrics HTTP Server 计划。
 	metricsServerEnabled bool
 	// metricsServerOptions 是冻结的配置 scope 声明。
 	metricsServerOptions metricsServerOptions
@@ -83,7 +83,7 @@ func WithSharedPrometheus(options ...PrometheusOption) ModuleOption {
 //
 // 说明:
 // - 本 Option 不监听端口或启动 goroutine；
-// - Runner 在业务 Server 启动前预绑定端口；
+// - Workload 在业务 Server 启动前预绑定端口；
 // - 重复声明或缺少 Prometheus 能力时在 IOC Registry 修改前 fail-fast。
 func WithMetricsServer(options ...MetricsServerOption) ModuleOption {
 	return func(target *moduleOptions) error {
@@ -234,7 +234,7 @@ type managedAdapters struct {
 	prometheusRuntime *PrometheusRuntime
 	// instrumentationBundle 在完整 Init 成功后发布，只借用 Provider/Propagator。
 	instrumentationBundle appwebhertz.InstrumentationBundle
-	// metricsServerConfig 是 Init 成功后 Runner 可见的不可变监听配置。
+	// metricsServerConfig 是 Init 成功后 Workload 可见的不可变监听配置。
 	metricsServerConfig MetricsServerConfig
 }
 
@@ -278,7 +278,7 @@ func (this *managedAdapters) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// 第四阶段：全部构造成功后原子发布，IOC 后续 Server bean 和 Runner 才能开始使用。
+	// 第四阶段：全部构造成功后原子发布，IOC 后续 Server bean 和 Workload 才能开始使用。
 	this.prometheusRuntime = prometheusRuntime
 	this.instrumentationBundle = instrumentationBundle
 	this.metricsServerConfig = metricsServerConfig
@@ -333,7 +333,7 @@ func (this *managedAdapters) ServeHTTP(writer http.ResponseWriter, request *http
 	this.prometheusRuntime.ServeHTTP(writer, request)
 }
 
-// metricsConfig 返回 IOC Init 已冻结的监听配置；只通过未导出的 Runner 合同使用。
+// metricsConfig 返回 IOC Init 已冻结的监听配置；只通过未导出的 Workload 合同使用。
 func (this *managedAdapters) metricsConfig() MetricsServerConfig {
 	return this.metricsServerConfig
 }

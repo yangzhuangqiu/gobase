@@ -11,13 +11,13 @@
 3. 提供不拥有 listener/Server 的 Prometheus Handler。
 4. 通过可选 IOC Module 把适配结果声明给 `app-web-hertz`。
 5. 借用显式 `TracerProvider`/`TextMapPropagator` 创建原子 Hertz Instrumentation Bundle，不访问 OTel global。
-6. 按需读取独立 Metrics Server 配置，并由应用 Runner 监督业务与抓取两个工作负载。
+6. 按需读取独立 Metrics Server 配置，并由复合 Workload 监督业务与抓取两个 Server。
 
 ### Out of Scope
 
 1. Metrics/Tracing adapter 本身不读取配置；只有显式 `WithMetricsServer` 才读取独立 scope。
 2. 不处理 Access Log，不创建/关闭 Prometheus shared Registry、OTel Provider 或 Exporter。Access Log 是 `app-web-hertz` 的可选基础组件；它可以消费 Trace ID 做信号关联，但不归本模块安装。
-3. 不隐式启动 HTTP Server、listener 或 goroutine；Metrics Server 只由显式 Runner 启动，也不注册 pprof/健康检查路由。
+3. 不在 Module Init 隐式启动 HTTP Server、listener 或 goroutine；Metrics Server 只由显式 Workload 启动，也不注册 pprof/健康检查路由。
 4. 不访问 `prometheus.DefaultRegistry`，不修改 Hertz 全局 hlog。
 5. 不替应用决定 SDK Sampler/Exporter；采样策略引用只做启动期一致性校验。
 
@@ -34,7 +34,7 @@
 | `InstrumentationBundle` | 成对提供 Hertz internal tracer 与 Server Middleware |
 | `ServerSpanAttributeEnricher` | 基于安全完成态快照追加低风险 Attribute |
 | `Module` | 按需注册单个原子 managed adapter bean |
-| `Runner` | 解析业务 Server，并按声明选择单工作负载或业务/Metrics 双工作负载监督 |
+| `Workload` | 解析业务 Server，并按声明组合业务/Metrics Run 与 Shutdown |
 
 ## 公共入口与合同
 
@@ -52,9 +52,11 @@ observeModule := webhertzobserve.NewModule(
 
 err := app.Run(
     app.WithModules(observeModule, appwebhertz.NewModule()),
-    app.WithWorkloads(app.Runner(webhertzobserve.Runner())),
+    app.WithWorkloads(webhertzobserve.Workload()),
 )
 ```
+
+`webhertzobserve.Workload()` 是业务 Hertz 与可选 Metrics Server 的复合所有者，使用时替代而不是叠加 `appwebhertz.Workload()`；两者共享 `web.hertz` 语义名称，同时声明会在启动前 fail-fast，避免同一业务 Server 被运行两次。
 
 shared Prometheus 模式要求 IOC 中已声明 borrowed `PrometheusRegistry`。OTel 模式要求应用 owned managed bean 分别声明 `TracerProvider` 和 `propagation.TextMapPropagator`；前者创建 SDK Provider/Exporter/Sampler 并在关闭时负责 `ForceFlush`/`Shutdown`。Module 只注册 adapter bean。
 
@@ -73,7 +75,6 @@ observability:
       address: 127.0.0.1:9099
       path: /metrics
       readHeaderTimeout: 3s
-      shutdownTimeout: 5s
 ```
 
 `WithMetricsServerScope("services.api.metrics")` 可选择自定义 scope；自定义 scope 缺失时启动失败，避免部署拼写错误静默回退。地址和路径只在 IOC Init 读取一次，不支持运行期切换。`/` 路径、非 `host:port` 地址和非正超时会 fail-fast。
@@ -103,7 +104,7 @@ Prometheus 默认名称：
 | `app_observe_webhertz.metrics_server_config_load_failed` | Config Manager、Snapshot 或 scope 读取失败 |
 | `app_observe_webhertz.metrics_server_listen_failed` | 业务 Server 启动前无法预绑定 Metrics 端口 |
 | `app_observe_webhertz.metrics_server_run_failed` | 业务/Metrics 工作负载运行或关闭异常 |
-| `app_observe_webhertz.runner_resolve_failed` | Runner 无法解析唯一业务 Server 或 Metrics 计划 |
+| `app_observe_webhertz.workload_resolve_failed` | Workload 无法解析唯一业务 Server 或 Metrics 计划 |
 
 错误携带 `op/result/stage/reason` 并保留底层 cause。
 
@@ -114,7 +115,7 @@ Prometheus 默认名称：
 3. OTel adapter 借用 Provider/Propagator，只创建无资源 Bundle；Provider owner 必须覆盖 Web Server/adapter 生命周期。
 4. `app-web-hertz` Server 依赖 Observer/Bundle，IOC 逆序关闭保证先停止请求，再关闭 adapter，最后由 owner Flush/Shutdown Provider。
 5. Handler 只执行 Gather；未启用 Metrics Server 时不拥有 listener 或主动工作负载。
-6. 启用 Metrics Server 后，Module Init 只冻结配置；Runner 先预绑定端口，再并发运行两个 Server，任一退出或 context 取消都会触发统一关闭并等待收敛。
+6. 启用 Metrics Server 后，Module Init 只冻结配置；Workload 先预绑定端口，再并发运行两个 Server；app 传入统一关闭预算，Workload 返回前等待两个 Run 真实结束。
 7. Metrics Server 只挂载配置的 Prometheus path，不隐式开放 health、pprof 或业务路由。
 8. Trace 批处理/远程导出 goroutine 只由显式 Provider owner 创建和停止。
 
@@ -140,10 +141,10 @@ Prometheus 默认名称：
 4. `server_span*.go`、`tracing.go`：安全 Span 快照、Enricher、传播、Hertz Tracer/Middleware 和 Trace ID 对齐策略。
 5. `module.go`：IOC 原子 managed adapter 声明与生命周期。
 6. `metrics_server_config.go`：独立抓取端口的配置 scope、默认值与校验。
-7. `runner.go`：业务 Server 与可选 Metrics Server 的启动、监督和统一关闭。
+7. `workload.go`：业务 Server 与可选 Metrics Server 的启动、Shutdown 和真实收敛屏障。
 8. `value.go`：跨适配能力共用的 typed-nil 依赖校验。
 9. `errors.go`：稳定错误码和阶段包装。
-10. `*_test.go`：指标合同、Trace 传播/安全/panic、Module、Runner 和资源所有权测试。
+10. `*_test.go`：指标合同、Trace 传播/安全/panic、Module、Workload 和资源所有权测试。
 
 ## 相关文档
 

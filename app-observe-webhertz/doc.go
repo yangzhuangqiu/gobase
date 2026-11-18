@@ -2,7 +2,7 @@
 //
 // 设计边界:
 // 1. Metrics/Tracing adapter 默认不读取配置，也不启动 listener 或 goroutine；
-// 2. 显式 WithMetricsServer 时只读取独立 scope，由 Runner 创建和监督 Metrics HTTP Server；
+// 2. 显式 WithMetricsServer 时只读取独立 scope，由 Workload 创建和监督 Metrics HTTP Server；
 // 3. 不创建 Logger/OTel Provider、Prometheus DefaultRegistry 或 Exporter；
 // 4. 私有 Registry 由显式 Runtime owned，共享 Registry 始终 borrowed；
 // 5. OTel Provider/Propagator 始终 borrowed，不访问 OTel global；

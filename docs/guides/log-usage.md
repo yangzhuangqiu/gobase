@@ -66,7 +66,7 @@ func main() {
             },
         })),
         app.WithLogging(applogzap.New()),
-        app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime) error {
+        app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime, _ app.CommandContext) error {
             logger := runtime.Logger("order.service")
             logger.Info(ctx, "service started", log.Op("service.start"), log.Result(log.ResultOK))
             return serve(ctx, logger)

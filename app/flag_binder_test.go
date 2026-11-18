@@ -21,6 +21,8 @@ func (this *commandCountingBinder) Bind(CommandFlags) {
 
 // commandFlagLifecycleBinder 提供可观察的 Flag 补全与校验阶段。
 type commandFlagLifecycleBinder struct {
+	// BindCount 记录命令树声明阶段的调用次数。
+	BindCount int
 	// Trace 记录 Complete 与 ValidateFlags 的执行顺序。
 	Trace *[]string
 	// CompleteErr 是 Complete 阶段返回的测试错误。
@@ -30,7 +32,7 @@ type commandFlagLifecycleBinder struct {
 }
 
 // Bind 实现 FlagBinder；本用例只验证解析后的补全与校验阶段，因此不声明具体 Flag。
-func (this *commandFlagLifecycleBinder) Bind(CommandFlags) {}
+func (this *commandFlagLifecycleBinder) Bind(CommandFlags) { this.BindCount++ }
 
 // Complete 记录 Flag 补全阶段并返回预设错误。
 func (this *commandFlagLifecycleBinder) Complete() error {
@@ -82,14 +84,13 @@ func TestUseCaseFlagBinderDeclaresCommandTreeOnce(t *testing.T) {
 	// 第一阶段：构造可重复执行的纯命令，并让 root Binder 记录命令树声明。
 	application := New(
 		WithFlagBinder(binder),
-		WithCommands(Command{
-			Use:         "doctor",
-			RuntimeMode: RuntimeModeDisabled,
-			Runner: func(context.Context, Runtime, CommandContext) error {
+		WithCommands(NewCommand("doctor",
+			WithRuntimeMode(RuntimeModeDisabled),
+			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 				runCount++
 				return nil
-			},
-		}),
+			})),
+		)),
 	)
 	// 第二阶段：顺序绑定不同 session，验证缓存 Cobra/Flag 集合仍可重复进入业务生命周期。
 	for index := 0; index < 2; index++ {
@@ -102,5 +103,34 @@ func TestUseCaseFlagBinderDeclaresCommandTreeOnce(t *testing.T) {
 	// 第三阶段：Binder 只声明一次，但 Runner 和 session 恢复必须按执行次数发生。
 	if binder.BindCount != 1 || runCount != 2 || restoreCounts != [2]int{1, 1} {
 		t.Fatalf("unexpected cached command execution: bind=%d run=%d restore=%v", binder.BindCount, runCount, restoreCounts)
+	}
+}
+
+// TestUseCaseFlagBinderRulesStayInSelectedNode 验证 Binder 声明次数与执行期作用域相互独立。
+//
+// 测试方法：root 与子命令分别声明可观察 Binder，顺序执行子命令两次；断言两个 Bind 都只发生一次，
+// 但只有选中子命令的 Complete/Validate 按执行次数调用，root 规则不会泄漏到子命令。
+func TestUseCaseFlagBinderRulesStayInSelectedNode(t *testing.T) {
+	rootTrace := make([]string, 0)
+	commandTrace := make([]string, 0, 4)
+	rootBinder := &commandFlagLifecycleBinder{Trace: &rootTrace}
+	commandBinder := &commandFlagLifecycleBinder{Trace: &commandTrace}
+	application := New(
+		WithFlagBinder(rootBinder),
+		WithCommands(NewCommand("doctor",
+			WithRuntimeMode(RuntimeModeDisabled),
+			WithFlagBinder(commandBinder),
+			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
+		)),
+	)
+	for index := 0; index < 2; index++ {
+		if err := application.ExecuteContext(context.Background(), []string{"doctor"}); err != nil {
+			t.Fatalf("execute command index=%d: %v", index, err)
+		}
+	}
+	if rootBinder.BindCount != 1 || commandBinder.BindCount != 1 || len(rootTrace) != 0 ||
+		!slices.Equal(commandTrace, []string{"complete", "validate", "complete", "validate"}) {
+		t.Fatalf("unexpected binder scope: root_bind=%d command_bind=%d root=%v command=%v",
+			rootBinder.BindCount, commandBinder.BindCount, rootTrace, commandTrace)
 	}
 }

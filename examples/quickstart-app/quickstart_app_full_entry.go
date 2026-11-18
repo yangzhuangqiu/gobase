@@ -344,11 +344,10 @@ func runQuickstartAppFull() error {
 		}),
 		// [可选][推荐] app.WithCommands：扩展 explain/doctor 两类典型子命令。
 		app.WithCommands(
-			app.Command{
-				Use:        "explain",
-				Short:      "Explain one key metadata from latest snapshot",
-				FlagBinder: explainFlags,
-				Runner: func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
+			app.NewCommand("explain",
+				app.WithDescription("Explain one key metadata from latest snapshot"),
+				app.WithFlagBinder(explainFlags),
+				app.WithWorkloads(app.Runner(func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
 					meta, ok := runtime.ConfigManager().Current().Explain(explainFlags.Key)
 					if !ok {
 						_, _ = fmt.Fprintf(os.Stdout, "key=%s not found\n", explainFlags.Key)
@@ -363,21 +362,20 @@ func runQuickstartAppFull() error {
 						meta.Version,
 					)
 					return nil
-				},
-			},
-			app.Command{
-				Use:         "doctor",
-				Short:       "Run diagnostics without loading runtime config",
-				RuntimeMode: app.RuntimeModeDisabled,
-				Runner: func(_ context.Context, _ app.Runtime, _ app.CommandContext) error {
+				})),
+			),
+			app.NewCommand("doctor",
+				app.WithDescription("Run diagnostics without loading runtime config"),
+				app.WithRuntimeMode(app.RuntimeModeDisabled),
+				app.WithWorkloads(app.Runner(func(_ context.Context, _ app.Runtime, _ app.CommandContext) error {
 					_, _ = fmt.Fprintln(os.Stdout, "doctor: ok (RuntimeModeDisabled)")
 					return nil
-				},
-			},
+				})),
+			),
 		),
 
 		// [必须][推荐] app.Runner：把一次性 root 函数包装为统一 Workload。
-		app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime) error {
+		app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime, _ app.CommandContext) error {
 			iocContainer := runtime.Container()
 			worker, err := ioc.ResolveByNameAs[*quickstartFullIOCWorker](iocContainer, "QuickstartIOCWorker")
 			if err != nil {

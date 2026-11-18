@@ -8,92 +8,131 @@ import (
 	appruntime "github.com/yangzhuangqiu/gobase/app-runtime"
 )
 
-// Option 定义 App 构建期可组合选项。
-type Option func(app *App)
+// appOptionFunc 适配只作用于 App 的构建函数。
+type appOptionFunc func(app *App)
+
+// applyApp 执行 App 级构建函数。
+func (this appOptionFunc) applyApp(app *App) { this(app) }
+
+// commandOptionFunc 适配只作用于子命令的构建函数。
+type commandOptionFunc func(command *commandConfiguration)
+
+// applyCommand 执行子命令级构建函数。
+func (this commandOptionFunc) applyCommand(command *commandConfiguration) { this(command) }
+
+// nodeOptionFunc 适配 root 与子命令共享的节点构建函数。
+type nodeOptionFunc func(command *commandConfiguration)
+
+// applyApp 把共享节点语义作用到 root 声明。
+func (this nodeOptionFunc) applyApp(app *App) { this(&app.rootCommand) }
+
+// applyCommand 把共享节点语义作用到子命令声明。
+func (this nodeOptionFunc) applyCommand(command *commandConfiguration) { this(command) }
 
 // WithName 设置 root 命令名（例如 admin）。
 func WithName(name string) Option {
-	return func(app *App) {
-		app.name = name
-	}
+	return appOptionFunc(func(app *App) { app.rootCommand.Use = name })
 }
 
-// WithDescription 设置 help 输出中的简短描述。
-func WithDescription(description string) Option {
-	return func(app *App) {
-		app.description = description
-	}
+// WithDescription 设置当前命令节点 help 输出中的简短描述。
+func WithDescription(description string) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) { command.Short = description })
+}
+
+// WithLongDescription 设置当前命令节点的详细描述。
+func WithLongDescription(description string) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) { command.Long = description })
+}
+
+// WithExample 设置当前命令节点的示例文本。
+func WithExample(example string) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) { command.Example = example })
+}
+
+// WithAliases 设置当前命令节点的别名集合。
+func WithAliases(aliases ...string) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) {
+		command.Aliases = append([]string{}, aliases...)
+	})
+}
+
+// WithArgsValidator 设置当前命令节点的位置参数校验器。
+func WithArgsValidator(validator ArgumentValidator) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) { command.ValidateArgs = validator })
 }
 
 // WithVersion 设置 --version 输出文本。
 func WithVersion(version string) Option {
-	return func(app *App) {
-		app.version = version
-	}
+	return appOptionFunc(func(app *App) { app.version = version })
 }
 
 // WithOutput 设置 help/version/schema 等命令输出目标。
 func WithOutput(output io.Writer) Option {
-	return func(app *App) {
-		app.output = output
-	}
+	return appOptionFunc(func(app *App) { app.output = output })
 }
 
 // WithErrorOutput 设置命令错误输出目标。
 func WithErrorOutput(output io.Writer) Option {
-	return func(app *App) {
-		app.errorOutput = output
-	}
+	return appOptionFunc(func(app *App) { app.errorOutput = output })
 }
 
 // WithRuntime 设置命令执行使用的 app-runtime 构建蓝图。
 func WithRuntime(runtime *appruntime.Application) Option {
-	return func(app *App) {
+	return appOptionFunc(func(app *App) {
 		if runtime == nil {
 			app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_runtime reason=runtime_is_nil")))
 			return
 		}
 		app.runtimeApplication = runtime
-	}
+	})
 }
 
 // WithRuntimeOptions 设置默认 app-runtime 蓝图选项。
 // 说明：该入口与 WithRuntime 互斥；需要完全控制蓝图时优先使用 WithRuntime。
 func WithRuntimeOptions(options ...appruntime.Option) Option {
-	return func(app *App) {
-		app.runtimeOptions = append(app.runtimeOptions, options...)
-	}
+	return appOptionFunc(func(app *App) { app.runtimeOptions = append(app.runtimeOptions, options...) })
 }
 
-// WithWorkloads 声明由 root 命令统一监督的主动工作负载。
-//
-// 参数：
-// - workloads：至少一个非 nil Workload；名称 Trim 后必须非空且在 App 内唯一。
-//
-// 说明：一次性 root 任务可用 Runner 包装为 Workload；子命令继续使用自身 CommandRunner。
-func WithWorkloads(workloads ...Workload) Option {
-	return func(app *App) {
-		if len(workloads) == 0 {
-			app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=workloads_empty")))
+// WithRuntimeMode 设置当前节点的 Runtime 构建语义。
+// 子命令未声明时自动继承；调用方只需在 Enabled 与 Disabled 之间选择。
+func WithRuntimeMode(mode RuntimeMode) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) {
+		if mode != RuntimeModeEnabled && mode != RuntimeModeDisabled {
+			command.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_runtime_mode reason=unsupported_mode mode=%d", mode)))
 			return
 		}
-		for index, workload := range workloads {
-			if isNilWorkload(workload) {
-				app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=workload_is_nil index=%d", index)))
-				continue
-			}
-			name := strings.TrimSpace(workload.Name())
-			if name == "" {
-				app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=name_empty index=%d", index)))
-				continue
-			}
-			if _, exists := app.workloadNames[name]; exists {
-				app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=name_duplicate name=%s", name)))
-				continue
-			}
-			app.workloadNames[name] = struct{}{}
-			app.workloads = append(app.workloads, workload)
+		command.RuntimeMode = mode
+	})
+}
+
+// WithWorkloads 声明当前节点被选中时由 app 统一监督的主动工作负载。
+func WithWorkloads(workloads ...Workload) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) { command.addWorkloads(workloads...) })
+}
+
+// addWorkloads 校验并追加当前节点局部 Workload。
+// 阶段角色：Option 构建期拒绝 nil、空名与节点内重名。
+func (this *commandConfiguration) addWorkloads(workloads ...Workload) {
+	if len(workloads) == 0 {
+		this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=workloads_empty")))
+		return
+	}
+	for index, workload := range workloads {
+		if isNilWorkload(workload) {
+			this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=workload_is_nil index=%d", index)))
+			continue
 		}
+		name := strings.TrimSpace(workload.Name())
+		if name == "" {
+			this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=name_empty index=%d", index)))
+			continue
+		}
+		if _, exists := this.WorkloadNames[name]; exists {
+			this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=name_duplicate name=%s", name)))
+			continue
+		}
+		this.WorkloadNames[name] = struct{}{}
+		this.Workloads = append(this.Workloads, workload)
 	}
 }
 
@@ -111,28 +150,21 @@ func isNilWorkload(workload Workload) bool {
 	}
 }
 
-// WithFlagBinder 设置 root 级业务 Flag 绑定器。
-//
-// 参数：
-// - binder：声明 root flags 并绑定普通 Flag 目标字段；为空表示 root 不声明业务 Flag。
-func WithFlagBinder(binder FlagBinder) Option {
-	return func(app *App) {
-		app.rootFlagBinder = binder
-	}
+// WithFlagBinder 设置当前节点局部业务 Flag 绑定器。
+func WithFlagBinder(binder FlagBinder) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) { command.FlagBinder = binder })
 }
 
-// WithCommands 批量注册业务子命令。
-func WithCommands(commands ...Command) Option {
-	return func(app *App) {
-		app.commands = append(app.commands, commands...)
-	}
+// WithCommands 递归注册当前节点的直接子命令。
+func WithCommands(commands ...Command) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) { command.addCommands(commands...) })
 }
 
-// WithBeforeRunHook 注册 Runtime Build 后、业务执行前 hook。
-func WithBeforeRunHook(hook BeforeRunHook) Option {
-	return func(app *App) {
+// WithBeforeRunHook 注册当前节点 Runtime Build 后、Workload 前的准备 Hook。
+func WithBeforeRunHook(hook BeforeRunHook) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) {
 		if hook != nil {
-			app.beforeHooks = append(app.beforeHooks, hook)
+			command.BeforeHooks = append(command.BeforeHooks, hook)
 		}
-	}
+	})
 }

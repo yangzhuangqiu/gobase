@@ -4,6 +4,8 @@ import (
 	"context"
 
 	baseapp "github.com/yangzhuangqiu/gobase/app"
+	"github.com/yangzhuangqiu/gobase/ioc"
+	baseweb "github.com/yangzhuangqiu/gobase/web"
 )
 
 const (
@@ -45,4 +47,24 @@ func (this *serverWorkload) Shutdown(ctx context.Context, runtime baseapp.Runtim
 		return err
 	}
 	return server.Shutdown(ctx)
+}
+
+// resolveServer 从本次 app Runtime 解析唯一 web.Server，并保留分层错误链。
+// 阶段角色：Workload Run/Shutdown 共用的 IOC 解析边界。
+func resolveServer(runtime baseapp.Runtime, operation string) (baseweb.Server, error) {
+	if isNilInterface(runtime) {
+		return nil, errorForServerResolveFailed("op=" + operation + " result=failed stage=precheck reason=runtime_required")
+	}
+	container := runtime.Container()
+	if isNilInterface(container) {
+		return nil, errorForServerResolveFailed("op=" + operation + " result=failed stage=precheck reason=container_required")
+	}
+	server, err := ioc.ResolveAs[baseweb.Server](container)
+	if err != nil {
+		return nil, errorForServerResolveFailed(
+			"op="+operation+" result=failed stage=resolve_server reason=ioc_resolve_failed",
+			err,
+		)
+	}
+	return server, nil
 }

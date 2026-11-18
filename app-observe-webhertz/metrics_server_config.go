@@ -21,8 +21,6 @@ const (
 	defaultMetricsServerPath = "/metrics"
 	// defaultMetricsServerReadHeaderTimeout 限制诊断端口读取请求头的最长时间。
 	defaultMetricsServerReadHeaderTimeout = 3 * time.Second
-	// defaultMetricsServerShutdownTimeout 是两个工作负载统一收敛的独立宽限时间。
-	defaultMetricsServerShutdownTimeout = 5 * time.Second
 )
 
 // MetricsServerConfig 定义独立 Prometheus 抓取端口的单次启动配置。
@@ -38,8 +36,6 @@ type MetricsServerConfig struct {
 	Path string `yaml:"path"`
 	// ReadHeaderTimeout 限制读取 HTTP Header 的时长；默认 3s。
 	ReadHeaderTimeout time.Duration `yaml:"readHeaderTimeout"`
-	// ShutdownTimeout 限制业务 Server 与 Metrics Server 的统一关闭等待；默认 5s。
-	ShutdownTimeout time.Duration `yaml:"shutdownTimeout"`
 }
 
 // MetricsServerOption 定义可选 Metrics HTTP Server 的纯声明策略。
@@ -59,7 +55,6 @@ func DefaultMetricsServerConfig() MetricsServerConfig {
 		Address:           defaultMetricsServerAddress,
 		Path:              defaultMetricsServerPath,
 		ReadHeaderTimeout: defaultMetricsServerReadHeaderTimeout,
-		ShutdownTimeout:   defaultMetricsServerShutdownTimeout,
 	}
 }
 
@@ -177,9 +172,6 @@ func resolveMetricsServerConfig(input MetricsServerConfig) (MetricsServerConfig,
 	if resolved.ReadHeaderTimeout == 0 {
 		resolved.ReadHeaderTimeout = defaultMetricsServerReadHeaderTimeout
 	}
-	if resolved.ShutdownTimeout == 0 {
-		resolved.ShutdownTimeout = defaultMetricsServerShutdownTimeout
-	}
 
 	if err := validateMetricsServerAddress(resolved.Address); err != nil {
 		return MetricsServerConfig{}, err
@@ -199,7 +191,7 @@ func resolveMetricsServerConfig(input MetricsServerConfig) (MetricsServerConfig,
 			"op=app_observe_webhertz.metrics_server result=failed stage=validate_path reason=root_path_forbidden",
 		)
 	}
-	if resolved.ReadHeaderTimeout <= 0 || resolved.ShutdownTimeout <= 0 {
+	if resolved.ReadHeaderTimeout <= 0 {
 		return MetricsServerConfig{}, errorForMetricsServerConfigInvalid(
 			"op=app_observe_webhertz.metrics_server result=failed stage=validate_timeout reason=positive_duration_required",
 		)
@@ -208,7 +200,7 @@ func resolveMetricsServerConfig(input MetricsServerConfig) (MetricsServerConfig,
 }
 
 // validateMetricsServerAddress 校验 host:port 结构和端口范围，不执行 DNS 或占用端口。
-// 阶段角色：配置冻结阶段排除确定性错误，真实端口冲突留给 Runner 预绑定处理。
+// 阶段角色：配置冻结阶段排除确定性错误，真实端口冲突留给 Workload 预绑定处理。
 func validateMetricsServerAddress(address string) error {
 	_, port, err := net.SplitHostPort(address)
 	if err != nil {

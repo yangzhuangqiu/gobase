@@ -50,7 +50,7 @@ Span，例如：
 trace span="GET /api/orders/:id" trace_id=... span_id=... status=Unset
 ```
 
-按 `Ctrl+C` 后，Runner 会先收敛业务和 Metrics 工作负载；随后 IOC 按依赖逆序关闭
+按 `Ctrl+C` 后，复合 Workload 会先收敛业务和 Metrics Server；随后 IOC 按依赖逆序关闭
 Hertz Server、观测 adapter，最后由应用拥有的 TracerProvider 执行
 `ForceFlush`/`Shutdown`。
 
@@ -63,7 +63,7 @@ Hertz Server、观测 adapter，最后由应用拥有的 TracerProvider 执行
    `InstrumentationBundle`，同时用私有 Registry 发布 `RequestObserver` 与
    `PrometheusHandler`。
 4. `app-web-hertz` 从 IOC 聚合 Bundle 和 Observer，一次性组装唯一业务 Server。
-5. `WithMetricsServer()` 显式声明第二个工作负载；模块 `Runner()` 解析唯一
+5. `WithMetricsServer()` 显式声明第二个内部 Server；模块 `Workload()` 解析唯一
    `web.Server` 和内部监听计划，先预绑定 Metrics 端口，再监督两个 Server。
 6. `/healthz` 被 Access Log 和 Trace 忽略；Metrics 是否忽略应由 Collector 策略
    单独决定，本示例仍统计它。

@@ -62,7 +62,7 @@ func TestUseCasePackageRunUsesRuntimeFacade(t *testing.T) {
 			return nil
 		})),
 		WithModules(&facadeModule{}),
-		WithWorkloads(Runner(func(_ context.Context, runtime Runtime) error {
+		WithWorkloads(Runner(func(_ context.Context, runtime Runtime, _ CommandContext) error {
 			runnerCalled = true
 			if runtime.Info().Name != "facade-service" {
 				return errors.New("runtime application name mismatch")
@@ -103,17 +103,16 @@ func TestUseCasePackageRunSupportsCommandOnlyApplication(t *testing.T) {
 	called := false
 	err := Run(
 		WithName("orderctl"),
-		WithCommands(Command{
-			Use:         "status [service]",
-			Short:       "Show service status",
-			RuntimeMode: RuntimeModeDisabled,
-			ValidateArgs: func(args []string) error {
+		WithCommands(NewCommand("status [service]",
+			WithDescription("Show service status"),
+			WithRuntimeMode(RuntimeModeDisabled),
+			WithArgsValidator(func(args []string) error {
 				if len(args) != 1 {
 					return errors.New("service argument is required")
 				}
 				return nil
-			},
-			Runner: func(_ context.Context, runtime Runtime, command CommandContext) error {
+			}),
+			WithWorkloads(Runner(func(_ context.Context, runtime Runtime, command CommandContext) error {
 				called = true
 				if runtime != nil {
 					return errors.New("disabled command runtime must be nil")
@@ -126,8 +125,8 @@ func TestUseCasePackageRunSupportsCommandOnlyApplication(t *testing.T) {
 					return errors.New("command arguments mismatch")
 				}
 				return nil
-			},
-		}),
+			})),
+		)),
 	)
 	if err != nil {
 		t.Fatalf("run command-only application failed: %v", err)
@@ -150,14 +149,13 @@ func TestUseCaseCommandOnlyRootShowsHelp(t *testing.T) {
 		WithName("orderctl"),
 		WithDescription("Order command line"),
 		WithOutput(&output),
-		WithCommands(Command{
-			Use:         "status",
-			Short:       "Show service status",
-			RuntimeMode: RuntimeModeDisabled,
-			Runner: func(context.Context, Runtime, CommandContext) error {
+		WithCommands(NewCommand("status",
+			WithDescription("Show service status"),
+			WithRuntimeMode(RuntimeModeDisabled),
+			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 				return nil
-			},
-		}),
+			})),
+		)),
 	)
 	if err != nil {
 		t.Fatalf("run command-only root failed: %v", err)
@@ -179,7 +177,7 @@ func TestUseCaseMainReturnsAfterSuccessfulRun(t *testing.T) {
 	called := false
 	Main(
 		WithName("facade-main"),
-		WithWorkloads(Runner(func(context.Context, Runtime) error {
+		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 			called = true
 			return nil
 		})),
@@ -198,7 +196,7 @@ func TestUseCaseMainWritesErrorAndExits(t *testing.T) {
 		os.Args = []string{"facade-main", "--bootstrap-without-config-file"}
 		Main(
 			WithName("facade-main"),
-			WithWorkloads(Runner(func(context.Context, Runtime) error {
+			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 				return errors.New("expected main failure")
 			})),
 		)

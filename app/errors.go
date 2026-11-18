@@ -13,10 +13,8 @@ type ErrorCode = errcode.StringCode
 const (
 	// ErrCodeAppInternal 表示 app 内部不可归入稳定业务分支的错误。
 	ErrCodeAppInternal ErrorCode = "app.internal"
-	// ErrCodeAppRunnerRequired 表示 root 命令缺少必填 Runner。
-	ErrCodeAppRunnerRequired ErrorCode = "app.lifecycle.runner_required"
-	// ErrCodeAppCommandRunnerRequired 表示叶子子命令缺少必填 Runner。
-	ErrCodeAppCommandRunnerRequired        ErrorCode = "app.lifecycle.command_runner_required"
+	// ErrCodeAppWorkloadRequired 表示选中的叶子命令没有声明 Workload。
+	ErrCodeAppWorkloadRequired             ErrorCode = "app.lifecycle.workload_required"
 	ErrCodeAppCLIInvalidExpression         ErrorCode = "app.cli.invalid_expression"
 	ErrCodeAppCLIEmptyKey                  ErrorCode = "app.cli.empty_key"
 	ErrCodeAppCLIInvalidBootstrapKey       ErrorCode = "app.cli.invalid_bootstrap_key"
@@ -41,12 +39,8 @@ func errorForAppInternal(msg string, cause ...error) error {
 	return buildError(ErrCodeAppInternal, msg, cause...)
 }
 
-func errorForAppRunnerRequired(msg string, cause ...error) error {
-	return buildError(ErrCodeAppRunnerRequired, msg, cause...)
-}
-
-func errorForAppCommandRunnerRequired(msg string, cause ...error) error {
-	return buildError(ErrCodeAppCommandRunnerRequired, msg, cause...)
+func errorForAppWorkloadRequired(msg string, cause ...error) error {
+	return buildError(ErrCodeAppWorkloadRequired, msg, cause...)
 }
 
 func errorForAppCLIInvalidExpression(msg string, cause ...error) error {

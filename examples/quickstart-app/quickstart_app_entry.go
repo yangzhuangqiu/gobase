@@ -37,7 +37,7 @@ func runQuickstartApp() error {
 }
 
 // runMinimal 演示如何读取最终配置与来源解释。
-func runMinimal(_ context.Context, runtime app.Runtime) error {
+func runMinimal(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
 	cfg := &quickstartMinimalConfig{}
 	if err := runtime.ConfigManager().Current().Decode("", cfg); err != nil {
 		return err

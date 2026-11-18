@@ -16,7 +16,7 @@ type workloadRunState struct {
 	// Done 在 Run 已完全返回后关闭。
 	Done chan struct{}
 	// Result 保存 Run 的 error 或 panic 结果；读取前必须等待 Done。
-	Result commandRunnerResult
+	Result workloadCallResult
 }
 
 // workloadSupervisor 监督一次 root 执行中的全部 Workload。
@@ -47,7 +47,7 @@ func newWorkloadSupervisor(workloads []Workload) *workloadSupervisor {
 }
 
 // Run 并发启动全部 Workload，并在任意一个 Run 返回时把结果交给 app 关闭协调器。
-// 阶段角色：root CommandRunner 的语义实现；不在此方法中直接释放任何 Resource。
+// 阶段角色：命令节点 Workload 执行入口；不在此方法中直接释放任何 Resource。
 func (this *workloadSupervisor) Run(ctx context.Context, runtime Runtime, command CommandContext) error {
 	this.stateMu.Lock()
 	if this.shutdownStarted {
@@ -139,7 +139,7 @@ func executeWorkloadRun(
 	runtime Runtime,
 	command CommandContext,
 	state *workloadRunState,
-) (result commandRunnerResult) {
+) (result workloadCallResult) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result.Panic = recovered

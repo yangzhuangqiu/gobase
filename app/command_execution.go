@@ -8,65 +8,38 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// runRootCommand 执行 root 命令完整生命周期。
-func (this *App) runRootCommand(session *executionSession, cmd *cobra.Command, args []string) error {
+// runCommand 执行 root、一级子命令和任意深度子命令的统一生命周期。
+func (this *App) runCommand(
+	session *executionSession,
+	plan executionPlan,
+	cmd *cobra.Command,
+	args []string,
+) error {
 	if printed, err := this.handlePrintVersion(cmd); err != nil {
 		return stageError("print_version", err)
 	} else if printed {
 		return nil
 	}
-	if this.inputErr != nil {
-		return stageError("validate_app_setup", this.inputErr)
+	if err := errors.Join(this.inputErr, plan.InputErr); err != nil {
+		return stageError("validate_app_setup", err)
 	}
 	if listed, err := this.handleListBootstrapKeys(cmd); err != nil {
 		return stageError("parse_list_bootstrap_keys_flag", err)
 	} else if listed {
 		return nil
 	}
-	if len(this.workloads) == 0 {
-		// command-only 应用执行 root 时展示命令清单，不要求无意义的占位 Workload。
+	if len(plan.Workloads) == 0 {
+		// 纯分组节点展示自己的下一层命令；真正叶子节点必须声明至少一个 Workload。
 		if cmd.HasAvailableSubCommands() {
 			return stageError("render_help", cmd.Help())
 		}
-		return errorForAppRunnerRequired(messagef("stage=validate_runner reason=runner is required"))
+		return errorForAppWorkloadRequired(messagef("stage=validate_workloads command=%s reason=workload is required", cmd.CommandPath()))
 	}
-	supervisor := newWorkloadSupervisor(this.workloads)
-	rootRunner := supervisor.Run
-	return stageError("execute_command_root", this.executeCommand(session, cmd, args, this.rootFlagBinder, RuntimeModeEnabled, false, rootRunner, supervisor))
-}
-
-// runSubCommand 执行子命令完整生命周期。
-func (this *App) runSubCommand(session *executionSession, sub Command, cmd *cobra.Command, args []string) error {
-	if printed, err := this.handlePrintVersion(cmd); err != nil {
-		return stageError("print_version", err)
-	} else if printed {
-		return nil
-	}
-	if this.inputErr != nil {
-		return stageError("validate_app_setup", this.inputErr)
-	}
-	if listed, err := this.handleListBootstrapKeys(cmd); err != nil {
-		return stageError("parse_list_bootstrap_keys_flag", err)
-	} else if listed {
-		return nil
-	}
-	if sub.Runner == nil {
-		return errorForAppCommandRunnerRequired(messagef("stage=validate_command command=" + sub.Use + " reason=runner is required"))
-	}
-	return stageError("execute_command_sub", this.executeCommand(
-		session,
-		cmd,
-		args,
-		sub.FlagBinder,
-		sub.RuntimeMode,
-		sub.DisableShutdownHooks,
-		sub.Runner,
-		nil,
-	))
+	return stageError("execute_command", this.executeCommand(session, plan, cmd, args))
 }
 
 // handlePrintVersion 在显式设置 --version 时输出版本并短路命令生命周期。
-// 阶段角色：root/subcommand 共用的最早终止条件，禁止进入 Runtime、hooks 和 Runner。
+// 阶段角色：所有命令共用的最早终止条件，禁止进入 Runtime、hooks 和 Workload。
 func (this *App) handlePrintVersion(cmd *cobra.Command) (bool, error) {
 	printVersion, err := cmd.Flags().GetBool(versionFlagName)
 	if err != nil {
@@ -81,37 +54,29 @@ func (this *App) handlePrintVersion(cmd *cobra.Command) (bool, error) {
 	return true, nil
 }
 
-// executeCommand 执行参数规则、Runtime、hooks、业务与关闭的统一生命周期。
+// executeCommand 执行参数规则、Runtime、hooks、Workload 与关闭的统一生命周期。
 func (this *App) executeCommand(
 	session *executionSession,
+	plan executionPlan,
 	cmd *cobra.Command,
 	args []string,
-	commandFlagBinder FlagBinder,
-	runtimeMode RuntimeMode,
-	disableShutdownHooks bool,
-	runner CommandRunner,
-	workloads *workloadSupervisor,
 ) (err error) {
 	ctx := cmd.Context()
 
-	// 阶段一：先完成纯命令参数补全与校验，失败时不创建运行时资源。
-	if err = this.applyFlagRules(this.rootFlagBinder); err != nil {
-		return stageError("apply_root_flags", err)
-	}
-	if commandFlagBinder != this.rootFlagBinder {
-		if err = this.applyFlagRules(commandFlagBinder); err != nil {
-			return stageError("apply_command_flags", err)
-		}
+	// 阶段一：只有选中节点的 FlagBinder 参与本次补全和校验，祖先业务 Binder 不泄漏作用域。
+	if err = this.applyFlagRules(plan.FlagBinder); err != nil {
+		return stageError("apply_command_flags", err)
 	}
 	commandContext := buildCommandContext(cmd, args)
-	shutdownPolicy := this.shutdown.executionPolicy()
+	shutdownPolicy := this.shutdown.executionPolicy(plan.ShutdownBudget)
+	supervisor := newWorkloadSupervisor(plan.Workloads)
 
-	// 阶段二：Disabled 不创建 Runtime/执行 Before Hooks，但仍进入统一 Runner 与 Shutdown 协调。
-	if runtimeMode == RuntimeModeDisabled {
-		return this.executeManagedRunner(session, ctx, nil, commandContext, runner, disableShutdownHooks, workloads, shutdownPolicy)
+	// 阶段二：Disabled 不创建 Runtime/执行 Before Hooks，但仍进入统一 Workload 与 Shutdown 协调。
+	if plan.RuntimeMode == RuntimeModeDisabled {
+		return this.executeManagedWorkloads(session, ctx, nil, commandContext, supervisor, plan.ShutdownHooks, shutdownPolicy)
 	}
-	if runtimeMode != RuntimeModeEnabled {
-		return errorForAppInternal(messagef("op=app.command result=failed stage=resolve_runtime_mode reason=unsupported_mode mode=%d", runtimeMode))
+	if plan.RuntimeMode != RuntimeModeEnabled {
+		return errorForAppInternal(messagef("op=app.command result=failed stage=resolve_runtime_mode reason=unsupported_mode mode=%d", plan.RuntimeMode))
 	}
 	input, inputErr := buildRuntimeInput(cmd)
 	if inputErr != nil {
@@ -125,16 +90,15 @@ func (this *App) executeCommand(
 		// Runtime Close 使用独立 deadline，不复用已取消的 run/shutdown context。
 		closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), shutdownPolicy.RuntimeCloseTimeout)
 		defer cancelClose()
-		closeErr := stageError("close_runtime", runtime.Close(closeCtx))
-		err = errors.Join(err, closeErr)
+		err = errors.Join(err, stageError("close_runtime", runtime.Close(closeCtx)))
 	}()
-	resolvedPolicy, policyErr := this.resolveExecutionShutdownPolicy(runtime)
+	resolvedPolicy, policyErr := this.resolveExecutionShutdownPolicy(runtime, plan.ShutdownBudget)
 	if policyErr != nil {
 		return stageError("resolve_shutdown_policy", policyErr)
 	}
 	shutdownPolicy = resolvedPolicy
-	if beforeErr := this.runBeforeHooks(ctx, runtime, commandContext); beforeErr != nil {
+	if beforeErr := runBeforeHooks(ctx, runtime, commandContext, plan.BeforeHooks); beforeErr != nil {
 		return stageError("before_hooks", beforeErr)
 	}
-	return this.executeManagedRunner(session, ctx, runtime, commandContext, runner, disableShutdownHooks, workloads, shutdownPolicy)
+	return this.executeManagedWorkloads(session, ctx, runtime, commandContext, supervisor, plan.ShutdownHooks, shutdownPolicy)
 }

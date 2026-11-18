@@ -28,15 +28,23 @@ type shutdownConfiguration struct {
 	WorkloadGracefulTimeout time.Duration
 	// RuntimeCloseTimeout 是 Runtime Close 使用的独立协作式截止时间。
 	RuntimeCloseTimeout time.Duration
-	// Hooks 是按声明顺序保存、执行时与 Workload 并发调用的高级逃生动作。
-	Hooks []namedShutdownHook
-	// HookNames 用于在 App 声明阶段拒绝重复组件名称。
-	HookNames map[string]struct{}
 	// SignalsSet 标记调用方是否显式声明过信号集合。
 	SignalsSet bool
 	// WorkloadGracefulTimeoutSet 标记调用方是否显式声明过 workload graceful timeout。
 	WorkloadGracefulTimeoutSet bool
 	// RuntimeCloseTimeoutSet 标记调用方是否显式声明过 Runtime Close timeout。
+	RuntimeCloseTimeoutSet bool
+}
+
+// shutdownBudgetDeclaration 保存命令节点按字段声明的关闭预算。
+type shutdownBudgetDeclaration struct {
+	// WorkloadGracefulTimeout 是主动 Workload 与高级 Hook 的 graceful 预算。
+	WorkloadGracefulTimeout time.Duration
+	// RuntimeCloseTimeout 是 Runtime/Resource Close 的独立预算。
+	RuntimeCloseTimeout time.Duration
+	// WorkloadGracefulTimeoutSet 表示当前节点显式覆盖了该字段。
+	WorkloadGracefulTimeoutSet bool
+	// RuntimeCloseTimeoutSet 表示当前节点显式覆盖了该字段。
 	RuntimeCloseTimeoutSet bool
 }
 
@@ -46,6 +54,5 @@ func newDefaultShutdownConfiguration() shutdownConfiguration {
 		Signals:                 defaultShutdownSignals(),
 		WorkloadGracefulTimeout: defaultShutdownGracefulTimeout,
 		RuntimeCloseTimeout:     defaultShutdownRuntimeCloseTimeout,
-		HookNames:               make(map[string]struct{}),
 	}
 }

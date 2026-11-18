@@ -36,7 +36,7 @@ func main() {
 	}
 }
 
-// run 组合应用拥有的 Provider、观测 adapter、Hertz Server 与双工作负载 Runner。
+// run 组合应用拥有的 Provider、观测 adapter、Hertz Server 与复合 Workload。
 func run() error {
 	return baseapp.Run(
 		baseapp.WithName("quickstart-app-observe-webhertz"),
@@ -48,7 +48,7 @@ func run() error {
 		baseapp.WithLogging(apphlogzap.Wrap(applogzap.New())),
 		baseapp.WithBeanDefinitions(applicationDefinitions()...),
 		baseapp.WithModules(observationModule(), appwebhertz.NewModule()),
-		baseapp.WithWorkloads(baseapp.Runner(webhertzobserve.Runner())),
+		baseapp.WithWorkloads(webhertzobserve.Workload()),
 	)
 }
 
@@ -106,7 +106,6 @@ func defaultConfig() map[string]any {
 					"address":           loadMetricsAddress(),
 					"path":              "/metrics",
 					"readHeaderTimeout": "3s",
-					"shutdownTimeout":   "5s",
 				},
 			},
 		},

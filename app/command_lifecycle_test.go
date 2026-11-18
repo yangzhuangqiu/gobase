@@ -29,7 +29,7 @@ func TestUseCaseRuntimeLivesThroughShutdownHooks(t *testing.T) {
 			trace = append(trace, "before")
 			return nil
 		}),
-		WithWorkloads(Runner(func(_ context.Context, runtime Runtime) error {
+		WithWorkloads(Runner(func(_ context.Context, runtime Runtime, _ CommandContext) error {
 			if runtime == nil {
 				return errors.New("runtime is nil in runner")
 			}
@@ -68,7 +68,7 @@ func TestUseCaseRuntimeClosesWhenBeforeHookFails(t *testing.T) {
 			trace = append(trace, "before")
 			return errors.New("before failed")
 		}),
-		WithWorkloads(Runner(func(context.Context, Runtime) error {
+		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 			trace = append(trace, "run")
 			return nil
 		})),
@@ -109,17 +109,16 @@ func TestUseCaseDisabledRuntimeCommand(t *testing.T) {
 			}
 			return nil
 		}),
-		WithCommands(Command{
-			Use:         "doctor",
-			RuntimeMode: RuntimeModeDisabled,
-			Runner: func(_ context.Context, runtime Runtime, command CommandContext) error {
+		WithCommands(NewCommand("doctor",
+			WithRuntimeMode(RuntimeModeDisabled),
+			WithWorkloads(Runner(func(_ context.Context, runtime Runtime, command CommandContext) error {
 				called = true
 				if runtime != nil || command.Name() != "doctor" {
 					return errors.New("unexpected disabled runtime context")
 				}
 				return nil
-			},
-		}),
+			})),
+		)),
 	)
 	if err := application.ExecuteContext(context.Background(), []string{"doctor"}); err != nil {
 		t.Fatalf("execute disabled runtime command failed: %v", err)

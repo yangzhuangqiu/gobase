@@ -12,8 +12,7 @@ import (
 // 2. 断言返回值非空，且 messagef 的空模板路径可用。
 func TestErrorFactoriesCoverage(t *testing.T) {
 	errs := []error{
-		errorForAppRunnerRequired("runner required"),
-		errorForAppCommandRunnerRequired("command runner required"),
+		errorForAppWorkloadRequired("workload required"),
 		errorForAppCLIInvalidExpression("invalid expression"),
 		errorForAppCLIEmptyKey("empty key"),
 		errorForAppCLIFlagReadFailed("read failed"),

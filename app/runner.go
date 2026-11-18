@@ -10,7 +10,7 @@ const (
 // runnerWorkload 把自行完成的一次性函数适配为统一 Workload 合同。
 type runnerWorkload struct {
 	// run 是 Runtime Build 完成后执行的一次性业务函数；返回即表示任务真实完成。
-	run func(ctx context.Context, runtime Runtime) error
+	run RunFunc
 }
 
 // Runner 把一次性 root 任务包装为名称固定为 runner 的 Workload。
@@ -23,7 +23,7 @@ type runnerWorkload struct {
 //
 // 返回：
 // - Workload：Run 返回即触发统一 Resource Close，Shutdown 为无副作用操作。
-func Runner(run func(ctx context.Context, runtime Runtime) error) Workload {
+func Runner(run RunFunc) Workload {
 	if run == nil {
 		return nil
 	}
@@ -36,8 +36,8 @@ func (this *runnerWorkload) Name() string {
 }
 
 // Run 执行一次性业务函数；函数返回即是该 Workload 的真实收敛点。
-func (this *runnerWorkload) Run(ctx context.Context, runtime Runtime, _ CommandContext) error {
-	return this.run(ctx, runtime)
+func (this *runnerWorkload) Run(ctx context.Context, runtime Runtime, command CommandContext) error {
+	return this.run(ctx, runtime, command)
 }
 
 // Shutdown 对已自行完成或响应 run context 的一次性任务执行无副作用关闭。

@@ -36,7 +36,7 @@ func TestUseCaseHostCancellationRunsShutdownBeforeRunnerConverges(t *testing.T) 
 	hookCalled := make(chan struct{})
 	cause := errors.New("host stopped")
 	application := New(
-		WithWorkloads(Runner(func(context.Context, Runtime) error {
+		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 			close(started)
 			<-release
 			return context.Canceled
@@ -71,7 +71,7 @@ func TestUseCaseHostCancellationRunsShutdownBeforeRunnerConverges(t *testing.T) 
 //
 // 测试方法：
 // 1. 应用注册一个会记录调用的 Shutdown Hook；
-// 2. 执行 RuntimeModeDisabled 且 DisableShutdownHooks=true 的子命令；
+// 2. 执行 RuntimeModeDisabled 且清空祖先 Shutdown Hooks 的子命令；
 // 3. 断言 Runner 执行而 Hook 未执行。
 func TestUseCaseCommandCanDisableInheritedShutdownHooks(t *testing.T) {
 	hookCalled := false
@@ -81,15 +81,14 @@ func TestUseCaseCommandCanDisableInheritedShutdownHooks(t *testing.T) {
 			hookCalled = true
 			return nil
 		}),
-		WithCommands(Command{
-			Use:                  "doctor",
-			RuntimeMode:          RuntimeModeDisabled,
-			DisableShutdownHooks: true,
-			Runner: func(context.Context, Runtime, CommandContext) error {
+		WithCommands(NewCommand("doctor",
+			WithRuntimeMode(RuntimeModeDisabled),
+			WithoutInheritedShutdownHooks(),
+			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 				runnerCalled = true
 				return nil
-			},
-		}),
+			})),
+		)),
 	)
 	if err := application.ExecuteContext(context.Background(), []string{"doctor"}); err != nil {
 		t.Fatalf("execute disabled hook command failed: %v", err)
@@ -115,7 +114,7 @@ func TestUseCaseRunTreatsSignalOnlyShutdownAsSuccess(t *testing.T) {
 	causeObserved := make(chan error, 1)
 	hookCalled := false
 	application := New(
-		WithWorkloads(Runner(func(ctx context.Context, _ Runtime) error {
+		WithWorkloads(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
 			close(started)
 			<-ctx.Done()
 			causeObserved <- context.Cause(ctx)
@@ -155,7 +154,7 @@ func TestUseCaseRunPreservesShutdownHookCancellationError(t *testing.T) {
 	signalSource := &testProcessSignalSource{Events: make(chan os.Signal, 1)}
 	started := make(chan struct{})
 	application := New(
-		WithWorkloads(Runner(func(ctx context.Context, _ Runtime) error {
+		WithWorkloads(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
 			close(started)
 			<-ctx.Done()
 			return ctx.Err()
@@ -195,7 +194,7 @@ func TestUseCaseSignalDuringBeforeHookIsNormalExit(t *testing.T) {
 			<-ctx.Done()
 			return context.Cause(ctx)
 		}),
-		WithWorkloads(Runner(func(context.Context, Runtime) error {
+		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 			runnerCalled = true
 			return nil
 		})),
@@ -224,7 +223,7 @@ func TestUseCaseSignalDuringBeforeHookIsNormalExit(t *testing.T) {
 func TestUseCaseDuplicateShutdownDeclarationsFailFast(t *testing.T) {
 	noopHook := func(context.Context, Runtime, CommandContext) error { return nil }
 	application := New(
-		WithWorkloads(Runner(func(context.Context, Runtime) error { return nil })),
+		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
 		WithShutdownPolicy(ShutdownPolicy{WorkloadGracefulTimeout: time.Second}),
 		WithShutdownPolicy(ShutdownPolicy{WorkloadGracefulTimeout: 2 * time.Second}),
 		WithShutdownHook("server", noopHook),
@@ -244,7 +243,7 @@ func TestUseCaseShutdownHooksRunConcurrentlyAndAggregateErrors(t *testing.T) {
 	firstErr := errors.New("first shutdown failed")
 	secondErr := errors.New("second shutdown failed")
 	application := New(
-		WithWorkloads(Runner(func(context.Context, Runtime) error { return nil })),
+		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
 		WithShutdownHook("first", func(context.Context, Runtime, CommandContext) error {
 			close(firstStarted)
 			<-secondStarted
@@ -277,7 +276,7 @@ func TestUseCaseCancellationDoesNotHideRunnerBusinessError(t *testing.T) {
 	started := make(chan struct{})
 	hostCause := errors.New("host stopped")
 	businessErr := errors.New("serve failed")
-	application := New(WithWorkloads(Runner(func(ctx context.Context, _ Runtime) error {
+	application := New(WithWorkloads(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
 		close(started)
 		<-ctx.Done()
 		return errors.Join(ctx.Err(), businessErr)

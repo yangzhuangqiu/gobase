@@ -18,7 +18,7 @@ Access Log、Request ID、Recovery、CORS、Gzip 属于 `app-web-hertz` 的可�
 - `app.WithBeanDefinitions(...)`；
 - `app.WithModules(...)`；
 - `app-web-hertz.NewModule()`；
-- `app-observe-webhertz.Runner()`。
+- `app-observe-webhertz.Workload()`。
 
 三个模块的职责：
 
@@ -26,11 +26,11 @@ Access Log、Request ID、Recovery、CORS、Gzip 属于 `app-web-hertz` 的可�
 |---|---|
 | `web-hertz` | 提供请求完成事件和 Hertz 原生扩展 |
 | `app-web-hertz` | 从 IOC 聚合 Observer/Bundle 并构造业务 Server |
-| `app-observe-webhertz` | 提供 Prometheus/OTel 适配 bean，以及可选 Metrics Server 与 Runner |
+| `app-observe-webhertz` | 提供 Prometheus/OTel 适配 bean，以及可选 Metrics Server 复合 Workload |
 
 应用必须显式拥有外部资源：shared Registry、TracerProvider 和 Exporter。
 adapter 默认不读取配置或启动 listener；只有声明 `WithMetricsServer()` 时才读取独立
-scope，并由显式 `Runner()` 创建和监督 Metrics HTTP Server。
+scope，并由显式 `Workload()` 创建和监督 Metrics HTTP Server。
 
 ## 2. 最小组合
 
@@ -63,7 +63,7 @@ app.Run(
         ),
         appwebhertz.NewModule(),
     ),
-    app.WithWorkloads(app.Runner(webhertzobserve.Runner())),
+    app.WithWorkloads(webhertzobserve.Workload()),
 )
 ```
 
@@ -247,7 +247,9 @@ advanced outer
 
 ## 6. 独立 Metrics Server
 
-开箱组合只需要显式声明拓扑和使用配套 Runner：
+开箱组合只需要显式声明拓扑和使用配套 Workload。复合 `webhertzobserve.Workload()` 替代
+`appwebhertz.Workload()`，不要同时声明；二者共享业务 Server 的 `web.hertz` 语义名称，
+误组合会在启动前 fail-fast：
 
 ```go
 observeModule := webhertzobserve.NewModule(
@@ -257,7 +259,7 @@ observeModule := webhertzobserve.NewModule(
 
 err := app.Run(
     app.WithModules(observeModule, appwebhertz.NewModule()),
-    app.WithWorkloads(app.Runner(webhertzobserve.Runner())),
+    app.WithWorkloads(webhertzobserve.Workload()),
 )
 ```
 
@@ -270,7 +272,6 @@ observability:
       address: 127.0.0.1:9099
       path: /metrics
       readHeaderTimeout: 3s
-      shutdownTimeout: 5s
 ```
 
 需要复用应用已有配置层级时，使用
@@ -281,9 +282,9 @@ observability:
 
 1. `WithMetricsServer()` 决定是否存在第二个 HTTP 工作负载，单靠 YAML 不会启用它。
 2. Module Init 只读取并冻结配置，不创建 listener 或 goroutine。
-3. Runner 先同步预绑定 Metrics listener；失败时业务 Server 尚未启动。
+3. Workload 先同步预绑定 Metrics listener；失败时业务 Server 尚未启动。
 4. 预绑定成功后并发运行业务与 Metrics Server；任一退出或 context 取消都会进入统一关闭。
-5. Runner 使用 `shutdownTimeout` 的独立 deadline，并等待两个 Run goroutine 收敛后返回。
+5. Workload 使用 app Shutdown Policy 传入的统一 context；预算到期后执行 force close，并仍等待两个 Run goroutine 真实收敛。
 
 内建 Server 只挂载配置的 Metrics path，不提供 health、ready、pprof 或业务路由。
 需要这些端点的应用仍可直接使用 `PrometheusHandler` 组装自己的工作负载。
@@ -294,7 +295,7 @@ NetworkPolicy、sidecar、mTLS 或鉴权。不要把 Metrics 端点默认挂到�
 ## 7. 生命周期与关闭顺序
 
 ```text
-业务/Metrics Runner 收敛
+业务/Metrics Workload 收敛
 -> app-web-hertz Server Close
 -> observation adapter Close
 -> TracerProvider ForceFlush / Shutdown
@@ -306,7 +307,7 @@ NetworkPolicy、sidecar、mTLS 或鉴权。不要把 Metrics 端点默认挂到�
 1. 先停止业务 Server，避免 Provider 关闭后仍产生 Span。
 2. adapter 注销自身 Prometheus Collector，但不关闭 shared Registry。
 3. Provider 最后 Flush，保留尾部 Span。
-4. Metrics Server 是显式 Runner 工作负载，不由 Handler 或 Module Init 隐式启动。
+4. Metrics Server 是显式复合 Workload 的内部 Server，不由 Handler 或 Module Init 隐式启动。
 
 首次 Runtime/IOC Close deadline 必须覆盖完整优雅停止预算。短 deadline 不能保证
 仍在后台停止的 Server 与 Provider 依赖保持安全。
@@ -332,10 +333,10 @@ Request ID 与 Access Log 都是 `app-web-hertz` 的可选基础组件：
 | IOC Build 报 Provider/Propagator 缺失 | 是否通过正确接口声明；对象是否为 typed nil |
 | 采样引用不匹配 | Provider owner 返回值与 Module Option 是否完全一致 |
 | 解析不到 `PrometheusHandler` | 是否声明 private/shared Prometheus |
-| Metrics Server 未启动 | 是否同时声明 `WithMetricsServer()` 并使用本模块 `Runner()` |
+| Metrics Server 未启动 | 是否同时声明 `WithMetricsServer()` 并使用本模块 `Workload()` |
 | 默认端口不符合部署要求 | 配置 `observability.metrics.server.address`；容器抓取通常不能使用 loopback |
 | 自定义 scope 加载失败 | `WithMetricsServerScope` 路径是否存在且拼写一致 |
-| 业务端口未启动且报告 listen 错误 | Metrics 端口被占用；Runner 预绑定会保证全有或全无 |
+| 业务端口未启动且报告 listen 错误 | Metrics 端口被占用；Workload 预绑定会保证全有或全无 |
 | shared 模式 Build 失败 | 是否发布 `PrometheusRegistry` borrowed bean |
 | Metrics 没有样本 | 是否产生过请求；Handler 和 Observer 是否来自同一 adapter |
 | route Label 基数异常 | 是否使用原始 Path；Hertz 路由是否写入模板 FullPath |
@@ -357,7 +358,7 @@ Header、Cookie、Body 或完整 query。
 - 配置驱动的独立 Metrics 端口；
 - 动态路由模板指标；
 - Request ID、Trace ID 关联；
-- 模块 Runner 的双工作负载监督和优雅关闭。
+- 模块 Workload 的双 Server 监督、强收敛屏障和优雅关闭。
 
 控制台 Exporter 与 AlwaysSample 只用于教学；生产环境应替换为批处理远程 Exporter
 和符合容量预算的 Sampler。

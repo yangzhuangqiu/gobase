@@ -39,7 +39,7 @@ func runQuickstartLog() error {
 }
 
 // runQuickstartLogMinimal 演示显式名称、Context-first 与结构化字段。
-func runQuickstartLogMinimal(ctx context.Context, runtime app.Runtime) error {
+func runQuickstartLogMinimal(ctx context.Context, runtime app.Runtime, _ app.CommandContext) error {
 	cfg := &quickstartLogMinimalConfig{}
 	if err := runtime.ConfigManager().Current().Decode("", cfg); err != nil {
 		return err

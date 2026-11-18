@@ -25,18 +25,10 @@ const (
 	commandFrameworkFlagAnnotationKey = "app.flag.framework"
 )
 
-// buildCommand 构建缓存 root 命令，并让回调从稳定绑定槽读取本次执行状态。
+// buildCommand 构建缓存命令树，并让全部节点回调读取同一个本次执行绑定。
 func (this *App) buildCommand(binding *commandExecutionBinding) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:           this.name,
-		Short:         this.description,
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return this.runRootCommand(binding.currentSession(), cmd, args)
-		},
-	}
-	cmd.InitDefaultHelpFlag()
+	rootPath := []commandConfiguration{this.rootCommand}
+	cmd := this.buildCommandNode(binding, rootPath, true)
 	if this.output != nil {
 		cmd.SetOut(this.output)
 	}
@@ -44,7 +36,7 @@ func (this *App) buildCommand(binding *commandExecutionBinding) *cobra.Command {
 		cmd.SetErr(this.errorOutput)
 	}
 
-	// 阶段一：声明稳定框架 flags，并标注 framework scope。
+	// 框架启动 flags 属于进程级输入，只有 root 声明且对子命令持久继承。
 	cmd.PersistentFlags().StringP(configFlagName, "c", "", "Path of local config file.")
 	cmd.PersistentFlags().StringArray(bootstrapFlagName, nil, "Bootstrap override in key=value form (repeatable).")
 	cmd.PersistentFlags().String(bootstrapEnvPrefixFlagName, "", "Bootstrap env prefix (for example APP_).")
@@ -54,43 +46,48 @@ func (this *App) buildCommand(binding *commandExecutionBinding) *cobra.Command {
 	cmd.PersistentFlags().Bool(versionFlagName, false, "Print version and quit.")
 	markFrameworkFlags(cmd.PersistentFlags(), configFlagName, bootstrapFlagName, bootstrapEnvPrefixFlagName,
 		bootstrapWithoutConfigFileFlagName, overrideFlagName, listBootstrapKeysFlagName, versionFlagName)
-	setFrameworkFlag(cmd.Flags().Lookup("help"))
 	if flag := cmd.PersistentFlags().Lookup(listBootstrapKeysFlagName); flag != nil {
 		flag.NoOptDefVal = "table"
 	}
-
-	// 阶段二：绑定业务 flags、子命令和稳定 help 输出。
-	if this.rootFlagBinder != nil {
-		this.rootFlagBinder.Bind(newPFlagCommandFlags(cmd.Flags()))
-	}
-	for _, sub := range this.commands {
-		cmd.AddCommand(this.buildSubCommand(binding, sub))
-	}
-	this.configureCommandHelp(cmd)
 	return cmd
 }
 
-// buildSubCommand 基于公共命令描述构建私有 Cobra 子命令，并读取当前执行绑定。
-func (this *App) buildSubCommand(binding *commandExecutionBinding, sub Command) *cobra.Command {
+// buildCommandNode 递归把一个语义节点转换为私有 Cobra 节点。
+// 阶段角色：命令树只构建一次，FlagBinder.Bind 因此仍保持每个节点一次的调用次数。
+func (this *App) buildCommandNode(
+	binding *commandExecutionBinding,
+	path []commandConfiguration,
+	isRoot bool,
+) *cobra.Command {
+	node := path[len(path)-1]
+	plan := buildExecutionPlan(path)
 	command := &cobra.Command{
-		Use:     sub.Use,
-		Short:   sub.Short,
-		Long:    sub.Long,
-		Example: sub.Example,
-		Aliases: append([]string{}, sub.Aliases...),
+		Use:           node.Use,
+		Short:         node.Short,
+		Long:          node.Long,
+		Example:       node.Example,
+		Aliases:       append([]string{}, node.Aliases...),
+		SilenceUsage:  isRoot,
+		SilenceErrors: isRoot,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return this.runSubCommand(binding.currentSession(), sub, cmd, args)
+			return this.runCommand(binding.currentSession(), plan, cmd, args)
 		},
 	}
 	command.InitDefaultHelpFlag()
 	setFrameworkFlag(command.Flags().Lookup("help"))
-	if sub.ValidateArgs != nil {
+	if node.ValidateArgs != nil {
 		command.Args = func(_ *cobra.Command, args []string) error {
-			return sub.ValidateArgs(append([]string{}, args...))
+			return node.ValidateArgs(append([]string{}, args...))
 		}
 	}
-	if sub.FlagBinder != nil {
-		sub.FlagBinder.Bind(newPFlagCommandFlags(command.Flags()))
+
+	// 节点业务 Flag 只在本节点声明；Complete/Validate 也只随选中节点执行。
+	if node.FlagBinder != nil {
+		node.FlagBinder.Bind(newPFlagCommandFlags(command.Flags()))
+	}
+	for _, child := range node.Commands {
+		childPath := append(append([]commandConfiguration{}, path...), child.configuration)
+		command.AddCommand(this.buildCommandNode(binding, childPath, false))
 	}
 	this.configureCommandHelp(command)
 	return command

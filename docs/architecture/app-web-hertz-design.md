@@ -45,7 +45,7 @@ Controller/Filter/fallback handler 本来就是该模块的应用合同，自动
 
 `Run` 是阻塞型工作负载，错误需要进入应用主流程。若 Init 偷偷启动 goroutine，Build 无法表达监听失败，应用也无法统一协调多个工作负载。
 
-因此 Build 后由 composition root Resolve `web.Server` 并调用 `Run`。`Workload()` 是推荐的单 Server app 适配器，显式委托 Run/Shutdown；`Runner()` 仅返回可交给 `app.Runner(...)` 的函数式兼容适配器。IOC 仍负责最终 Resource Close。
+因此 Build 后由 composition root 通过 `Workload()` Resolve `web.Server`，并显式委托 Run/Shutdown。IOC 仍负责最终 Resource Close。
 
 ### 3.5 hlog 属于 composition root
 
@@ -190,7 +190,7 @@ Filter 在构造期先按接口类型分类，再在各自作用域内按 `(Orde
 5. Module 不创建后台 goroutine；唯一运行 goroutine由调用方选择。
 
 独立诊断端口不改变上述 Server bean 合同。应用 composition root 可以把业务
-`web.Server` 与 owned 诊断 `net/http.Server` 作为同级工作负载交给自定义 Runner
+`web.Server` 与 owned 诊断 `net/http.Server` 作为同级工作负载交给复合 Workload
 监督；`app-web-hertz` 不依赖诊断配置、Prometheus Handler 或 pprof。Metrics/Tracing
 的具体装配见 [Web 可观测性提案](web-observability-proposal.md)。
 
@@ -208,7 +208,7 @@ Filter 在构造期先按接口类型分类，再在各自作用域内按 `(Orde
 | `app_web_hertz.server_build_failed` | provider build | delegate 未发布，保留 provider cause |
 | `app_web_hertz.module_register_failed` | Module Register | Server bean 未注册，保留 IOC cause |
 | `app_web_hertz.server_state_invalid` | Run/Shutdown precheck | 未调用底层对象 |
-| `app_web_hertz.server_resolve_failed` | app Runner precheck/resolve | 未调用底层对象，保留 IOC cause |
+| `app_web_hertz.server_resolve_failed` | app Workload precheck/resolve | 未调用底层对象，保留 IOC cause |
 
 Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和循环分别由 IOC 在 Init 前返回稳定错误码。错误消息携带适用的 `op/result/stage/reason/scope/index`，不得包含请求体、token、TLS 私钥或完整凭据。
 
@@ -249,11 +249,10 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 
 1. Build 成本随 Controller 方法数、Filter 数和路由数线性增长；请求期没有反射调用。
 2. 当前 `Workload()` 按类型唯一解析 `web.Server`；多 Server 需要由各 adapter 提供唯一 Workload 名称和解析规则。
-3. `Runner()` 只作为函数式兼容入口；推荐由 `Workload()` 显式表达 Run/Shutdown，并由 app 等待 Run 收敛。
-4. 启动配置和路由计划不热更新；变化需要重建 Container/Runtime。
-5. 自动路由把方法名作为公开 URL 声明，兼容性敏感接口应使用显式路由。
-6. 标准 Middleware 只处理启动期静态策略；动态配置刷新需要独立原子策略合同，不能订阅整个 Config。
-7. Gzip 只处理完整内存响应，不接管流式/SSE/升级连接；Access Log 与通用 Observer 使用请求完成事件，Trace 使用原子 Instrumentation Bundle。Prometheus/OTel 的后端适配不属于本模块。
+3. 启动配置和路由计划不热更新；变化需要重建 Container/Runtime。
+4. 自动路由把方法名作为公开 URL 声明，兼容性敏感接口应使用显式路由。
+5. 标准 Middleware 只处理启动期静态策略；动态配置刷新需要独立原子策略合同，不能订阅整个 Config。
+6. Gzip 只处理完整内存响应，不接管流式/SSE/升级连接；Access Log 与通用 Observer 使用请求完成事件，Trace 使用原子 Instrumentation Bundle。Prometheus/OTel 的后端适配不属于本模块。
 
 ## 14. File Map
 
@@ -267,7 +266,7 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 8. `app-web-hertz/definition.go`：应用组件到 IOC Definition 的语义工厂。
 9. `app-web-hertz/module.go`：IOC Module 和 Server bean 注册。
 10. `app-web-hertz/managed_server.go`：依赖注入、Init、生命周期委托和 Close。
-11. `app-web-hertz/workload.go`、`runner.go`：推荐 Workload 与兼容 Runner 适配。
+11. `app-web-hertz/workload.go`：唯一 Server 的 Workload Run/Shutdown 适配。
 12. `app-web-hertz/config.go`：独立 scope 配置加载。
 13. `app-web-hertz/errors.go`：稳定错误码。
 14. `app-web-hertz/*_test.go`：配置、Middleware、Observation、Bundle、依赖图、路由和真实生命周期测试。

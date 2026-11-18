@@ -21,12 +21,12 @@ const (
 	ErrCodeMetricsServerConfigInvalid ErrorCode = "app_observe_webhertz.metrics_server_config_invalid"
 	// ErrCodeMetricsServerConfigLoadFailed 表示 ConfigManager 或配置 scope 读取失败。
 	ErrCodeMetricsServerConfigLoadFailed ErrorCode = "app_observe_webhertz.metrics_server_config_load_failed"
-	// ErrCodeMetricsServerListenFailed 表示 Runner 无法在业务 Server 启动前占用诊断端口。
+	// ErrCodeMetricsServerListenFailed 表示 Workload 无法在业务 Server 启动前占用诊断端口。
 	ErrCodeMetricsServerListenFailed ErrorCode = "app_observe_webhertz.metrics_server_listen_failed"
 	// ErrCodeMetricsServerRunFailed 表示业务/Metrics 工作负载运行或关闭未正常收敛。
 	ErrCodeMetricsServerRunFailed ErrorCode = "app_observe_webhertz.metrics_server_run_failed"
-	// ErrCodeRunnerResolveFailed 表示 Runner 无法从 Runtime IOC 解析业务 Server 或 Metrics 计划。
-	ErrCodeRunnerResolveFailed ErrorCode = "app_observe_webhertz.runner_resolve_failed"
+	// ErrCodeWorkloadResolveFailed 表示 Workload 无法从 Runtime IOC 解析业务 Server 或 Metrics 计划。
+	ErrCodeWorkloadResolveFailed ErrorCode = "app_observe_webhertz.workload_resolve_failed"
 )
 
 // errorForDeclarationInvalid 构造 Option、依赖或能力组合声明错误。
@@ -54,9 +54,9 @@ func errorForMetricsServerRunFailed(message string, cause ...error) error {
 	return buildError(ErrCodeMetricsServerRunFailed, message, cause...)
 }
 
-// errorForRunnerResolveFailed 构造 Runtime IOC 解析错误。
-func errorForRunnerResolveFailed(message string, cause ...error) error {
-	return buildError(ErrCodeRunnerResolveFailed, message, cause...)
+// errorForWorkloadResolveFailed 构造 Runtime IOC 解析错误。
+func errorForWorkloadResolveFailed(message string, cause ...error) error {
+	return buildError(ErrCodeWorkloadResolveFailed, message, cause...)
 }
 
 // buildError 构造带稳定 code、阶段语义和可选 cause 的错误。

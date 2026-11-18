@@ -12,7 +12,7 @@ import (
 
 // TestMetricsServerConfigUsesSafeDefaultsAndRejectsInvalidValues 验证开箱默认值与网络配置边界。
 //
-// 测试方法：先解析零值并断言回环地址、固定路径和正时间预算；再表驱动输入非法地址、路径和时长，断言稳定配置错误码。
+// 测试方法：先解析零值并断言回环地址、固定路径和正读取预算；再表驱动输入非法地址、路径和时长，断言稳定配置错误码。
 func TestMetricsServerConfigUsesSafeDefaultsAndRejectsInvalidValues(t *testing.T) {
 	resolved, err := resolveMetricsServerConfig(MetricsServerConfig{})
 	if err != nil {
@@ -29,9 +29,6 @@ func TestMetricsServerConfigUsesSafeDefaultsAndRejectsInvalidValues(t *testing.T
 		"root path": {Path: "/"},
 		"read timeout": {
 			ReadHeaderTimeout: -time.Second,
-		},
-		"shutdown timeout": {
-			ShutdownTimeout: -time.Second,
 		},
 	}
 	for name, input := range tests {
@@ -83,7 +80,6 @@ func TestModulePublishesMetricsServerPlanFromConfiguredScope(t *testing.T) {
 				"address":           "127.0.0.1:0",
 				"path":              "/internal/metrics",
 				"readHeaderTimeout": "2s",
-				"shutdownTimeout":   "4s",
 			},
 		},
 	})
@@ -116,7 +112,7 @@ func TestModulePublishesMetricsServerPlanFromConfiguredScope(t *testing.T) {
 	}
 	config := plans[0].metricsConfig()
 	if config.Address != "127.0.0.1:0" || config.Path != "/internal/metrics" ||
-		config.ReadHeaderTimeout != 2*time.Second || config.ShutdownTimeout != 4*time.Second {
+		config.ReadHeaderTimeout != 2*time.Second {
 		t.Fatalf("unexpected configured plan: %+v", config)
 	}
 	if isNilValue(plans[0].metricsHandler()) {

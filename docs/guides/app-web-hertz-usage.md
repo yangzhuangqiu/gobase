@@ -148,7 +148,7 @@ app.Main(
 )
 ```
 
-Runtime 已注册 borrowed `config.Manager`。`appwebhertz.Workload()` 解析唯一 `web.Server`：app 并发执行 `Run`，关闭时调用 `Shutdown`，并继续等待 `Run` 真正返回，之后才关闭 IOC Runtime。`Runner()` 只返回可交给 `app.Runner(...)` 的函数式兼容适配器；新代码优先使用声明式 Workload。多 Server 可声明多个具有唯一名称的 Workload 适配器。
+Runtime 已注册 borrowed `config.Manager`。`appwebhertz.Workload()` 解析唯一 `web.Server`：app 并发执行 `Run`，关闭时调用 `Shutdown`，并继续等待 `Run` 真正返回，之后才关闭 IOC Runtime。多 Server 可声明多个具有唯一名称的 Workload 适配器。
 
 ### 2.3 Option 归并
 

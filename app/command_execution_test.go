@@ -52,14 +52,13 @@ func TestUseCaseSubCommandVersionSkipsRuntimeAndRunner(t *testing.T) {
 			hookCalled = true
 			return nil
 		}),
-		WithCommands(Command{
-			Use:         "serve",
-			RuntimeMode: RuntimeModeEnabled,
-			Runner: func(context.Context, Runtime, CommandContext) error {
+		WithCommands(NewCommand("serve",
+			WithRuntimeMode(RuntimeModeEnabled),
+			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 				runnerCalled = true
 				return nil
-			},
-		}),
+			})),
+		)),
 	)
 
 	// version 是命令级终止条件，不允许进入任何运行时生命周期阶段。
@@ -81,17 +80,16 @@ func TestUseCaseSubCommandVersionSkipsRuntimeAndRunner(t *testing.T) {
 // 2. 传入空参数执行；
 // 3. 断言校验错误原样进入命令错误链。
 func TestUseCaseArgumentValidatorHidesCobra(t *testing.T) {
-	application := New(WithCommands(Command{
-		Use:         "inspect",
-		RuntimeMode: RuntimeModeDisabled,
-		ValidateArgs: func(args []string) error {
+	application := New(WithCommands(NewCommand("inspect",
+		WithRuntimeMode(RuntimeModeDisabled),
+		WithArgsValidator(func(args []string) error {
 			if len(args) != 1 {
 				return errors.New("one argument required")
 			}
 			return nil
-		},
-		Runner: func(context.Context, Runtime, CommandContext) error { return nil },
-	}))
+		}),
+		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
+	)))
 	err := application.ExecuteContext(context.Background(), []string{"inspect"})
 	if err == nil || !strings.Contains(err.Error(), "one argument required") {
 		t.Fatalf("expect argument validation error, got=%v", err)

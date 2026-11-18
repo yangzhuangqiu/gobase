@@ -18,6 +18,15 @@ type ShutdownPolicy struct {
 	RuntimeCloseTimeout time.Duration
 }
 
+// ShutdownBudget 定义单个命令节点可按字段覆盖的关闭时间预算。
+// 语义：零值表示不覆盖，继续继承祖先节点或 App/配置/内建默认值；负值非法。
+type ShutdownBudget struct {
+	// WorkloadGracefulTimeout 是全部 Workload 与高级 ShutdownHook 共享的 graceful 预算。
+	WorkloadGracefulTimeout time.Duration
+	// RuntimeCloseTimeout 是 Workload 收敛后 Runtime/Resource Close 的独立预算。
+	RuntimeCloseTimeout time.Duration
+}
+
 // DefaultShutdownPolicy 返回当前平台可独立修改的默认关闭策略快照。
 func DefaultShutdownPolicy() ShutdownPolicy {
 	return ShutdownPolicy{
@@ -32,7 +41,7 @@ func DefaultShutdownPolicy() ShutdownPolicy {
 // 参数：
 // - policy：显式字段优先；duration 零值依次采用 ConfigManager 启动快照与内建默认值。
 func WithShutdownPolicy(policy ShutdownPolicy) Option {
-	return func(app *App) {
+	return appOptionFunc(func(app *App) {
 		// 第一阶段：信号必须在 Runtime Build 前冻结，因此只接受代码显式声明。
 		if policy.Signals != nil {
 			if app.shutdown.SignalsSet {
@@ -88,5 +97,32 @@ func WithShutdownPolicy(policy ShutdownPolicy) Option {
 				}
 			}
 		}
-	}
+	})
+}
+
+// WithShutdownBudget 按字段覆盖当前子命令路径的关闭预算。
+// 说明：命令显式值优先于祖先节点、App ShutdownPolicy、ConfigManager 快照和内建默认值。
+func WithShutdownBudget(budget ShutdownBudget) CommandOption {
+	return commandOptionFunc(func(command *commandConfiguration) {
+		if budget.WorkloadGracefulTimeout != 0 {
+			if command.ShutdownBudget.WorkloadGracefulTimeoutSet {
+				command.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_shutdown_budget reason=workload_graceful_timeout_duplicate_declaration")))
+			} else if budget.WorkloadGracefulTimeout < 0 {
+				command.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_shutdown_budget reason=workload_graceful_timeout_negative timeout=%s", budget.WorkloadGracefulTimeout)))
+			} else {
+				command.ShutdownBudget.WorkloadGracefulTimeout = budget.WorkloadGracefulTimeout
+				command.ShutdownBudget.WorkloadGracefulTimeoutSet = true
+			}
+		}
+		if budget.RuntimeCloseTimeout != 0 {
+			if command.ShutdownBudget.RuntimeCloseTimeoutSet {
+				command.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_shutdown_budget reason=runtime_close_timeout_duplicate_declaration")))
+			} else if budget.RuntimeCloseTimeout < 0 {
+				command.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_shutdown_budget reason=runtime_close_timeout_negative timeout=%s", budget.RuntimeCloseTimeout)))
+			} else {
+				command.ShutdownBudget.RuntimeCloseTimeout = budget.RuntimeCloseTimeout
+				command.ShutdownBudget.RuntimeCloseTimeoutSet = true
+			}
+		}
+	})
 }

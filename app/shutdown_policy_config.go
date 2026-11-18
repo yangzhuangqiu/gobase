@@ -25,22 +25,32 @@ type executionShutdownPolicy struct {
 
 // executionPolicy 返回只包含内建默认值与显式声明的基础执行策略。
 // 阶段角色：RuntimeModeDisabled 的最终策略，也是配置解析失败时关闭已构建 Runtime 的安全回退。
-func (this shutdownConfiguration) executionPolicy() executionShutdownPolicy {
-	return executionShutdownPolicy{
+func (this shutdownConfiguration) executionPolicy(budget shutdownBudgetDeclaration) executionShutdownPolicy {
+	policy := executionShutdownPolicy{
 		WorkloadGracefulTimeout: this.WorkloadGracefulTimeout,
 		RuntimeCloseTimeout:     this.RuntimeCloseTimeout,
 	}
+	if budget.WorkloadGracefulTimeoutSet {
+		policy.WorkloadGracefulTimeout = budget.WorkloadGracefulTimeout
+	}
+	if budget.RuntimeCloseTimeoutSet {
+		policy.RuntimeCloseTimeout = budget.RuntimeCloseTimeout
+	}
+	return policy
 }
 
 // resolveExecutionShutdownPolicy 从 ConfigManager 启动快照补齐未显式声明的时间预算。
 // 阶段角色：Runtime Build 成功后、BeforeRunHook/Workload 启动前冻结本次执行策略。
-func (this *App) resolveExecutionShutdownPolicy(runtime Runtime) (executionShutdownPolicy, error) {
+func (this *App) resolveExecutionShutdownPolicy(
+	runtime Runtime,
+	budget shutdownBudgetDeclaration,
+) (executionShutdownPolicy, error) {
 	// 第一阶段：以显式 Option/内建默认值建立不会依赖运行期配置的安全基线。
-	policy := this.shutdown.executionPolicy()
+	policy := this.shutdown.executionPolicy(budget)
 	snapshot := runtime.ConfigManager().Current()
 
 	// 第二阶段：按字段用启动快照补齐空缺；显式字段对应的低优先级非法值不参与解析。
-	if !this.shutdown.WorkloadGracefulTimeoutSet {
+	if !budget.WorkloadGracefulTimeoutSet && !this.shutdown.WorkloadGracefulTimeoutSet {
 		configured, exists, err := readShutdownDuration(snapshot, shutdownWorkloadGracePeriodKey)
 		if err != nil {
 			return executionShutdownPolicy{}, err
@@ -49,7 +59,7 @@ func (this *App) resolveExecutionShutdownPolicy(runtime Runtime) (executionShutd
 			policy.WorkloadGracefulTimeout = configured
 		}
 	}
-	if !this.shutdown.RuntimeCloseTimeoutSet {
+	if !budget.RuntimeCloseTimeoutSet && !this.shutdown.RuntimeCloseTimeoutSet {
 		configured, exists, err := readShutdownDuration(snapshot, shutdownRuntimeCloseGracePeriodKey)
 		if err != nil {
 			return executionShutdownPolicy{}, err

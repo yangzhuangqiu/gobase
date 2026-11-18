@@ -49,7 +49,7 @@ Web 请求需要输出有限基数 Metrics 和可传播的 Server Span，但这�
 2. Tracing 必须同时安装 Hertz native Tracer Option 与 Server Middleware。
 3. Prometheus Registry、OTel Provider、Exporter 和 Metrics listener 都是有所有权的
    运行时资源，不能隐藏在 Config 或 Middleware 构造函数中；listener 只能由显式
-   Runner 在运行阶段创建。
+   Workload 在运行阶段创建。
 4. 业务 Server 不应直接依赖 Prometheus、OTel SDK 或具体 Exporter。
 5. 动态 URL、Header、Cookie、Body 和错误文本不能无边界进入 Label 或 Attribute。
 
@@ -68,7 +68,7 @@ Web 请求需要输出有限基数 Metrics 和可传播的 Server Span，但这�
    TracerProvider/Propagator 适配为 OTel Bundle。
 
 应用 composition root 创建并拥有 Registry、TracerProvider 和 Exporter；可选 Metrics
-Server 由应用显式选择的适配模块 Runner 拥有。适配 bean 只拥有自身 Collector
+Server 由应用显式选择的适配模块 Workload 拥有。适配 bean 只拥有自身 Collector
 registration，不拥有 borrowed 外部资源，也不在 IOC Init 启动 listener。
 
 ## 3. 范围与非目标
@@ -102,8 +102,8 @@ Trace ID 与 Span 建立关联；这种关联不改变其模块归属。
 |---|---|---|
 | `web-hertz` | 复制请求开始/完成值快照；同步 fan-out Observer；保留 Hertz 原生扩展 | Prometheus、OTel、IOC、Exporter |
 | `app-web-hertz` | 聚合 Observer/Bundle；固定安装顺序；桥接 Request ID、Trace ID 和 panic 标记 | 创建 Registry、Provider、Exporter、诊断 Server |
-| `app-observe-webhertz` | Prometheus Collector/Handler；OTel Bundle；可选 Metrics Server 配置与 Runner | 拥有外部 Provider；在 Module Init 启动 listener；暴露 health/pprof |
-| Application | 选择能力；创建 owned Provider/Exporter；选择 Runner 与暴露策略 | 把资源所有权下放给请求 Middleware |
+| `app-observe-webhertz` | Prometheus Collector/Handler；OTel Bundle；可选 Metrics Server 配置与 Workload | 拥有外部 Provider；在 Module Init 启动 listener；暴露 health/pprof |
+| Application | 选择能力；创建 owned Provider/Exporter；选择 Workload 与暴露策略 | 把资源所有权下放给请求 Middleware |
 
 依赖方向：
 
@@ -112,7 +112,7 @@ Application
   ├─ owns Prometheus Registry
   ├─ owns OTel Provider / Exporter / Sampler
   ├─ declares app-observe-webhertz adapters / optional Metrics Server
-  ├─ selects app-observe-webhertz Runner
+  ├─ selects app-observe-webhertz Workload
   └─ declares app-web-hertz Server
 
 app-web-hertz
@@ -257,7 +257,7 @@ Span 场景提供 fallback。
 ## 8. Metrics Server
 
 Metrics 等敏感运维端点推荐使用独立端口。内建 Metrics Server 是应用显式选择、由
-适配模块 Runner 管理的同级工作负载，不是 adapter 构造或 IOC Init 的副作用。
+适配模块 Workload 管理的同级工作负载，不是 adapter 构造或 IOC Init 的副作用。
 
 稳定原则：
 
@@ -290,7 +290,7 @@ IOC 逆序关闭：
 2. 关闭 adapter，注销自身 Prometheus Collector。
 3. Provider owner 执行 `ForceFlush` 和 `Shutdown`，释放 Exporter。
 
-Metrics Server 由适配模块 Runner 在返回前关闭。adapter bean 不关闭 shared Registry、
+Metrics Server 由适配模块 Workload 在返回前关闭。adapter bean 不关闭 shared Registry、
 Provider 或 Exporter，Module Init 也不创建主动工作负载。
 
 ## 10. 错误、安全与可验证不变量
@@ -325,7 +325,7 @@ Provider 或 Exporter，Module Init 也不创建主动工作负载。
 2. `app-web-hertz` Observer/Bundle 聚合和固定安装阶段。
 3. Prometheus private/shared Registry、Collector registration 和 Handler。
 4. borrowed Provider/Propagator、OTel Bundle、Trace ID 桥接和安全 Enricher。
-5. 配置驱动、显式启用的独立 Metrics Server、复用 Runner 与高级 Quickstart。
+5. 配置驱动、显式启用的独立 Metrics Server、复用 Workload 与高级 Quickstart。
 
 开放问题：
 

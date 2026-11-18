@@ -55,7 +55,7 @@ func TestShutdownPolicyConfigPrecedence(t *testing.T) {
 	defer func() { _ = runtime.Close(context.Background()) }()
 
 	// 第二阶段：解析冻结策略，逐字段验证显式 > 启动快照 > 内建默认值。
-	policy, err := application.resolveExecutionShutdownPolicy(runtime)
+	policy, err := application.resolveExecutionShutdownPolicy(runtime, shutdownBudgetDeclaration{})
 	if err != nil {
 		t.Fatalf("resolve shutdown policy: %v", err)
 	}
@@ -64,6 +64,44 @@ func TestShutdownPolicyConfigPrecedence(t *testing.T) {
 	}
 	if policy.RuntimeCloseTimeout != 4*time.Second {
 		t.Fatalf("runtime close period must come from config snapshot, got=%s", policy.RuntimeCloseTimeout)
+	}
+}
+
+// TestCommandShutdownBudgetPrecedence 验证命令预算按字段优先于 App Policy 与配置快照。
+//
+// 测试方法：配置两个非法低优先级值，App 显式声明 Runtime Close，命令只覆盖 Workload；
+// 解析后断言命令字段和 App 字段分别胜出，未参与归并的非法配置不会导致失败。
+func TestCommandShutdownBudgetPrecedence(t *testing.T) {
+	application := New(
+		WithConfig(
+			config.File(config.FileDisabled()),
+			config.Defaults(map[string]any{
+				"app": map[string]any{
+					"shutdown": map[string]any{
+						"workloadGracePeriod":     "invalid-but-overridden",
+						"runtimeCloseGracePeriod": "also-overridden",
+					},
+				},
+			}),
+		),
+		WithShutdownPolicy(ShutdownPolicy{RuntimeCloseTimeout: 5 * time.Second}),
+	)
+	runtime, err := application.runtimeApplication.Build(context.Background())
+	if err != nil {
+		t.Fatalf("build runtime: %v", err)
+	}
+	defer func() { _ = runtime.Close(context.Background()) }()
+
+	budget := shutdownBudgetDeclaration{
+		WorkloadGracefulTimeout:    3 * time.Second,
+		WorkloadGracefulTimeoutSet: true,
+	}
+	policy, err := application.resolveExecutionShutdownPolicy(runtime, budget)
+	if err != nil {
+		t.Fatalf("resolve command shutdown budget: %v", err)
+	}
+	if policy.WorkloadGracefulTimeout != 3*time.Second || policy.RuntimeCloseTimeout != 5*time.Second {
+		t.Fatalf("unexpected command policy: %+v", policy)
 	}
 }
 
@@ -87,7 +125,7 @@ func TestShutdownPolicyConfigFallsBackPerField(t *testing.T) {
 	defer func() { _ = runtime.Close(context.Background()) }()
 
 	// 第二阶段：解析冻结策略，验证已配置字段与默认字段彼此独立归并。
-	policy, err := application.resolveExecutionShutdownPolicy(runtime)
+	policy, err := application.resolveExecutionShutdownPolicy(runtime, shutdownBudgetDeclaration{})
 	if err != nil {
 		t.Fatalf("resolve shutdown policy: %v", err)
 	}

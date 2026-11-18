@@ -53,20 +53,20 @@ func (this *noMethodHandlerStub) HandleNoMethod(context.Context, *hertzapp.Reque
 	*this.trace = append(*this.trace, this.name)
 }
 
-// runnerRuntimeStub 只替换 Runner 所需的 Container，其他 app.Runtime 能力保持未使用。
-type runnerRuntimeStub struct {
+// workloadRuntimeStub 只替换 Workload 所需的 Container，其他 app.Runtime 能力保持未使用。
+type workloadRuntimeStub struct {
 	baseapp.Runtime
 	// container 是已完成 Build、可解析唯一 web.Server 的测试容器。
 	container ioc.Container
 }
 
-// Container 返回 Runner 本次解析 Server 使用的 IOC 容器。
-func (this *runnerRuntimeStub) Container() ioc.Container {
+// Container 返回 Workload 本次解析 Server 使用的 IOC 容器。
+func (this *workloadRuntimeStub) Container() ioc.Container {
 	return this.container
 }
 
-// runnerServerStub 记录 app Runner 是否把原始运行上下文交给唯一 Server。
-type runnerServerStub struct {
+// workloadServerStub 记录 Workload 是否把运行与关闭上下文交给唯一 Server。
+type workloadServerStub struct {
 	// runContext 是 Run 实际收到的上下文。
 	runContext context.Context
 	// shutdownContext 是 Shutdown 实际收到的上下文。
@@ -74,13 +74,13 @@ type runnerServerStub struct {
 }
 
 // Run 记录运行上下文并立即成功返回。
-func (this *runnerServerStub) Run(ctx context.Context) error {
+func (this *workloadServerStub) Run(ctx context.Context) error {
 	this.runContext = ctx
 	return nil
 }
 
 // Shutdown 记录语义化 Workload 传入的 graceful 上下文。
-func (this *runnerServerStub) Shutdown(ctx context.Context) error {
+func (this *workloadServerStub) Shutdown(ctx context.Context) error {
 	this.shutdownContext = ctx
 	return nil
 }
@@ -196,47 +196,12 @@ func TestPrepareFallbackHandlersSortsStablyAndRejectsTypedNil(t *testing.T) {
 	}
 }
 
-// TestRunnerRejectsMissingRuntime 验证 App Runner 适配器在进入 IOC 前保持可分支错误。
-//
-// 测试方法：使用 nil Runtime 调用 Runner，断言返回 server_resolve_failed。
-func TestRunnerRejectsMissingRuntime(t *testing.T) {
-	if err := Runner()(context.Background(), nil); !errcode.IsCode[ErrorCode](err, ErrCodeServerResolveFailed) {
-		t.Fatalf("expected runner resolve error, got=%v", err)
-	}
-}
-
-// TestRunnerResolvesAndRunsUniqueServer 验证 app Runner 适配器不复制 Server 生命周期。
-//
-// 测试方法：在已 Build 容器发布唯一 web.Server，调用 Runner 后断言同一上下文进入该 Server。
-func TestRunnerResolvesAndRunsUniqueServer(t *testing.T) {
-	// 第一阶段：按生产模块相同的接口索引发布唯一 Server。
-	container := ioc.New()
-	server := &runnerServerStub{}
-	if err := container.Register(server, ioc.WithDeclare[baseweb.Server]()); err != nil {
-		t.Fatalf("register runner server: %v", err)
-	}
-	if err := container.Build(context.Background()); err != nil {
-		t.Fatalf("build runner container: %v", err)
-	}
-	defer func() { _ = container.Close(context.Background()) }()
-
-	// 第二阶段：Runner 只完成 Runtime -> Container -> Server 解析并原样委托 Run。
-	runCtx := context.WithValue(context.Background(), struct{}{}, "runner")
-	runtime := &runnerRuntimeStub{container: container}
-	if err := Runner()(runCtx, runtime); err != nil {
-		t.Fatalf("run unique server: %v", err)
-	}
-	if server.runContext != runCtx {
-		t.Fatal("expected runner to preserve server run context")
-	}
-}
-
 // TestWorkloadResolvesRunsAndShutsDownUniqueServer 验证推荐 Workload 适配器复用同一 IOC Server。
 //
 // 测试方法：在容器声明唯一 web.Server，分别调用 Workload Run/Shutdown，断言名称稳定且上下文原样传递。
 func TestWorkloadResolvesRunsAndShutsDownUniqueServer(t *testing.T) {
 	container := ioc.New()
-	server := &runnerServerStub{}
+	server := &workloadServerStub{}
 	if err := container.Register(server, ioc.WithDeclare[baseweb.Server]()); err != nil {
 		t.Fatalf("register workload server: %v", err)
 	}
@@ -249,7 +214,7 @@ func TestWorkloadResolvesRunsAndShutsDownUniqueServer(t *testing.T) {
 	if workload.Name() != workloadName {
 		t.Fatalf("unexpected workload name: %s", workload.Name())
 	}
-	runtime := &runnerRuntimeStub{container: container}
+	runtime := &workloadRuntimeStub{container: container}
 	runCtx := context.WithValue(context.Background(), struct{ name string }{"run"}, "run")
 	shutdownCtx := context.WithValue(context.Background(), struct{ name string }{"shutdown"}, "shutdown")
 	if err := workload.Run(runCtx, runtime, nil); err != nil {

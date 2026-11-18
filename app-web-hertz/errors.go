@@ -27,7 +27,7 @@ const (
 	ErrCodeModuleRegisterFailed ErrorCode = "app_web_hertz.module_register_failed"
 	// ErrCodeServerStateInvalid 表示托管 Server 在 IOC Init 完成前被调用。
 	ErrCodeServerStateInvalid ErrorCode = "app_web_hertz.server_state_invalid"
-	// ErrCodeServerResolveFailed 表示 App Runner 无法从 Runtime IOC 解析唯一 web.Server。
+	// ErrCodeServerResolveFailed 表示 App Workload 无法从 Runtime IOC 解析唯一 web.Server。
 	ErrCodeServerResolveFailed ErrorCode = "app_web_hertz.server_resolve_failed"
 )
 
@@ -71,7 +71,7 @@ func errorForServerStateInvalid(message string, cause ...error) error {
 	return buildError(ErrCodeServerStateInvalid, message, cause...)
 }
 
-// errorForServerResolveFailed 构造 App Runner 的 Server 解析错误。
+// errorForServerResolveFailed 构造 App Workload 的 Server 解析错误。
 func errorForServerResolveFailed(message string, cause ...error) error {
 	return buildError(ErrCodeServerResolveFailed, message, cause...)
 }

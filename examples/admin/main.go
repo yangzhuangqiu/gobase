@@ -95,11 +95,10 @@ func main() {
 			return nil
 		}),
 		app.WithCommands(
-			app.Command{
-				Use:        "explain",
-				Short:      "Explain config source for one key",
-				FlagBinder: explainFlags,
-				Runner: func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
+			app.NewCommand("explain",
+				app.WithDescription("Explain config source for one key"),
+				app.WithFlagBinder(explainFlags),
+				app.WithWorkloads(app.Runner(func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
 					meta, ok := runtime.ConfigManager().Current().Explain(explainFlags.Key)
 					if !ok {
 						_, _ = fmt.Fprintf(os.Stdout, "key=%s not found\n", explainFlags.Key)
@@ -114,19 +113,18 @@ func main() {
 						meta.Version,
 					)
 					return nil
-				},
-			},
-			app.Command{
-				Use:         "doctor",
-				Short:       "Run quick diagnostics without loading runtime config",
-				RuntimeMode: app.RuntimeModeDisabled,
-				Runner: func(_ context.Context, _ app.Runtime, _ app.CommandContext) error {
+				})),
+			),
+			app.NewCommand("doctor",
+				app.WithDescription("Run quick diagnostics without loading runtime config"),
+				app.WithRuntimeMode(app.RuntimeModeDisabled),
+				app.WithWorkloads(app.Runner(func(_ context.Context, _ app.Runtime, _ app.CommandContext) error {
 					_, _ = fmt.Fprintln(os.Stdout, "doctor: ok")
 					return nil
-				},
-			},
+				})),
+			),
 		),
-		app.WithWorkloads(app.Runner(func(_ context.Context, runtime app.Runtime) error {
+		app.WithWorkloads(app.Runner(func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
 			cfg := &AppConfig{}
 			if err := runtime.ConfigManager().Current().Decode("", cfg); err != nil {
 				return errcode.New[ErrorCode](ErrCodeExampleRuntimeNotReady, "runtime config is not ready")

@@ -1,174 +1,181 @@
 # app
 
-`app` 是不泄漏 Cobra 的命令行应用框架。它负责命令、flags、help/version 和执行编排，并通过 app-runtime 自动构建/关闭 config、logging、ioc Runtime。
+`app` 是进程级应用装配与命令生命周期门面。root 与任意深度子命令都是同一种“命令节点”：使用 Option 声明元数据、Flag、Workload 和 Hook；执行时由框架把 root 到选中节点归并成一次 `executionPlan`。
 
 ## 设计范围与目标
 
-### In Scope
+范围内：
 
-1. root Workload、一次性 Runner 包装器、子命令和只有子命令的命令目录。
-2. 公共 Command/Flags 模型与 Cobra 隔离。
-3. 配置覆盖 flags、bootstrap flags 和普通业务 flags。
-4. `--version`、help、bootstrap schema 的 Runtime 前短路。
-5. Runtime Build -> BeforeRunHook -> Workload 收敛 -> Resource Close 的应用生命周期。
-6. `Run/Main` 的默认退出信号与 `ExecuteContext` 的宿主取消协调。
-7. Name/Config/Logging/Bean Definitions/Modules 的常规 app-runtime 门面。
+- 构建并缓存命令树，隔离 Cobra 类型。
+- 构建 `app-runtime`，向业务暴露只读 `Runtime`。
+- 监督一次性任务与常驻服务的 `Workload` 生命周期。
+- 协调进程信号、宿主取消、Shutdown Hook 与 Runtime/Resource Close。
+- 支持 root、一级和多级子命令使用相同声明模型。
 
-### Out of Scope
+范围外：
 
-1. config、log、ioc 的底层实现和完整高级 API。
-2. HTTP、gRPC、Consumer 等具体协议实现；app 只定义统一 Workload 语义。
-3. 把 Runtime/Container 传播到普通业务层。
+- 业务资源的创建和依赖排序，由 IOC/模块负责。
+- Server/Consumer 的具体停止算法，由对应 `Workload.Shutdown` 负责。
+- 配置和日志的实现细节，由 `config`、`log` 与 `app-runtime` 负责。
 
-## 最小使用
+## 快速开始
 
 ```go
-func main() {
-    app.Main(
-        app.WithName("order-service"),
-        app.WithConfig(
-            config.Defaults(defaultConfig()),
+err := app.Run(
+    app.WithName("tool"),
+    app.WithDescription("Operations tool"),
+    app.WithWorkloads(app.Runner(func(
+        ctx context.Context,
+        runtime app.Runtime,
+        command app.CommandContext,
+    ) error {
+        return runOnce(ctx, runtime, command)
+    })),
+    app.WithCommands(
+        app.NewCommand("admin",
+            app.WithCommands(
+                app.NewCommand("status [service]",
+                    app.WithRuntimeMode(app.RuntimeModeDisabled),
+                    app.WithWorkloads(app.Runner(status)),
+                ),
+            ),
         ),
-        app.WithConfigBinding[OrderConfig]("order", validateOrder),
-        app.WithLogging(applogzap.New()),
-        app.WithBeanDefinitions(
-            ioc.Define(&OrderRepository{}),
-            ioc.Define(&OrderService{}),
-        ),
-        app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime) error {
-            service, err := ioc.ResolveAs[*OrderService](runtime.Container())
-            if err != nil {
-                return err
-            }
-            return service.Run(ctx)
-        })),
-    )
+    ),
+)
+```
+
+`Runner` 只是一种 one-shot `Workload` 适配器，函数签名为：
+
+```go
+type RunFunc func(context.Context, app.Runtime, app.CommandContext) error
+```
+
+常驻服务应直接实现 `Workload`：
+
+```go
+type Workload interface {
+    Name() string
+    Run(context.Context, Runtime, CommandContext) error
+    Shutdown(context.Context, Runtime, CommandContext) error
 }
 ```
 
-业务对象通过字段依赖 `*appruntime.ConfigValue[T]`、Logger 和领域对象，不需要依赖 app.Runtime。
+## 核心对象与职责
 
-## 核心入口
-
-| API | 作用 |
+| 对象 | 职责 |
 |---|---|
-| `Run/Main` | 创建并执行应用；Main 负责错误输出和退出码 |
-| `WithName/Description/Version` | 命令身份和帮助输出 |
-| `WithConfig(config.Option...)` | 聚合配置能力，不复制 config API |
-| `WithConfigBinding[T]` | 声明 app-runtime typed IOC 配置视图 |
-| `WithLogging` | 选择日志实现 |
-| `WithBeanDefinitions` | 注册携带接口、名称和生命周期策略的完整 bean definitions |
-| `WithModules` | 注册可复用 Modules |
-| `WithIOCOptions` | 高级 IOC 策略 |
-| `Runner` | 把一次性 root 函数包装为固定名称 `runner` 的 Workload |
-| `WithWorkloads` | 声明一个或多个由 app 监督的主动工作负载 |
-| `WithCommands` | 子命令声明 |
-| `WithFlagBinder` | root 业务 flags |
-| `WithBeforeRunHook` | Runtime Build 后、Workload 前的可回滚准备 |
-| `WithShutdownPolicy` | 统一声明信号、Workload graceful 与 Runtime Close 预算 |
-| `WithShutdownHook` | 顶层高级关闭逃生口 |
-| `WithRuntime` | 完全接管 app-runtime 蓝图的高级入口 |
+| `App` | 进程级默认值、Runtime 蓝图、信号策略和缓存命令树 |
+| `Command` | 通过 `NewCommand` 构建的命令节点声明 |
+| `NodeOption` | root 与子命令共用的节点能力 |
+| `CommandOption` | 只适用于子命令的能力 |
+| `Workload` | 主动运行单元；Run 与 Shutdown 都必须真实收敛 |
+| `Resource` | 被动资源关闭契约，通常由 IOC 统一释放 |
+| `ShutdownHook` | 无法表达为 Workload/Resource 时的高级逃生口 |
+| `executionPlan` | root 到选中节点的字段级归并快照 |
 
-## Root 默认策略
+## 公共入口与归并规则
 
-1. 有 Root Workload：root 是真实业务命令；一次性任务由 `Runner` 包装成 Workload。
-2. 没有 Workload、有 Commands：root 是命令目录，执行时展示 help。
-3. Workload、Commands 都没有：执行 root 返回 runner_required。
+App 级入口：
 
-## 配置、日志和 IOC
+- `WithName`、`WithVersion`、`WithOutput`、`WithErrorOutput`
+- `WithRuntime`、`WithRuntimeOptions` 及 Runtime 门面选项
+- `WithShutdownPolicy`
 
-配置声明：
+root/子命令共享的 `NodeOption`：
 
-```go
-app.WithConfig(
-    config.Defaults(defaultConfig()),
-    config.File(config.FilePath("application.yaml")),
-    config.Provider(nacos.New()),
-    config.Validate[ApplicationConfig](validateConfig),
-)
-app.WithConfigBinding[OrderConfig]("order", validateOrder)
-```
+- `WithDescription`、`WithLongDescription`、`WithExample`、`WithAliases`
+- `WithArgsValidator`、`WithRuntimeMode`
+- `WithFlagBinder`、`WithWorkloads`
+- `WithBeforeRunHook`、`WithShutdownHook`
+- `WithCommands`
 
-日志声明：
+子命令专用 `CommandOption`：
 
-```go
-app.WithLogging(applogzap.New())
-```
+- `WithShutdownBudget`
+- `WithoutInheritedShutdownHooks`
 
-IOC 声明：
+字段级归并规则：
 
-```go
-app.WithBeanDefinitions(
-    ioc.Define(&Repository{}),
-    ioc.Define(&Service{}),
-)
-app.WithModules(database.Module(), order.Module())
-```
+| 能力 | 规则 |
+|---|---|
+| 命令元数据、参数校验 | 当前节点局部值 |
+| `RuntimeMode` | 最近的显式声明覆盖；子命令默认继承，root 默认启用 |
+| `FlagBinder` | 只属于当前节点，不继承 |
+| `Workloads` | 只执行选中节点的集合，不继承 |
+| `BeforeRunHook` | root 到叶子按声明顺序追加 |
+| `ShutdownHook` | root 到叶子追加；`WithoutInheritedShutdownHooks` 清空此前继承值 |
+| `ShutdownBudget` | 两个 duration 字段分别按最近显式声明覆盖 |
+| `WithCommands` | 递归构建直接子节点 |
 
-完整配置值继续来自统一文件/env/CLI。`--config` 选择文件，`--bootstrap` 覆盖 Provider 启动输入，Config flags/`--override` 进入 pinned 层。
+## 配置与默认值
 
-## Runtime 语义
+有效关闭预算的优先级是：
 
 ```text
-parse/complete/validate flags
-  -> Build Runtime
-  -> BeforeRunHook
-  -> Workload.Run（一次性函数由 Runner 包装）
-  -> Workload.Shutdown + wait all Run（高级 ShutdownHook 可并发加入）
-  -> Close Runtime / IOC Resource
+选中命令路径的 WithShutdownBudget
+  > App 显式 WithShutdownPolicy
+  > ConfigManager 启动快照
+  > 框架内建默认值
 ```
 
-`Workload` 是主动运行单元，任一 `Run` 返回都会触发全组 `Shutdown`；app 必须等每个 `Shutdown` 和 `Run` 都返回后，才允许 IOC 逆序关闭实现 `Resource`（即 `ioc.Closer`）的被动资源。`ShutdownHook` 仅用于无法建模为 Workload/Resource 的遗留或跨系统关闭动作。
+配置键：
 
-`Run/Main` 默认监听 Unix 的 Interrupt+SIGTERM、Windows 的 Interrupt，并把实际信号身份保留在执行 context 的取消 cause 中；`ExecuteContext` 不安装进程信号，只响应宿主 context。默认 `ShutdownPolicy` 为 Workload/高级 Hook 共享 15 秒 graceful deadline，Runtime Close 使用独立 10 秒协作式 deadline。
+- `app.shutdown.workloadGracePeriod`，默认 `15s`
+- `app.shutdown.runtimeCloseGracePeriod`，默认 `10s`
 
-两个时间预算可由 ConfigManager 启动快照按字段补齐；Signals 始终由代码声明。优先级固定为“显式 `WithShutdownPolicy` > ConfigManager > 内建默认”，并在 Workload 启动前冻结，不订阅热更新：
+Signals 必须在 Runtime Build 前安装，因此只接受 `WithShutdownPolicy` 的代码声明，不从 ConfigManager 读取。
 
-```yaml
-app:
-  shutdown:
-    workloadGracePeriod: 20s
-    runtimeCloseGracePeriod: 10s
+## 运行时语义
+
+选中命令的固定流程：
+
+```text
+解析 flags
+  -> 当前节点 FlagBinder Complete/Validate
+  -> Runtime Build（Enabled 时）
+  -> root→leaf BeforeRunHooks（Enabled 时）
+  -> 选中节点 Workloads Run
+  -> 取消 run context
+  -> Workloads Shutdown + 高级 Shutdown Hooks
+  -> 等待全部 Workload Run 真正返回
+  -> Runtime/IOC Resource Close
 ```
 
-`RuntimeModeDisabled` 子命令不构建 Runtime，也不执行 BeforeRunHooks；应用 Shutdown Hooks 默认仍执行并收到 nil Runtime，可通过 `Command.DisableShutdownHooks` 关闭。`--version` 和 bootstrap schema 输出在任何 Runtime 构建前短路。
+任一 Workload Run 返回、宿主 context 取消或首次进程信号都会触发关闭。graceful context 到期只表示实现应进入 force close，不允许 app 提前释放仍被 Workload 使用的 Runtime/Resource。
+
+命令树和 Flag 声明只构建一次；顺序复用同一 App 时，每次只替换本次 `executionSession`。`FlagBinder.Bind` 每个节点只调用一次，Complete/Validate 仅在该节点被选中时按执行次数调用。session 不存放在 `context.Value`。
+
+`RuntimeModeDisabled` 不构建 Runtime，也不执行 BeforeRunHooks；Workload 和 Shutdown Hook 收到 nil Runtime。可通过 `WithoutInheritedShutdownHooks` 清空祖先高级 Hook，本节点新声明的 Hook 仍会执行。
+
+## 错误语义
+
+- 选中的叶子命令没有 Workload：`app.lifecycle.workload_required`。
+- Option 输入、归并冲突和不支持的 RuntimeMode：`app.internal`，消息包含 `op/result/stage/reason`。
+- 各阶段错误保留原始错误链，并追加稳定 stage。
+- Workload、宿主 cause、Shutdown Hook 与 Runtime Close 错误会在安全收敛后聚合返回。
 
 ## 最佳实践
 
-1. 常规应用只通过 app 配置能力，不手工 Build/Close Runtime。
-2. 配置选项使用 config 模块词汇；不要在 app 创建同义包装。
-3. 对象使用 Bean Definitions；基础设施模块提供 Definition 工厂，可复用对象集合使用 Modules。
-4. Workload/Runner 包装函数是 composition root；普通业务对象只依赖字段注入。
-5. 业务 flags 与配置覆盖 flags 分开声明。
-6. 不需要配置/log/IOC 的命令使用 `RuntimeModeDisabled`。
-7. HTTP、gRPC、Consumer 等主动组件优先实现 `Workload`；连接池、Client 等被动资源交给 IOC 并实现 `Resource`。
-8. 常规代码不要注册 `ShutdownHook`；只有无法迁移的外部回调或跨系统补偿才使用该高级逃生口。
-
-## Open Gaps / Future Improvements
-
-1. 子命令不支持无限递归树模型。
-2. bootstrap schema 仍通过 Runtime Application 适配接口发现。
-3. app 尚未提供内建 lifecycle metrics/tracing；当前通过稳定 stage 错误与业务 Hook 观测。
+1. 一次性任务使用 `WithWorkloads(Runner(fn))`。
+2. Server、Consumer、Scheduler 直接实现 `Workload`。
+3. 数据库、连接池、Client 实现 Resource 并交给 IOC，不放进 Shutdown Hook。
+4. Shutdown Hook 仅处理遗留全局动作或跨系统补偿。
+5. 子命令用 `NewCommand` + Option 构建；分组节点可以没有 Workload，执行时展示 help。
+6. Binder 的 `Bind` 只做声明和字段绑定，不依赖每次执行副作用。
 
 ## File Map
 
-1. `app.go`、`launcher.go`：App 实例与包级执行入口。
-2. `options.go`、`runtime_facade.go`：App Option 与只读 Runtime 能力聚合门面。
-3. `command.go`、`runner.go`：Command/RuntimeMode 模型与一次性 Runner 包装器。
-4. `command_builder.go`、`command_execution.go`：私有 Cobra 命令树构建与命令事务。
-5. `command_context.go`、`command_flags.go`：公共命令上下文与 Flags 能力。
-6. `flag_binder.go`、`flag_completer.go`、`flag_validator.go`、`flag_metadata.go`：业务 Flag 声明、规则与内部分类。
-7. `runtime_input.go`、`runtime_input_bootstrap.go`、`runtime_input_pinned.go`、`runtime_input_override.go`：CLI 到 `BuildInput.Config` 的分阶段转换。
-8. `workload.go`、`workload_execution.go`、`resource.go`：主动工作负载监督与被动资源语义。
-9. `shutdown_policy.go`、`shutdown_policy_config.go`、`shutdown_hook.go`、`shutdown.go`、`shutdown_execution.go`：统一关闭策略、启动快照归并与高级 Hook 协调。
-10. `process_signal.go`、`execution_session.go`、`execution_binding.go`：进程信号身份、订阅恢复、单次执行状态与缓存命令绑定。
-11. `command_bootstrap_schema.go`、`help.go`：schema 与 help 输出。
-12. `errors.go`：稳定错误码与生命周期 stage 包装。
-
-## 相关文档
-
-1. [App 使用指南](../docs/guides/app-usage.md)
-2. [App 架构设计](../docs/architecture/app-design.md)
-3. [App 生命周期管理](../docs/architecture/app-lifecycle-design.md)
-4. [App Runtime 使用指南](../docs/guides/app-runtime-usage.md)
-5. [quickstart-app](../examples/quickstart-app/README.md)
+| 文件 | 责任 |
+|---|---|
+| `app.go` | App 构建、执行 session 和命令树缓存 |
+| `command.go` | Command/CommandOption 节点模型 |
+| `option.go` / `command_option.go` / `node_option.go` | 三类公共 Option 语义合同 |
+| `options.go` | Option 实现与共享节点选项 |
+| `command_builder.go` | 递归 Cobra 命令树与 Flag 声明 |
+| `execution_plan.go` | root→leaf 字段级归并器 |
+| `command_execution.go` | root/subcommand 统一执行路径 |
+| `workload.go` / `workload_execution.go` | Workload 契约与监督器 |
+| `runner.go` | one-shot Runner 适配器 |
+| `shutdown_policy.go` / `shutdown_policy_config.go` | 关闭策略与配置优先级 |
+| `shutdown_execution.go` | 关闭触发、主动工作收敛与错误聚合 |
+| `execution_session.go` | 一次执行独占的信号控制状态 |

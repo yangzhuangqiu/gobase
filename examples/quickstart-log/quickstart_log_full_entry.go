@@ -125,11 +125,10 @@ func runQuickstartLogFull() error {
 			return nil
 		}),
 		app.WithCommands(
-			app.Command{
-				Use:        "explain",
-				Short:      "Explain one config key metadata",
-				FlagBinder: explainFlags,
-				Runner: func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
+			app.NewCommand("explain",
+				app.WithDescription("Explain one config key metadata"),
+				app.WithFlagBinder(explainFlags),
+				app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
 					meta, exists := runtime.ConfigManager().Current().Explain(explainFlags.Key)
 					if !exists {
 						_, _ = fmt.Fprintf(os.Stdout, "key=%s not found\n", explainFlags.Key)
@@ -144,19 +143,18 @@ func runQuickstartLogFull() error {
 						meta.Version,
 					)
 					return nil
-				},
-			},
-			app.Command{
-				Use:         "doctor",
-				Short:       "Run diagnostics without loading config",
-				RuntimeMode: app.RuntimeModeDisabled,
-				Runner: func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
+				})),
+			),
+			app.NewCommand("doctor",
+				app.WithDescription("Run diagnostics without loading config"),
+				app.WithRuntimeMode(app.RuntimeModeDisabled),
+				app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
 					_, _ = fmt.Fprintln(os.Stdout, "doctor: ok (RuntimeModeDisabled)")
 					return nil
-				},
-			},
+				})),
+			),
 		),
-		app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime) error {
+		app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime, _ app.CommandContext) error {
 			cfg := &quickstartLogFullConfig{}
 			if err := runtime.ConfigManager().Current().Decode("", cfg); err != nil {
 				return err

@@ -84,15 +84,14 @@ func TestSecondProcessSignalForcesSubprocessExit(t *testing.T) {
 func runProcessSignalHelper(blockingHook bool) {
 	os.Args = []string{"app-signal-helper", "serve"}
 	application := New(
-		WithCommands(Command{
-			Use:         "serve",
-			RuntimeMode: RuntimeModeDisabled,
-			Runner: func(ctx context.Context, _ Runtime, _ CommandContext) error {
+		WithCommands(NewCommand("serve",
+			WithRuntimeMode(RuntimeModeDisabled),
+			WithWorkloads(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
 				_, _ = fmt.Fprintln(os.Stdout, processSignalHelperReady)
 				<-ctx.Done()
 				return ctx.Err()
-			},
-		}),
+			})),
+		)),
 		WithShutdownHook("signal-helper", func(context.Context, Runtime, CommandContext) error {
 			_, _ = fmt.Fprintln(os.Stdout, processSignalHelperHook)
 			if blockingHook {
