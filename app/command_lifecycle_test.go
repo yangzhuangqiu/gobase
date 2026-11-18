@@ -29,20 +29,20 @@ func TestUseCaseRuntimeLivesThroughShutdownHooks(t *testing.T) {
 			trace = append(trace, "before")
 			return nil
 		}),
-		WithRunner(func(_ context.Context, runtime Runtime) error {
+		WithWorkloads(Runner(func(_ context.Context, runtime Runtime) error {
 			if runtime == nil {
 				return errors.New("runtime is nil in runner")
 			}
 			trace = append(trace, "run")
 			return nil
-		}),
-		WithShutdown(WithShutdownHook("server", func(_ context.Context, runtime Runtime, _ CommandContext) error {
+		})),
+		WithShutdownHook("server", func(_ context.Context, runtime Runtime, _ CommandContext) error {
 			if runtime == nil {
 				return errors.New("runtime is nil in shutdown hook")
 			}
 			trace = append(trace, "shutdown")
 			return nil
-		})),
+		}),
 	)
 	if err := application.ExecuteContext(context.Background(), nil); err != nil {
 		t.Fatalf("execute app failed: %v", err)
@@ -68,14 +68,14 @@ func TestUseCaseRuntimeClosesWhenBeforeHookFails(t *testing.T) {
 			trace = append(trace, "before")
 			return errors.New("before failed")
 		}),
-		WithRunner(func(context.Context, Runtime) error {
+		WithWorkloads(Runner(func(context.Context, Runtime) error {
 			trace = append(trace, "run")
 			return nil
-		}),
-		WithShutdown(WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
+		})),
+		WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
 			trace = append(trace, "shutdown")
 			return nil
-		})),
+		}),
 	)
 	err := application.ExecuteContext(context.Background(), nil)
 	if err == nil {
@@ -102,13 +102,13 @@ func TestUseCaseDisabledRuntimeCommand(t *testing.T) {
 		WithBeforeRunHook(func(context.Context, Runtime, CommandContext) error {
 			return errors.New("disabled command must skip before hooks")
 		}),
-		WithShutdown(WithShutdownHook("diagnostic", func(_ context.Context, runtime Runtime, command CommandContext) error {
+		WithShutdownHook("diagnostic", func(_ context.Context, runtime Runtime, command CommandContext) error {
 			shutdownCalled = true
 			if runtime != nil || command.Name() != "doctor" {
 				return errors.New("unexpected disabled shutdown context")
 			}
 			return nil
-		})),
+		}),
 		WithCommands(Command{
 			Use:         "doctor",
 			RuntimeMode: RuntimeModeDisabled,

@@ -45,7 +45,7 @@ Controller/Filter/fallback handler 本来就是该模块的应用合同，自动
 
 `Run` 是阻塞型工作负载，错误需要进入应用主流程。若 Init 偷偷启动 goroutine，Build 无法表达监听失败，应用也无法统一协调多个工作负载。
 
-因此 Build 后由 composition root Resolve `web.Server` 并调用 `Run`。`Runner()` 只是该步骤的单 Server app 适配器；IOC 仍只负责构造和 Close。
+因此 Build 后由 composition root Resolve `web.Server` 并调用 `Run`。`Workload()` 是推荐的单 Server app 适配器，显式委托 Run/Shutdown；`Runner()` 仅返回可交给 `app.Runner(...)` 的函数式兼容适配器。IOC 仍负责最终 Resource Close。
 
 ### 3.5 hlog 属于 composition root
 
@@ -61,9 +61,9 @@ Hertz hlog 是进程级可变状态，不属于单个 Server bean。本模块不
 
 ```mermaid
 flowchart LR
-    A["Application / app Runner"] --> M["app-web-hertz Module"]
+    A["Application / app Workload"] --> M["app-web-hertz Module"]
     A -->|"WithBeanDefinitions"| D["component Definitions"]
-    A -->|"Runner: Resolve + Run"| W["web.Server"]
+    A -->|"Workload: Resolve + Run/Shutdown"| W["web.Server"]
     M --> I["IOC Registry / lifecycle"]
     M --> C["config.Manager"]
     M --> H["web-hertz"]
@@ -86,7 +86,7 @@ flowchart LR
 |---|---|---|---|
 | Controller/Filter/fallback handler | 应用 | IOC | IOC 按 Definition 声明处理 |
 | `config.Manager` | Runtime/应用 | Runtime/应用 | Module 只借用，不关闭 |
-| 托管 Server bean | `NewModule.Register` | IOC | IOC 调用 `Close` |
+| 托管 Server bean | `NewModule.Register` | IOC Resource | app Workload 先停止主动运行，IOC 后调用 `Close` 兜底释放 |
 | `web-hertz.Server` | Server bean Init | Server bean | `Close -> Shutdown` |
 | hlog / 日志 Provider | composition root | composition root | Server 停止后恢复/关闭 |
 | 实例 Logger | app Runtime 的 LoggerFactory | 日志 Provider/Runtime | app-web-hertz 只借用，不关闭 Provider |
@@ -248,8 +248,8 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 ## 13. 容量、限制与演进
 
 1. Build 成本随 Controller 方法数、Filter 数和路由数线性增长；请求期没有反射调用。
-2. 当前按类型唯一解析 `web.Server`，不定义多 Server 的名称、Run 或关闭策略。
-3. `Runner()` 只适配按类型唯一解析的单 Server；多 Server 监督仍由 composition root 的应用 Controller 显式实现。
+2. 当前 `Workload()` 按类型唯一解析 `web.Server`；多 Server 需要由各 adapter 提供唯一 Workload 名称和解析规则。
+3. `Runner()` 只作为函数式兼容入口；推荐由 `Workload()` 显式表达 Run/Shutdown，并由 app 等待 Run 收敛。
 4. 启动配置和路由计划不热更新；变化需要重建 Container/Runtime。
 5. 自动路由把方法名作为公开 URL 声明，兼容性敏感接口应使用显式路由。
 6. 标准 Middleware 只处理启动期静态策略；动态配置刷新需要独立原子策略合同，不能订阅整个 Config。
@@ -267,7 +267,7 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 8. `app-web-hertz/definition.go`：应用组件到 IOC Definition 的语义工厂。
 9. `app-web-hertz/module.go`：IOC Module 和 Server bean 注册。
 10. `app-web-hertz/managed_server.go`：依赖注入、Init、生命周期委托和 Close。
-11. `app-web-hertz/runner.go`：app 单 Server Runner 适配。
+11. `app-web-hertz/workload.go`、`runner.go`：推荐 Workload 与兼容 Runner 适配。
 12. `app-web-hertz/config.go`：独立 scope 配置加载。
 13. `app-web-hertz/errors.go`：稳定错误码。
 14. `app-web-hertz/*_test.go`：配置、Middleware、Observation、Bundle、依赖图、路由和真实生命周期测试。

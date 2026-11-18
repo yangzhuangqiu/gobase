@@ -22,8 +22,9 @@ type Initializer interface {
 }
 
 // Closer 定义容器关闭阶段的资源回收契约。
+// 语义：Close 必须响应 context 并在资源真实停止使用依赖后返回；容器不会在 timeout 后遗弃调用。
 type Closer interface {
-	// Close 在容器关闭阶段被调用，执行资源释放逻辑。
+	// Close 在容器关闭阶段被调用，执行资源释放逻辑；返回后容器才会继续关闭其依赖。
 	Close(ctx context.Context) error
 }
 
@@ -162,8 +163,8 @@ func (this *container) closeDefinitions(ctx context.Context, definitions []*bean
 	return errors.Join(errs...)
 }
 
-// closeOne 关闭单个 bean，并在启用时应用 close 超时策略。
-// 阶段角色：Close 路径的单点关闭语义封装。
+// closeOne 关闭单个 bean，并在启用时向它传播 close 超时策略。
+// 阶段角色：Close 路径的单点关闭语义封装；只有 Closer 真实返回后才允许继续释放其依赖。
 func (this *container) closeOne(ctx context.Context, bean *beanDefinition, closer Closer) error {
 	// 阶段一：从调用方 context 派生可选的单 bean timeout。
 	closeCtx := ctx
@@ -173,28 +174,28 @@ func (this *container) closeOne(ctx context.Context, bean *beanDefinition, close
 	}
 	defer cancel()
 
-	// 阶段二：独立 goroutine 允许 context 结束容器等待；panic 在 goroutine 内转换为 error。
-	done := make(chan error, 1)
-	go func() {
-		done <- this.invokeCloser(closeCtx, bean, closer)
-	}()
-	// 阶段三：返回真实 Closer 结果，或返回协作式取消/超时结果。
-	select {
-	case err := <-done:
-		return err
-	case <-closeCtx.Done():
-		if errors.Is(closeCtx.Err(), context.DeadlineExceeded) && this.closeTimeout > 0 {
-			this.metrics.closeTimeoutTotal.Add(1)
-			return errorForIOCCloseFailed(messagef("op=ioc.close result=failed stage=close_bean reason=close_timeout bean=%s timeout_ms=%d",
-				bean.name, this.closeTimeout.Milliseconds(),
-			))
-		}
-		return errorForIOCCloseFailed(messagef("op=ioc.close result=failed stage=close_bean reason=close_canceled bean=%s", bean.name), closeCtx.Err())
+	// 阶段二：同步等待 Closer 收敛；deadline 是协作式取消，不伪造资源已经关闭。
+	closeErr := this.invokeCloser(closeCtx, bean, closer)
+	if errors.Is(closeCtx.Err(), context.DeadlineExceeded) && this.closeTimeout > 0 {
+		this.metrics.closeTimeoutTotal.Add(1)
+		timeoutErr := errorForIOCCloseFailed(messagef(
+			"op=ioc.close result=failed stage=close_bean reason=close_timeout bean=%s timeout_ms=%d",
+			bean.name, this.closeTimeout.Milliseconds(),
+		))
+		return errors.Join(timeoutErr, closeErr)
 	}
+	if closeCtx.Err() != nil {
+		canceledErr := errorForIOCCloseFailed(
+			messagef("op=ioc.close result=failed stage=close_bean reason=close_canceled bean=%s", bean.name),
+			closeCtx.Err(),
+		)
+		return errors.Join(canceledErr, closeErr)
+	}
+	return closeErr
 }
 
 // invokeCloser 调用单个 Closer，并把 panic 转换为携带 stack 的关闭错误。
-// 阶段角色：Closer goroutine 的异常边界，保证 panic 可聚合且不阻断后续资源释放。
+// 阶段角色：Closer 调用的异常边界，保证 panic 可聚合且不阻断后续资源释放。
 func (this *container) invokeCloser(ctx context.Context, bean *beanDefinition, closer Closer) (err error) {
 	defer func() {
 		panicValue := recover()

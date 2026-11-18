@@ -21,7 +21,7 @@ func TestUseCaseCLIInputFlowsToRuntime(t *testing.T) {
 	application := New(
 		WithConfig(config.File(config.FileDisabled()), config.Defaults(defaultConfig)),
 		WithFlagBinder(flags),
-		WithRunner(func(_ context.Context, runtime Runtime) error {
+		WithWorkloads(Runner(func(_ context.Context, runtime Runtime) error {
 			resolved := &commandRuntimeConfig{}
 			if err := runtime.ConfigManager().Current().Decode("", resolved); err != nil {
 				return err
@@ -30,7 +30,7 @@ func TestUseCaseCLIInputFlowsToRuntime(t *testing.T) {
 				return errors.New("pinned value did not reach runtime")
 			}
 			return nil
-		}),
+		})),
 	)
 	if err := application.ExecuteContext(context.Background(), []string{"--service.name", "cli"}); err != nil {
 		t.Fatalf("execute with pinned input failed: %v", err)

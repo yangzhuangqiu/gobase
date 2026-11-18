@@ -10,17 +10,17 @@ import (
 	"time"
 )
 
-// testProcessSignalSource 用可控 context 模拟 App.Run 的首次进程信号。
+// testProcessSignalSource 用可控事件模拟 App.Run 的首次进程信号。
 type testProcessSignalSource struct {
-	// Context 在测试触发“信号”时取消。
-	Context context.Context
+	// Events 接收测试主动投递的具体进程信号。
+	Events chan os.Signal
 	// StopCount 记录恢复默认信号行为的实际次数。
 	StopCount atomic.Int32
 }
 
-// Notify 返回测试控制的 signal context，并提供可重复调用但可观测的底层 stop。
-func (this *testProcessSignalSource) Notify(context.Context, ...os.Signal) (context.Context, func()) {
-	return this.Context, func() { this.StopCount.Add(1) }
+// Notify 返回测试控制的信号事件，并提供可重复调用但可观测的底层 stop。
+func (this *testProcessSignalSource) Notify(...os.Signal) (<-chan os.Signal, func()) {
+	return this.Events, func() { this.StopCount.Add(1) }
 }
 
 // TestUseCaseHostCancellationRunsShutdownBeforeRunnerConverges 验证宿主取消会并行启动 Shutdown Hook 与阻塞 Runner 收敛。
@@ -36,16 +36,16 @@ func TestUseCaseHostCancellationRunsShutdownBeforeRunnerConverges(t *testing.T) 
 	hookCalled := make(chan struct{})
 	cause := errors.New("host stopped")
 	application := New(
-		WithRunner(func(context.Context, Runtime) error {
+		WithWorkloads(Runner(func(context.Context, Runtime) error {
 			close(started)
 			<-release
 			return context.Canceled
-		}),
-		WithShutdown(WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
+		})),
+		WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
 			close(hookCalled)
 			close(release)
 			return nil
-		})),
+		}),
 	)
 	result := make(chan error, 1)
 	go func() { result <- application.ExecuteContext(ctx, nil) }()
@@ -77,10 +77,10 @@ func TestUseCaseCommandCanDisableInheritedShutdownHooks(t *testing.T) {
 	hookCalled := false
 	runnerCalled := false
 	application := New(
-		WithShutdown(WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
+		WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
 			hookCalled = true
 			return nil
-		})),
+		}),
 		WithCommands(Command{
 			Use:                  "doctor",
 			RuntimeMode:          RuntimeModeDisabled,
@@ -110,25 +110,26 @@ func TestUseCaseRunTreatsSignalOnlyShutdownAsSuccess(t *testing.T) {
 	t.Cleanup(func() { os.Args = originalArgs })
 	os.Args = []string{"demo"}
 
-	signalCtx, signalCancel := context.WithCancel(context.Background())
-	signalSource := &testProcessSignalSource{Context: signalCtx}
+	signalSource := &testProcessSignalSource{Events: make(chan os.Signal, 1)}
 	started := make(chan struct{})
+	causeObserved := make(chan error, 1)
 	hookCalled := false
 	application := New(
-		WithRunner(func(ctx context.Context, _ Runtime) error {
+		WithWorkloads(Runner(func(ctx context.Context, _ Runtime) error {
 			close(started)
 			<-ctx.Done()
+			causeObserved <- context.Cause(ctx)
 			return ctx.Err()
-		}),
-		WithShutdown(WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
+		})),
+		WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
 			hookCalled = true
 			return nil
-		})),
+		}),
 	)
 	application.signalSource = signalSource
 	go func() {
 		<-started
-		signalCancel()
+		signalSource.Events <- os.Interrupt
 	}()
 
 	if err := application.Run(); err != nil {
@@ -136,6 +137,10 @@ func TestUseCaseRunTreatsSignalOnlyShutdownAsSuccess(t *testing.T) {
 	}
 	if !hookCalled || signalSource.StopCount.Load() != 1 {
 		t.Fatalf("unexpected signal shutdown result: hook=%t stop_count=%d", hookCalled, signalSource.StopCount.Load())
+	}
+	var signalCause *processSignalCause
+	if cause := <-causeObserved; !errors.As(cause, &signalCause) || signalCause.Signal != os.Interrupt {
+		t.Fatalf("runner should observe concrete interrupt cause, got: %v", cause)
 	}
 }
 
@@ -147,27 +152,69 @@ func TestUseCaseRunPreservesShutdownHookCancellationError(t *testing.T) {
 	t.Cleanup(func() { os.Args = originalArgs })
 	os.Args = []string{"demo"}
 
-	signalCtx, signalCancel := context.WithCancel(context.Background())
+	signalSource := &testProcessSignalSource{Events: make(chan os.Signal, 1)}
 	started := make(chan struct{})
 	application := New(
-		WithRunner(func(ctx context.Context, _ Runtime) error {
+		WithWorkloads(Runner(func(ctx context.Context, _ Runtime) error {
 			close(started)
 			<-ctx.Done()
 			return ctx.Err()
-		}),
-		WithShutdown(WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
-			return context.Canceled
 		})),
+		WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
+			return context.Canceled
+		}),
 	)
-	application.signalSource = &testProcessSignalSource{Context: signalCtx}
+	application.signalSource = signalSource
 	go func() {
 		<-started
-		signalCancel()
+		signalSource.Events <- os.Interrupt
 	}()
 
 	err := application.Run()
-	if err == nil || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "stage=shutdown_hook") {
+	if err == nil || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "stage=shutdown_hook") ||
+		!strings.Contains(err.Error(), "signal=interrupt") {
 		t.Fatalf("expected shutdown hook cancellation error, got: %v", err)
+	}
+}
+
+// TestUseCaseSignalDuringBeforeHookIsNormalExit 验证协调器启动前的具体进程信号仍按正常退出处理。
+//
+// 测试方法：Before Hook 等待 context 取消，投递 os.Interrupt 后返回类型化 cause；断言 Runner/Shutdown Hook 未启动且 Run 返回 nil。
+func TestUseCaseSignalDuringBeforeHookIsNormalExit(t *testing.T) {
+	originalArgs := os.Args
+	t.Cleanup(func() { os.Args = originalArgs })
+	os.Args = []string{"demo"}
+
+	signalSource := &testProcessSignalSource{Events: make(chan os.Signal, 1)}
+	beforeStarted := make(chan struct{})
+	runnerCalled := false
+	shutdownCalled := false
+	application := New(
+		WithBeforeRunHook(func(ctx context.Context, _ Runtime, _ CommandContext) error {
+			close(beforeStarted)
+			<-ctx.Done()
+			return context.Cause(ctx)
+		}),
+		WithWorkloads(Runner(func(context.Context, Runtime) error {
+			runnerCalled = true
+			return nil
+		})),
+		WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
+			shutdownCalled = true
+			return nil
+		}),
+	)
+	application.signalSource = signalSource
+	go func() {
+		<-beforeStarted
+		signalSource.Events <- os.Interrupt
+	}()
+
+	if err := application.Run(); err != nil {
+		t.Fatalf("signal during before hook should be normal exit, got: %v", err)
+	}
+	if runnerCalled || shutdownCalled || signalSource.StopCount.Load() != 1 {
+		t.Fatalf("unexpected early signal result: runner=%t shutdown=%t stop_count=%d", runnerCalled, shutdownCalled, signalSource.StopCount.Load())
 	}
 }
 
@@ -177,13 +224,11 @@ func TestUseCaseRunPreservesShutdownHookCancellationError(t *testing.T) {
 func TestUseCaseDuplicateShutdownDeclarationsFailFast(t *testing.T) {
 	noopHook := func(context.Context, Runtime, CommandContext) error { return nil }
 	application := New(
-		WithRunner(func(context.Context, Runtime) error { return nil }),
-		WithShutdown(
-			WithShutdownGracefulTimeout(time.Second),
-			WithShutdownGracefulTimeout(2*time.Second),
-			WithShutdownHook("server", noopHook),
-			WithShutdownHook("server", noopHook),
-		),
+		WithWorkloads(Runner(func(context.Context, Runtime) error { return nil })),
+		WithShutdownPolicy(ShutdownPolicy{WorkloadGracefulTimeout: time.Second}),
+		WithShutdownPolicy(ShutdownPolicy{WorkloadGracefulTimeout: 2 * time.Second}),
+		WithShutdownHook("server", noopHook),
+		WithShutdownHook("server", noopHook),
 	)
 	if err := application.ExecuteContext(context.Background(), nil); err == nil {
 		t.Fatal("duplicate shutdown declarations must fail fast")
@@ -199,19 +244,17 @@ func TestUseCaseShutdownHooksRunConcurrentlyAndAggregateErrors(t *testing.T) {
 	firstErr := errors.New("first shutdown failed")
 	secondErr := errors.New("second shutdown failed")
 	application := New(
-		WithRunner(func(context.Context, Runtime) error { return nil }),
-		WithShutdown(
-			WithShutdownHook("first", func(context.Context, Runtime, CommandContext) error {
-				close(firstStarted)
-				<-secondStarted
-				return firstErr
-			}),
-			WithShutdownHook("second", func(context.Context, Runtime, CommandContext) error {
-				close(secondStarted)
-				<-firstStarted
-				return secondErr
-			}),
-		),
+		WithWorkloads(Runner(func(context.Context, Runtime) error { return nil })),
+		WithShutdownHook("first", func(context.Context, Runtime, CommandContext) error {
+			close(firstStarted)
+			<-secondStarted
+			return firstErr
+		}),
+		WithShutdownHook("second", func(context.Context, Runtime, CommandContext) error {
+			close(secondStarted)
+			<-firstStarted
+			return secondErr
+		}),
 	)
 	result := make(chan error, 1)
 	go func() { result <- application.ExecuteContext(context.Background(), nil) }()
@@ -234,11 +277,11 @@ func TestUseCaseCancellationDoesNotHideRunnerBusinessError(t *testing.T) {
 	started := make(chan struct{})
 	hostCause := errors.New("host stopped")
 	businessErr := errors.New("serve failed")
-	application := New(WithRunner(func(ctx context.Context, _ Runtime) error {
+	application := New(WithWorkloads(Runner(func(ctx context.Context, _ Runtime) error {
 		close(started)
 		<-ctx.Done()
 		return errors.Join(ctx.Err(), businessErr)
-	}))
+	})))
 	result := make(chan error, 1)
 	go func() { result <- application.ExecuteContext(ctx, nil) }()
 	<-started

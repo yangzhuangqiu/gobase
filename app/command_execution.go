@@ -9,7 +9,7 @@ import (
 )
 
 // runRootCommand 执行 root 命令完整生命周期。
-func (this *App) runRootCommand(cmd *cobra.Command, args []string) error {
+func (this *App) runRootCommand(session *executionSession, cmd *cobra.Command, args []string) error {
 	if printed, err := this.handlePrintVersion(cmd); err != nil {
 		return stageError("print_version", err)
 	} else if printed {
@@ -23,21 +23,20 @@ func (this *App) runRootCommand(cmd *cobra.Command, args []string) error {
 	} else if listed {
 		return nil
 	}
-	if this.runner == nil {
-		// command-only 应用执行 root 时展示命令清单，不要求无意义的占位 Runner。
+	if len(this.workloads) == 0 {
+		// command-only 应用执行 root 时展示命令清单，不要求无意义的占位 Workload。
 		if cmd.HasAvailableSubCommands() {
 			return stageError("render_help", cmd.Help())
 		}
 		return errorForAppRunnerRequired(messagef("stage=validate_runner reason=runner is required"))
 	}
-	rootRunner := func(ctx context.Context, runtime Runtime, _ CommandContext) error {
-		return this.runner(ctx, runtime)
-	}
-	return stageError("execute_command_root", this.executeCommand(cmd, args, this.rootFlagBinder, RuntimeModeEnabled, false, rootRunner))
+	supervisor := newWorkloadSupervisor(this.workloads)
+	rootRunner := supervisor.Run
+	return stageError("execute_command_root", this.executeCommand(session, cmd, args, this.rootFlagBinder, RuntimeModeEnabled, false, rootRunner, supervisor))
 }
 
 // runSubCommand 执行子命令完整生命周期。
-func (this *App) runSubCommand(sub Command, cmd *cobra.Command, args []string) error {
+func (this *App) runSubCommand(session *executionSession, sub Command, cmd *cobra.Command, args []string) error {
 	if printed, err := this.handlePrintVersion(cmd); err != nil {
 		return stageError("print_version", err)
 	} else if printed {
@@ -55,12 +54,14 @@ func (this *App) runSubCommand(sub Command, cmd *cobra.Command, args []string) e
 		return errorForAppCommandRunnerRequired(messagef("stage=validate_command command=" + sub.Use + " reason=runner is required"))
 	}
 	return stageError("execute_command_sub", this.executeCommand(
+		session,
 		cmd,
 		args,
 		sub.FlagBinder,
 		sub.RuntimeMode,
 		sub.DisableShutdownHooks,
 		sub.Runner,
+		nil,
 	))
 }
 
@@ -82,12 +83,14 @@ func (this *App) handlePrintVersion(cmd *cobra.Command) (bool, error) {
 
 // executeCommand 执行参数规则、Runtime、hooks、业务与关闭的统一生命周期。
 func (this *App) executeCommand(
+	session *executionSession,
 	cmd *cobra.Command,
 	args []string,
 	commandFlagBinder FlagBinder,
 	runtimeMode RuntimeMode,
 	disableShutdownHooks bool,
 	runner CommandRunner,
+	workloads *workloadSupervisor,
 ) (err error) {
 	ctx := cmd.Context()
 
@@ -101,10 +104,11 @@ func (this *App) executeCommand(
 		}
 	}
 	commandContext := buildCommandContext(cmd, args)
+	shutdownPolicy := this.shutdown.executionPolicy()
 
 	// 阶段二：Disabled 不创建 Runtime/执行 Before Hooks，但仍进入统一 Runner 与 Shutdown 协调。
 	if runtimeMode == RuntimeModeDisabled {
-		return this.executeManagedRunner(ctx, nil, commandContext, runner, disableShutdownHooks)
+		return this.executeManagedRunner(session, ctx, nil, commandContext, runner, disableShutdownHooks, workloads, shutdownPolicy)
 	}
 	if runtimeMode != RuntimeModeEnabled {
 		return errorForAppInternal(messagef("op=app.command result=failed stage=resolve_runtime_mode reason=unsupported_mode mode=%d", runtimeMode))
@@ -119,13 +123,18 @@ func (this *App) executeCommand(
 	}
 	defer func() {
 		// Runtime Close 使用独立 deadline，不复用已取消的 run/shutdown context。
-		closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), this.shutdown.RuntimeCloseTimeout)
+		closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), shutdownPolicy.RuntimeCloseTimeout)
 		defer cancelClose()
 		closeErr := stageError("close_runtime", runtime.Close(closeCtx))
 		err = errors.Join(err, closeErr)
 	}()
+	resolvedPolicy, policyErr := this.resolveExecutionShutdownPolicy(runtime)
+	if policyErr != nil {
+		return stageError("resolve_shutdown_policy", policyErr)
+	}
+	shutdownPolicy = resolvedPolicy
 	if beforeErr := this.runBeforeHooks(ctx, runtime, commandContext); beforeErr != nil {
 		return stageError("before_hooks", beforeErr)
 	}
-	return this.executeManagedRunner(ctx, runtime, commandContext, runner, disableShutdownHooks)
+	return this.executeManagedRunner(session, ctx, runtime, commandContext, runner, disableShutdownHooks, workloads, shutdownPolicy)
 }

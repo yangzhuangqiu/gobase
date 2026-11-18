@@ -1,36 +1,36 @@
 # App 生命周期管理
 
-本文定义 `app` 的稳定生命周期管理：从命令完成校验、Runtime Build、`BeforeRunHook`、Runner，到 `ShutdownHook`、Runtime Close 和进程退出，全部由一次命令事务统一编排。
+本文定义 `app` 的稳定生命周期管理：从命令完成校验、Runtime Build、`BeforeRunHook`、Workload，到 Shutdown、Resource Close 和进程退出，全部由一次命令事务统一编排。一次性函数由 `Runner` 包装为 Workload，`ShutdownHook` 只作为高级逃生口。
 
-普通应用继续从 `app.Main(...)` 启动，Runtime 与 Runner 沿用默认生命周期；只有需要运行前切面、主动工作负载关闭、自定义信号或时间预算时，才配置 `WithBeforeRunHook(...)` 或 `app.WithShutdown(...)`。
+普通应用继续从 `app.Main(...)` 启动；常驻服务通过 `WithWorkloads(...)` 声明主动运行单元，通过 `WithShutdownPolicy(...)` 统一预算，被动资源继续交给 IOC。
 
 ## 1. 设计目标与边界
 
 App 生命周期管理必须解决三个阶段不同、所有者不同的问题：
 
-1. 运行前准备：Runtime Build 成功后执行 `BeforeRunHook`，只完成 Runner 启动前的命令切面和可回滚准备。
+1. 运行前准备：Runtime Build 成功后执行 `BeforeRunHook`，只完成 Workload 启动前的命令切面和可回滚准备。
 2. 应用主动工作负载停止：HTTP/gRPC Server、Consumer、Scheduler、Worker 等不再产生或处理新工作，并排空存量工作。
 3. Runtime 释放：app 在工作负载停止后调用 Runtime Close；Runtime 内部关闭哪些资源、采用什么顺序属于 Runtime 自身契约。
 
 如果主动工作负载仍在运行时 Runtime 已关闭，它可能继续访问已经失效的运行能力。因此核心不变量是：
 
-> Shutdown Hooks 已全部返回，并且 Runner 已完全退出后，app 才能关闭 Runtime。
+> 全部 Workload 的 Shutdown 与 Run、以及高级 Shutdown Hooks 都已返回后，app 才能关闭 Runtime/Resource。
 
 ### 1.1 In Scope
 
-1. Runtime Build、`BeforeRunHook`、Runner、`ShutdownHook` 与 Runtime Close 的固定阶段顺序。
-2. SIGINT/SIGTERM、宿主 context 和 Runner 结果的统一退出路径。
-3. 应用 Shutdown Group 与 Runtime Close 的严格阶段边界。
-4. root Runner 与选中子命令 `CommandRunner` 的统一生命周期。
+1. Runtime Build、`BeforeRunHook`、Workload、Shutdown 与 Runtime Close 的固定阶段顺序。
+2. SIGINT/SIGTERM、宿主 context 和 Workload 结果的统一退出路径。
+3. 主动 Workload 与被动 Resource 的严格阶段边界。
+4. root Workload 与选中子命令 `CommandRunner` 的统一生命周期。
 5. 阻塞型与后台型主动工作负载的关闭协调。
 6. graceful、force、第二次信号和 Kubernetes SIGKILL 的分层边界。
-7. Before、Shutdown、Runner 与 Runtime Close 的错误聚合和观测语义。
+7. Before、Shutdown、Workload/CommandRunner 与 Runtime Close 的错误聚合和观测语义。
 
 ### 1.2 Out of Scope
 
 1. 在 `app` 核心依赖 Gin、Hertz、gRPC 或其他框架类型。
 2. 发现、初始化、排序或释放 Runtime 内部资源。
-3. 为 Shutdown Hooks 增加 priority、依赖图或隐式顺序推断。
+3. 为 Workload 或高级 Shutdown Hooks 增加 priority、依赖图或隐式顺序推断。
 4. 承诺 timeout 能强制终止不响应 context 的 goroutine。
 5. 捕获操作系统不允许处理的 SIGKILL/SIGSTOP。
 
@@ -44,10 +44,10 @@ App 生命周期管理必须解决三个阶段不同、所有者不同的问题�
 Parse / Complete / Validate
   -> Runtime Build（Enabled）
   -> BeforeRunHook
-  -> Runner
+  -> Workload.Run（一次性函数由 Runner 包装）
   -> Shutdown trigger
-  -> ShutdownHook + Runner convergence
-  -> Runtime Close
+  -> Workload.Shutdown + wait all Run + advanced ShutdownHook
+  -> Runtime Close / IOC Resource.Close
   -> Error/Exit
 ```
 
@@ -55,7 +55,7 @@ help、version、bootstrap schema 在 Runtime Build 前短路。Runtime Build �
 
 ### 2.2 所有权
 
-Shutdown Hook 只管理必须在 Runtime Close 前停止的主动工作负载：
+Workload 只管理必须在 Runtime Close 前停止的主动运行单元：
 
 ```text
 Application Shutdown Group
@@ -73,7 +73,7 @@ app
        -> 内部资源和关闭顺序由 Runtime 自己定义
 ```
 
-app 只定义两个所有权边界：Shutdown Hook 拥有其声明的主动工作负载停止责任，app 拥有在正确阶段调用一次 Runtime Close 的责任。工作负载实例来自哪里、如何装配、是否同时暴露在某个容器中，属于调用方、adapter 和 Runtime 的边界，不由本文规定。
+app 定义三个清晰边界：Workload 拥有主动运行与停止语义，IOC 拥有 Resource 的最终 Close，app 拥有二者之间的阶段顺序。Workload 可以从 Runtime 解析对象，但不能关闭 Runtime；同一 Resource 不建立第二套所有者。
 
 该边界不是通用 GracefulShutdown 注册表：app 只增加一个固定的“主动工作负载停止”阶段，不提供任意资源发现、启动回调、关闭优先级或依赖排序。
 
@@ -91,16 +91,16 @@ type BeforeRunHook func(
 func WithBeforeRunHook(hook BeforeRunHook) Option
 ```
 
-`BeforeRunHook` 在 Runtime Build 成功后、Runner 启动前执行：
+`BeforeRunHook` 在 Runtime Build 成功后、Workload/CommandRunner 启动前执行：
 
-1. `ctx` 是 run context；取消表示不再进入 Runner。
+1. `ctx` 是 run context；取消表示不再进入业务执行阶段。
 2. `runtime` 在 `RuntimeModeEnabled` 下非 nil，可使用其公共能力完成命令切面；Hook 只借用，不取得所有权。
 3. `command` 是当前选中命令的只读快照。
 4. Hook 不能启动 Server、Consumer、Scheduler 等长期主动工作负载。
-5. Hook 失败时 Runner 和 Shutdown Hooks 均不执行；Hook 必须在返回错误前撤销自己创建的临时副作用。
+5. Hook 失败时 Workload/CommandRunner 和 Shutdown Hooks 均不执行；Hook 必须在返回错误前撤销自己创建的临时副作用。
 6. 需要内部依赖排序、初始化或资源释放的准备应交给对应 Runtime 能力，不应放入 BeforeRunHook。
 
-同阶段 BeforeRunHooks 按声明顺序执行并聚合错误；任一失败后不再进入 Runner，但已经执行的 Hook 仍必须依靠各自的失败回滚契约保持安全。
+同阶段 BeforeRunHooks 按声明顺序执行并聚合错误；任一失败后不再进入业务执行阶段，但已经执行的 Hook 仍必须依靠各自的失败回滚契约保持安全。
 
 ## 4. 退出触发源
 
@@ -109,9 +109,9 @@ func WithBeforeRunHook(hook BeforeRunHook) Option
 ```text
 SIGINT / SIGTERM
 宿主 context 取消
-Runner 正常返回
-Runner 返回业务错误
-Server / Consumer 等工作负载意外退出并使 Runner 返回
+任一 Workload 正常返回
+Workload 返回业务错误
+Server / Consumer 等工作负载意外退出
 ```
 
 触发源只决定退出原因，不分别拥有清理逻辑：
@@ -120,11 +120,11 @@ Server / Consumer 等工作负载意外退出并使 Runner 返回
 |---|---|
 | SIGINT/SIGTERM，全部阶段成功 | 正常退出 |
 | 宿主 context 取消 | 完整关闭；`ExecuteContext` 返回 `context.Cause(ctx)`，由宿主决定是否忽略 |
-| Runner 正常完成 | 执行 Shutdown Group 后正常关闭 Runtime |
-| Runner/工作负载失败 | 保留原始错误，仍执行 Shutdown Group 和 Runtime Close |
+| Workload 正常完成 | 执行 Shutdown Group 后正常关闭 Runtime |
+| Workload/CommandRunner 失败 | 保留原始错误，仍执行 Shutdown Group 和 Runtime Close |
 | Shutdown Hook 失败 | 保留 hook 错误，不跳过其他 hooks 和 Runtime Close |
 
-Runtime Build 或 before hook 失败时 Runner 尚未开始，不执行 Shutdown Hooks；Runtime Build 成功后仍必须关闭 Runtime。`BeforeRunHook` 只能完成 Runner 启动前的准备，不能启动 Server、Consumer 等长期工作负载；hook 失败前必须自行回滚它创建的临时副作用，因此跳过 Shutdown Group 才是安全的。
+Runtime Build 或 before hook 失败时业务执行尚未开始，不执行 Shutdown Hooks；Runtime Build 成功后仍必须关闭 Runtime。`BeforeRunHook` 只能完成 Workload/CommandRunner 启动前的准备，不能启动 Server、Consumer 等长期工作负载；hook 失败前必须自行回滚它创建的临时副作用，因此跳过 Shutdown Group 才是安全的。
 
 ## 5. 入口与信号语义
 
@@ -141,14 +141,14 @@ Runtime Build 或 before hook 失败时 Runner 尚未开始，不执行 Shutdown
 1. Unix：`os.Interrupt` 与 SIGTERM；`os.Interrupt` 已表示 SIGINT，不重复注册。
 2. Windows：`os.Interrupt`。
 3. SIGHUP、SIGQUIT 不默认监听，分别保留给 reload 和诊断。
-4. `WithShutdownSignals` 替换默认集合，不做隐式追加。
+4. `WithShutdownPolicy.Signals` 替换默认集合，不做隐式追加。
 5. SIGKILL、SIGSTOP 无法监听。
 
 第一次信号启动 Shutdown 并立即停止拦截后续同类信号，使第二次信号恢复系统默认行为：
 
 ```text
 第一次信号
-  -> 记录 shutdown cause
+  -> 记录包含具体 signal 的类型化 shutdown cause
   -> 取消 run context
   -> 恢复默认信号行为
   -> 启动 Shutdown Group
@@ -157,13 +157,15 @@ Runtime Build 或 before hook 失败时 Runner 尚未开始，不执行 Shutdown
   -> 操作系统立即终止进程
 ```
 
-Shutdown 也可能先由 Runner 结果或宿主 context 触发。无论触发源是什么，只要进入 Shutdown，app 都立即停止并恢复进程信号的默认行为；因此 Shutdown 已经进行时收到的下一次配置内信号会直接终止进程，不需要再被 app 消费一次。
+Shutdown 也可能先由 Workload/CommandRunner 结果或宿主 context 触发。无论触发源是什么，只要进入 Shutdown，app 都立即停止并恢复进程信号的默认行为；因此 Shutdown 已经进行时收到的下一次配置内信号会直接终止进程，不需要再被 app 消费一次。
 
 信号配置只属于 `Run/Main` 拥有的进程入口；`ExecuteContext` 始终由宿主管理信号，避免测试、Windows Service 或嵌入式程序被隐式修改全局行为。
 
+`Run` 使用一次执行独占的 `executionSession` 保存信号恢复能力、协调阶段和首个信号原因；缓存命令树通过私有绑定槽在每次执行前换入 session，执行后恢复，不把可变控制状态存入 `context.Value`，也不重新声明 Flags。Workload/CommandRunner 仍从标准 context 接收取消，并可通过 `context.Cause(ctx)` 的文本观察具体信号；信号只决定退出原因，不进入业务配置模型。
+
 ## 6. Root 与子命令语义
 
-本文中的 Runner 表示当前实际执行的 root `Runner` 或选中子命令 `CommandRunner`。一个进程执行一次命令事务，Shutdown 只作用于本次选中的命令。
+root 统一执行 Workload；`Runner` 只是把一次性两参数函数转换为固定名称 `runner` 的 Workload。子命令仍执行自身 `CommandRunner`。一个进程执行一次命令事务，Shutdown 只作用于本次选中的命令。
 
 应用级 Shutdown Hooks 默认被 root 和子命令继承。纯迁移、诊断等子命令可以显式关闭继承：
 
@@ -180,7 +182,7 @@ app.Command{
 1. 命令 context 仍可被宿主或进程信号取消。
 2. Runtime Build 成功后仍必须执行 Runtime Close。
 3. `RuntimeModeDisabled` 仍表示不构建 Runtime，也不执行 Runtime hooks。
-4. help、version、bootstrap schema 等 Runner 前短路分支不执行 Shutdown Hooks。
+4. help、version、bootstrap schema 等业务执行前短路分支不执行 Shutdown Hooks。
 
 | 命令类型 | Shutdown Hooks | Runtime Close |
 |---|---:|---:|
@@ -198,96 +200,100 @@ app.Command{
 1. Parse / Complete / Validate
 2. Build Runtime（RuntimeModeEnabled）
 3. before hooks
-4. 启动当前 Runner
+4. 启动全部 Workload.Run
 5. 等待退出触发源
 6. 取消 run context
-7. 并行执行 Shutdown Hooks，并等待 Runner 收敛
-8. Shutdown Group 与 Runner 全部完成
+7. 并行执行 Workload.Shutdown 与高级 Hooks，并等待全部 Run 收敛
+8. 主动工作阶段全部完成
 9. 使用独立 context 关闭 Runtime
 10. 聚合错误并决定退出码
 ```
 
-信号或宿主取消发生时，Shutdown Hooks 不能机械地等待 Runner 先返回。阻塞型 `Serve/Spin` 可能只有在 hook 调用 Shutdown 后才会返回，因此 app 必须协调两个并行分支：
+信号或宿主取消发生时，app 不能机械地等待 Run 先返回。阻塞型 `Serve/Spin` 可能只有在 Shutdown 后才会返回，因此 app 必须协调两个并行分支：
 
 ```text
 cancel(runCtx)
 
-├─ A: Shutdown Group
-│     -> 所有 hooks 并发执行
-│     -> graceful timeout 后由各 hook Force Close
-│     -> 等待全部 hooks 返回
+├─ A: Shutdown actions
+│     -> 所有 Workload.Shutdown 与高级 hooks 并发执行
+│     -> graceful timeout 后由 adapter Force Close
+│     -> 等待全部 Shutdown 返回
 │
-└─ B: Runner convergence
-      -> 等待当前 Runner 完全退出
+└─ B: Run convergence
+      -> 等待全部 Workload.Run 完全退出
 
 A + B 完成
   -> Runtime Close
 ```
 
-Runner 自己先正常返回或失败时，app 记录 Runner 结果、取消 run context，并执行相同的 Shutdown Group。整个流程由 `sync.Once` 等内部状态机保证最多启动一次。
+任一 Workload Run 先正常返回、失败或 panic 时，app 记录首个触发结果、取消 run context，并执行相同的 Shutdown；其他 Run 结果仍会被收集。整个关闭流程最多启动一次。
 
-Runner 保持在命令调用 goroutine 执行；app 使用独立触发监听分支在宿主/信号取消时并发启动 Shutdown Hooks。因此阻塞型 `Serve/Spin` 不需要先迁移到业务后台 goroutine，Hook 仍能使其返回；后台型工作负载也沿用同一状态机。
+Workload Supervisor 并发启动全部 Run；app 使用独立触发监听分支在宿主/信号取消时并发启动 Shutdown。阻塞型 `Serve/Spin` 无需由业务再包装一层 goroutine。
 
-Shutdown trigger 与 Runner result 是两个独立状态：trigger 只决定何时开始关闭，Runner result 始终在收敛分支完成后单独采集并进入最终错误链。`sync.Once` 只能保护 Shutdown 启动，不能采用“第一个结果获胜”而丢弃稍后返回的 Runner 业务错误。
+Shutdown trigger 与 Run results 是独立状态：trigger 只决定何时开始关闭，全部 Run 结果在收敛后进入最终错误链，不能采用“第一个结果获胜”而丢弃稍后返回的业务错误。
 
-触发源在 Runner 获准启动前已经到达时，app 不再启动 Runner。触发源与 Runner 启动并发发生时，adapter controller 必须让 `Start` 与 `Shutdown` 线性化，禁止 Shutdown 已经封口后再发布新的工作负载。
+触发源在 Workload 获准启动前已经到达时，app 不再启动 Workload。监督器在启动阶段发布完整快照，Shutdown 只能观察全部启动或全部未启动；具体 adapter 仍需允许 Run 与 Shutdown 并发。
 
 ### 7.2 三类 Context
 
 | Context | 所有者 | 用途 | 禁止事项 |
 |---|---|---|---|
-| run context | app/宿主 | Runtime Build、before hooks 和 Runner；退出时取消 | 不能用于取消后的资源收敛 |
-| shutdown context | app | Shutdown Group 的 graceful 截止点；到期后进入 force/wait | 不能用于 Runtime Close，也不是 hook 总执行上限 |
+| run context | app/宿主 | Runtime Build、before hooks 和 Workload Run；退出时取消 | 不能用于取消后的资源收敛 |
+| shutdown context | app | Workload/高级 Hook 的 graceful 截止点；到期后进入 force/wait | 不能用于 Runtime Close，也不是总执行上限 |
 | runtime close context | app | 向 Runtime Close 传播独立关闭 deadline | 不能复用已取消的 run context，也不能承诺强制终止 Close |
 
 Shutdown 与 Runtime Close 是两个串行阶段，分别拥有 deadline。一个总 timeout 容易被前一阶段耗尽，使 Runtime 没有清理机会，因此不共用 context。
 
 ### 7.3 Timeout 的边界
 
-timeout 只能限制等待，不能终止 Go goroutine。Shutdown Hook 应在 graceful deadline 到期后执行框架支持的 Force Close，并等待工作负载真正停止后再返回。
+timeout 只能发出协作式取消，不能终止 Go goroutine。Workload adapter 应在 graceful deadline 到期后执行框架支持的 Force Close；app 仍等待 Run 真正返回。
 
 如果 Force Close 仍不能让工作负载停止，app 不得假装 Shutdown 成功并继续关闭 Runtime。此时进程继续等待第二次信号或平台 SIGKILL，避免活跃 goroutine 访问已关闭依赖。
 
-`WithShutdownRuntimeCloseTimeout` 同样是协作式 deadline：app 只把独立 context 传给 Runtime Close，不检查或控制 Runtime 内部资源。Runtime 实现可能超过该时间；app 不通过“另起 goroutine、超时后直接返回”伪造关闭完成，真正的进程硬上限仍由后续信号或部署平台提供。
+`ShutdownPolicy.RuntimeCloseTimeout` 同样是协作式 deadline：app 只把独立 context 传给 Runtime Close，不检查或控制 Runtime 内部资源。Runtime 实现可能超过该时间；app 不通过“另起 goroutine、超时后直接返回”伪造关闭完成，真正的进程硬上限仍由后续信号或部署平台提供。
 
-## 8. `WithShutdown` 配置模型
+## 8. Workload / Resource / ShutdownPolicy 概念模型
 
-所有应用级退出配置收敛到一个 app Option。下面的 `workloads` 是调用方或 adapter 持有的工作负载 controller；它从哪里创建、如何装配不属于 app 生命周期契约。`workloads.Shutdown` 必须提供完整 graceful→force→wait 语义，不能直接替换为 `http.Server.Shutdown` 等原始框架方法：
+主动运行、被动释放和关闭预算分别由三个正交概念表达。下面的 Workload 可以由调用方创建，也可以像 `app-web-hertz` 一样在 Run/Shutdown 时从 Runtime 解析同一个对象：
 
 ```go
-workloads := newWorkloadController()
-
 application := app.New(
-    app.WithRunner(func(ctx context.Context, runtime app.Runtime) error {
-        return workloads.Run(ctx, runtime)
+    app.WithWorkloads(httpWorkload, consumerWorkload),
+    app.WithShutdownPolicy(app.ShutdownPolicy{
+        Signals:                 []os.Signal{os.Interrupt, syscall.SIGTERM},
+        WorkloadGracefulTimeout: 15*time.Second,
+        RuntimeCloseTimeout:     10*time.Second,
     }),
-    app.WithShutdown(
-        app.WithShutdownSignals(os.Interrupt, syscall.SIGTERM),
-        app.WithShutdownGracefulTimeout(15*time.Second),
-        app.WithShutdownRuntimeCloseTimeout(10*time.Second),
-        app.WithShutdownHook("servers", workloads.Shutdown),
-    ),
 )
 ```
 
 公共形态：
 
 ```go
+type Workload interface {
+    Name() string
+    Run(context.Context, Runtime, CommandContext) error
+    Shutdown(context.Context, Runtime, CommandContext) error
+}
+
+type Resource = ioc.Closer
+
+type ShutdownPolicy struct {
+    Signals []os.Signal
+    WorkloadGracefulTimeout time.Duration
+    RuntimeCloseTimeout time.Duration
+}
+
 type ShutdownHook func(
     ctx context.Context,
     runtime Runtime,
     command CommandContext,
 ) error
 
-type ShutdownOption interface {
-    // 私有实现，调用方只能通过 WithShutdown* 构造函数创建。
-}
-
-func WithShutdown(options ...ShutdownOption) Option
-func WithShutdownSignals(signals ...os.Signal) ShutdownOption
-func WithShutdownGracefulTimeout(timeout time.Duration) ShutdownOption
-func WithShutdownRuntimeCloseTimeout(timeout time.Duration) ShutdownOption
-func WithShutdownHook(name string, hook ShutdownHook) ShutdownOption
+func WithWorkloads(workloads ...Workload) Option
+func Runner(run func(context.Context, Runtime) error) Workload
+func WithShutdownPolicy(policy ShutdownPolicy) Option
+func WithShutdownHook(name string, hook ShutdownHook) Option
 ```
 
 默认行为：
@@ -298,19 +304,19 @@ func WithShutdownHook(name string, hook ShutdownHook) ShutdownOption
 | Signals | Unix 为 Interrupt+SIGTERM；Windows 为 Interrupt |
 | Graceful timeout | 15 秒 |
 | Runtime Close timeout | 10 秒 |
-| Hooks | 空集合 |
+| Workloads / Hooks | 空集合 |
 | 子命令 | 继承全局 hooks，可通过 `DisableShutdownHooks` 关闭 |
 
 `15s + 10s` 只是框架提供的起始默认值，不是对部署总退出预算的承诺。生产环境仍必须根据流量摘除时间、工作负载停止时间和 Runtime 关闭时间显式计算退出预算。
 
 Option 组合规则：
 
-1. `WithShutdown` 可以省略，省略时仍使用默认信号和 timeout。
-2. `WithShutdownSignals`、两个 timeout 属于单值声明，重复配置属于声明错误，不采用“最后一个覆盖”。
-3. `WithShutdownHook` 可重复声明并组成 Shutdown Group；hook name 必须非空且全局唯一。
-4. nil hook、空信号集合、非正 timeout 在执行前 fail-fast。
-5. hooks 并发执行，声明顺序只用于稳定诊断输出，不代表关闭顺序。
-6. 有依赖顺序的多个动作必须封装成一个 hook，不增加 priority API。
+1. `WithWorkloads` 是唯一 root 执行入口；`Runner` 把一次性函数包装为固定名称 `runner` 的 Workload，名称仍必须唯一。
+2. 任一 Workload Run 返回都会触发全组 Shutdown；app 仍等待所有 Run 返回。
+3. `WithShutdownPolicy` duration 零值按 ConfigManager 启动快照、内建默认值依次补齐；显式字段最高优先级，重复声明 fail-fast。
+4. `WithShutdownHook` 仅用于无法表达为 Workload/Resource 的高级动作；hook name 必须非空且唯一。
+5. Workload Shutdown 与高级 hooks 并发执行，声明顺序只用于稳定诊断，不代表依赖顺序。
+6. Resource 仍由 IOC 按实际初始化/依赖拓扑逆序关闭，app 不维护资源注册表。
 
 hook name 进入 app 错误的稳定 `name` 字段；业务日志可以把它映射为 `component`，不能使用请求 ID 等高基数值。
 
@@ -321,11 +327,11 @@ hook name 进入 app 错误的稳定 `name` 字段；业务日志可以把它映
 3. `command` 是当前选中命令的只读快照，用于稳定观测和极少量命令级分支，不应替代 controller 的实际启动状态。
 4. `RuntimeModeEnabled` 时 runtime 必须非 nil；`RuntimeModeDisabled` 时传入 nil，应用级 Hook 必须 nil-safe，或由该命令显式 `DisableShutdownHooks`。
 
-Runner 与 Hook 必须定位或持有同一个并发安全的 controller。controller 的 `Start` 与 `Shutdown` 必须线性化：`Start` 先成功时由 Shutdown 停止并等待；Shutdown 先发生时必须封口，后续 `Start` 返回错误且不得发布工作负载。工作负载尚未启动时，Hook 只有在完成该封口后才能返回，不能只是观察空状态后无操作返回。
+Workload 的 Run 与 Shutdown 必须定位或持有同一个并发安全 controller，并允许二者并发。app 在启动阶段发布完整 Workload 快照，在关闭阶段同时等待 Shutdown 和 Run；adapter 不需要自己复制 Runtime Close 状态机。
 
-## 9. Shutdown Hook 强契约
+## 9. 高级 Shutdown Hook 强契约
 
-Shutdown Hook 的返回语义是公共接口契约，不是可选的最佳实践：
+Shutdown Hook 是兼容和高级逃生口，不是常规 Server/Consumer 的首选声明。使用时其返回语义仍是强契约：
 
 > hook 返回时，它管理的主动工作负载必须已经停止访问 Runtime；即使 graceful shutdown 失败，也必须完成 Force Close 并确认工作负载停止后才能返回。
 
@@ -361,7 +367,7 @@ Go 类型系统无法证明 goroutine 已停止，因此这是“语义上的硬
 
 两者的阶段、资源所有权和失败后果不同；复用同一个函数类型只会隐藏关键契约。前置准备与退出收敛也不是必须成对出现的对称 API。
 
-停止 Server、Consumer、Scheduler 使用 Shutdown Hook；关闭 Runtime 内部资源交给 Runtime Close；命令私有结果处理或临时状态收尾放在 Runner 的显式代码或 `defer` 中。完整 before 语义见 [`BeforeRunHook` 契约](#3-beforerunhook-契约)，完整 shutdown 返回不变量见 [Shutdown Hook 强契约](#9-shutdown-hook-强契约)。
+Server、Consumer、Scheduler 默认实现 Workload；被动连接池和 Client 实现 Resource 并交给 IOC。ShutdownHook 只用于不适合这两个模型的遗留回调或跨系统动作。完整 before 语义见 [`BeforeRunHook` 契约](#3-beforerunhook-契约)，高级逃生口约束见 [高级 Shutdown Hook 强契约](#9-高级-shutdown-hook-强契约)。
 
 ## 11. Server 与其他工作负载
 
@@ -373,11 +379,13 @@ Go 类型系统无法证明 goroutine 已停止，因此这是“语义上的硬
 | gRPC | `GracefulStop()` | `Stop()` |
 | Hertz | `Shutdown(ctx)` 或受控 `Spin()` | `Close()` |
 
-阻塞型 Server：Runner 调用阻塞的 Serve/Spin，Shutdown Hook 负责使阻塞调用返回；app 同时等待 hook 和 Runner。
+阻塞型 Server：Workload Run 调用阻塞的 Serve/Spin，Workload Shutdown 负责使阻塞调用返回；app 同时等待两者。
 
-后台型 Server：Runner 等待 run context 或 Serve 结果；Shutdown Hook 停止 Server 并等待后台 goroutine，Runner 随后收敛。
+后台型 Server：Workload Run 必须等待 Serve 结果；Shutdown 停止 Server，app 以 Run 返回确认后台 goroutine 已收敛。
 
-多个 HTTP/gRPC Server、Consumer 或 Scheduler 可以由 adapter 内的 Group 组成一个 hook。Group 内部可以并发关闭成员，但必须在返回前确认全部成员停止。
+Context-aware Server 也优先适配为 Workload，以统一声明方式明确 `Run` 和幂等 `Shutdown`。`app-web-hertz.Workload()` 解析 IOC 中同一个 Server 并委托这两个动作。原生 `net/http.Server.Serve` 不接收 context，可由薄 Workload adapter 在 Shutdown 中调用 `Shutdown(ctx)`，必要时 `Close()`；app 会等待 Serve 返回。
+
+多个 HTTP/gRPC Server、Consumer 或 Scheduler 可以分别声明为多个唯一命名 Workload；任一成员退出都会触发全组关闭。有严格内部依赖时可封装为单个复合 Workload。
 
 Server 通常由 Runner/adapter 持有或定位。它是否同时暴露在 Runtime 内部、内部依赖如何管理，不属于 app 生命周期契约；本文只要求同一个主动工作负载不能被多个生命周期所有者重复关闭。
 
@@ -385,14 +393,15 @@ Server 通常由 Runner/adapter 持有或定位。它是否同时暴露在 Runti
 
 错误策略：
 
-1. Runner、各 Shutdown Hook 与 Runtime Close 错误通过 `errors.Join` 保留原始 cause。
-2. Shutdown trigger 与 Runner result 分别记录；无论谁先到达，都必须等待并保留 Runner 的最终结果。
+1. 各 Workload Run/Shutdown、高级 Shutdown Hook 与 Runtime Close 错误通过 `errors.Join` 保留原始 cause。
+2. Shutdown trigger 与 Workload results 分别记录；无论谁先到达，都必须等待并保留全部非取消结果。
 3. 一个 hook 失败不跳过其他 hooks。
-4. Shutdown Hook 错误不跳过 Runtime Close，前提是 hook 已遵守“返回时工作负载已停止”的契约。
+4. Workload/高级 Hook 错误不跳过 Runtime Close，前提是主动 Run 已全部收敛。
 5. 仅由 SIGINT/SIGTERM 导致的 cancellation，且所有阶段成功时，`Run/Main` 返回 nil。
-6. `ExecuteContext` 因宿主 context 结束且其他阶段成功时返回 `context.Cause(ctx)`；调用方可以显式忽略预期 cancellation。
-7. Runner 真实业务错误不能因错误链中同时存在 `context.Canceled` 而被吞掉。
-8. 第二次信号或 SIGKILL 立即终止，不承诺 defer、日志 flush 或资源协议完成。
+6. 进程信号 cause 保留实际 signal 名称；Runner 可通过 `context.Cause(ctx)` 记录触发来源，其他阶段失败时 `Run` 返回错误也包含 `source=process_signal signal=...`。
+7. `ExecuteContext` 因宿主 context 结束且其他阶段成功时返回 `context.Cause(ctx)`；调用方可以显式忽略预期 cancellation。
+8. Runner 真实业务错误不能因错误链中同时存在 `context.Canceled` 而被吞掉。
+9. 第二次信号或 SIGKILL 立即终止，不承诺 defer、日志 flush 或资源协议完成。
 
 app 把错误包装为可检索的稳定阶段：
 
@@ -437,17 +446,17 @@ Kubernetes 行为依据见 [Pod 与 Endpoint 终止流程](https://kubernetes.io
 
 ## 14. Open Gaps / Future Improvements
 
-1. app 核心不提供 HTTP、gRPC、Hertz 等具体 adapter；业务当前需要自行实现 graceful→force→wait controller。
-2. 尚无内建 lifecycle metrics/tracing，Hook 和 Runner 通过 Runtime Logger 完成业务观测。
+1. app 核心不依赖具体协议；Hertz 已提供 `app-web-hertz.Workload()`，HTTP/gRPC 等仍由相应适配层实现。
+2. 尚无内建 lifecycle metrics/tracing，Workload 与高级 Hook 通过 Runtime Logger 完成业务观测。
 3. Kubernetes readiness、preStop 与路由传播窗口仍需按部署环境提供独立 adapter 和端到端验证。
 
 ## 15. File Map
 
-1. `app/before_run_hook.go`：BeforeRunHook 公共契约与顺序执行逻辑。
-2. `app/shutdown_hook.go`：ShutdownHook 公共契约。
-3. `app/shutdown_option.go`：WithShutdown 聚合入口与声明校验。
-4. `app/shutdown.go`：默认时间预算和归一化 Shutdown 配置模型。
-5. `app/shutdown_execution.go`：Runner、触发源、Shutdown Hooks 的单次执行协调器。
-6. `app/process_signal.go`：进程信号默认值、订阅和首次触发后的恢复边界。
-7. `app/command_execution.go`：命令事务与 Runtime Close 阶段。
-8. `app/shutdown_execution_test.go`、`app/command_lifecycle_test.go`：信号、宿主取消、子命令继承和关闭顺序验证。
+1. `app/workload.go`、`app/runner.go`、`app/workload_execution.go`：主动工作负载合同、一次性 Runner 包装器与多 Workload 监督器。
+2. `app/resource.go`：IOC 被动资源语义别名。
+3. `app/shutdown_policy.go`、`app/shutdown_policy_config.go`：统一关闭策略值对象、默认值与 ConfigManager 启动快照归并。
+4. `app/shutdown_hook.go`：顶层高级 Hook 逃生口。
+5. `app/shutdown_execution.go`：触发源、Workload 和高级 Hook 的单次执行协调器。
+6. `app/process_signal.go`、`app/execution_session.go`、`app/execution_binding.go`：具体信号 cause、订阅恢复、显式单次执行状态与缓存命令绑定。
+7. `app/command_execution.go`：命令事务与 Runtime/Resource Close 阶段。
+8. `app/workload_execution_test.go`、`app/process_signal_integration_unix_test.go`、`app/web_server_shutdown_test.go`：监督、真实 OS 信号和 Web Server 关闭验证。

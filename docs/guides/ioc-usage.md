@@ -344,7 +344,7 @@ Close 固定逆序遍历全部 managed Closer，并使用 `errors.Join` 聚合�
 4. executor 完成后发布 `closed` 和首次结果；正常 waiter 与后续重复 Close 返回同一个结果。
 5. `closing` 期间 Register、Build 和 Resolve 返回 `ioc.container.closed/reason=close_running`。
 
-`WithCloseTimeout` 针对每个 bean 独立计时。超时只能停止容器等待；如果 Closer 忽略 context，它的 goroutine 不能被容器强制终止。Closer panic 会在执行 goroutine 内恢复，携带 stack 转换为 `ioc.close.failed`，然后继续关闭剩余资源；这保证收敛完整性，但 panic 仍是必须修复的编程异常。
+`WithCloseTimeout` 针对每个 bean 独立创建协作式取消 context。到期后容器记录 `close_timeout`，但仍等待该 Closer 真实返回，之后才继续逆序关闭依赖；这样不会遗留后台 Close 去访问已经销毁的资源。若 Closer 忽略 context，executor 会继续等待，硬终止只能由进程编排提供。Closer panic 在调用边界恢复，携带 stack 转换为 `ioc.close.failed`，随后继续关闭剩余资源。
 
 ## 11. 在 Build 失败后处理容器
 

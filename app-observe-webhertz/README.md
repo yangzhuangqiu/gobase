@@ -52,7 +52,7 @@ observeModule := webhertzobserve.NewModule(
 
 err := app.Run(
     app.WithModules(observeModule, appwebhertz.NewModule()),
-    app.WithRunner(webhertzobserve.Runner()),
+    app.WithWorkloads(app.Runner(webhertzobserve.Runner())),
 )
 ```
 

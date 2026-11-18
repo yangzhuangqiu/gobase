@@ -156,7 +156,7 @@ func runQuickstartLogFull() error {
 				},
 			},
 		),
-		app.WithRunner(func(ctx context.Context, runtime app.Runtime) error {
+		app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime) error {
 			cfg := &quickstartLogFullConfig{}
 			if err := runtime.ConfigManager().Current().Decode("", cfg); err != nil {
 				return err
@@ -187,7 +187,7 @@ func runQuickstartLogFull() error {
 				meta.Pinned,
 			)
 			return nil
-		}),
+		})),
 	)
 }
 

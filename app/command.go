@@ -2,13 +2,6 @@ package app
 
 import "context"
 
-// Runner 定义 root 命令的极简业务入口。
-//
-// 典型调用场景：
-// 1. 由 app.Run/app.Main 在 Runtime 构建完成后调用；
-// 2. 业务通过 Runtime 获取配置、日志和 IOC 能力，无需感知 Cobra 或 Runtime 构建过程。
-type Runner func(ctx context.Context, runtime Runtime) error
-
 // ArgumentValidator 定义命令位置参数校验契约，不泄漏底层 CLI 类型。
 type ArgumentValidator func(args []string) error
 

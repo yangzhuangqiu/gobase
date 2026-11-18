@@ -121,7 +121,8 @@
    - `app/launcher_test.go:TestUseCaseMainReturnsAfterSuccessfulRun`
 2. Root 命令场景：CLI pinned 输入进入 app-runtime
    - `app/runtime_input_test.go:TestUseCaseCLIInputFlowsToRuntime`
-3. 生命周期场景：Shutdown Hooks 与 Runner 收敛后才关闭 Runtime
+3. 生命周期场景：Workload Shutdown 与全部 Run 收敛后才关闭 Runtime/Resource；高级 Hook 不破坏该屏障
+4. ShutdownPolicy 场景：显式字段覆盖 ConfigManager，未声明字段采用启动快照，缺失字段回退内建默认，非法配置禁止 Workload 启动
    - `app/command_lifecycle_test.go:TestUseCaseRuntimeLivesThroughShutdownHooks`
    - `app/shutdown_execution_test.go:TestUseCaseHostCancellationRunsShutdownBeforeRunnerConverges`
 4. 失败场景：before hook 失败仍关闭 Runtime
@@ -132,8 +133,15 @@
 6. 公共模型：输出与参数校验不依赖 Cobra 类型
    - `app/command_execution_test.go:TestUseCasePublicOutputWithoutCobraCommand`
    - `app/command_execution_test.go:TestUseCaseArgumentValidatorHidesCobra`
-7. 进程信号场景：纯信号退出成功并恢复默认处理
+   - `app/flag_binder_test.go:TestUseCaseFlagBinderDeclaresCommandTreeOnce`
+7. 进程信号场景：保留具体信号身份、纯信号退出成功并恢复默认处理
    - `app/shutdown_execution_test.go:TestUseCaseRunTreatsSignalOnlyShutdownAsSuccess`
+   - `app/shutdown_execution_test.go:TestUseCaseSignalDuringBeforeHookIsNormalExit`
+8. OS 子进程信号场景：真实 SIGINT/SIGTERM 优雅退出，第二次 SIGTERM 强制退出（Unix）
+   - `app/process_signal_integration_unix_test.go:TestProcessSignalsGracefullyExitSubprocess`
+   - `app/process_signal_integration_unix_test.go:TestSecondProcessSignalForcesSubprocessExit`
+9. Web Server 场景：真实 `net/http` 在途请求排空后 Runner/Hook 收敛
+   - `app/web_server_shutdown_test.go:TestHTTPServerGracefulShutdownIntegration`
 
 ### 6.5 app-runtime
 

@@ -48,10 +48,10 @@ func TestUseCaseSubCommandVersionSkipsRuntimeAndRunner(t *testing.T) {
 			hookCalled = true
 			return nil
 		}),
-		WithShutdown(WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
+		WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
 			hookCalled = true
 			return nil
-		})),
+		}),
 		WithCommands(Command{
 			Use:         "serve",
 			RuntimeMode: RuntimeModeEnabled,

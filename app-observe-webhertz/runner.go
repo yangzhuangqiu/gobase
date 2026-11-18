@@ -38,12 +38,12 @@ type observedWorkloadResult struct {
 // 典型调用场景:
 // 1. 应用通过 app-web-hertz 发布唯一 web.Server；
 // 2. 本模块可选声明 WithMetricsServer；
-// 3. 应用把返回值传给 app.WithRunner，避免自行复制双工作负载协调代码。
+// 3. 应用用 app.Runner 包装返回值，避免自行复制双工作负载协调代码。
 //
 // 返回:
 // - 未声明 Metrics Server 时，行为等价于 app-web-hertz.Runner；
 // - 已声明时，先预绑定诊断端口，再并发运行和统一关闭两个 Server。
-func Runner() baseapp.Runner {
+func Runner() func(context.Context, baseapp.Runtime) error {
 	return func(ctx context.Context, runtime baseapp.Runtime) error {
 		if ctx == nil {
 			return errorForRunnerResolveFailed(

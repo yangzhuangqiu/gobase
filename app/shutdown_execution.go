@@ -10,7 +10,7 @@ import (
 var errRunnerCompleted = errors.New("runner completed")
 
 // commandRunnerResult 保存 Runner 的正常返回或 panic 结果。
-// 阶段角色：Runner 在独立 goroutine 执行时，把业务结果带回生命周期协调器。
+// 阶段角色：Runner 在命令调用 goroutine 执行时，把业务结果带回生命周期协调器。
 type commandRunnerResult struct {
 	// Err 是 Runner 正常返回的业务错误。
 	Err error
@@ -20,16 +20,19 @@ type commandRunnerResult struct {
 	Panicked bool
 }
 
-// executeManagedRunner 统一协调 Runner、退出触发源和应用 Shutdown Group。
-// 阶段角色：BeforeRunHook 成功后启动业务，等待 Runner 与 Shutdown Hooks 完全收敛。
+// executeManagedRunner 统一协调业务入口、退出触发源和应用 Shutdown actions。
+// 阶段角色：BeforeRunHook 成功后启动业务，等待 Workload/CommandRunner 与高级 Hooks 完全收敛。
 func (this *App) executeManagedRunner(
+	session *executionSession,
 	parent context.Context,
 	runtime Runtime,
 	command CommandContext,
 	runner CommandRunner,
 	disableShutdownHooks bool,
+	workloads *workloadSupervisor,
+	shutdownPolicy executionShutdownPolicy,
 ) error {
-	markExecutionCoordinatorStarted(parent)
+	session.MarkCoordinatorStarted()
 	runCtx, cancelRun := context.WithCancelCause(parent)
 	defer cancelRun(errRunnerCompleted)
 
@@ -43,14 +46,10 @@ func (this *App) executeManagedRunner(
 		shutdownOnce.Do(func() {
 			triggerCause = cause
 			// Shutdown 一旦开始便恢复默认信号行为；第二次信号由操作系统直接处理。
-			restoreExecutionSignals(parent)
+			session.RestoreSignals()
 			cancelRun(cause)
 			go func() {
-				if disableShutdownHooks {
-					shutdownDone <- nil
-					return
-				}
-				shutdownDone <- this.runShutdownHooks(parent, runtime, command)
+				shutdownDone <- this.runShutdownActions(parent, runtime, command, workloads, disableShutdownHooks, shutdownPolicy)
 			}()
 		})
 	}
@@ -81,7 +80,7 @@ func (this *App) executeManagedRunner(
 	shutdownErr := <-shutdownDone
 
 	var triggerErr error
-	if triggerCause != errRunnerCompleted && executionControlFrom(parent) == nil {
+	if triggerCause != errRunnerCompleted && !session.IsSignalCause(triggerCause) {
 		triggerErr = stageError("shutdown_trigger", triggerCause)
 	}
 	runnerErr := result.Err
@@ -112,24 +111,48 @@ func executeCommandRunner(
 	return result
 }
 
-// runShutdownHooks 并发执行应用级主动工作负载 Hooks，并按声明顺序聚合错误。
-// 阶段角色：run context 取消后、Runtime Close 前完成 graceful→force→wait。
-func (this *App) runShutdownHooks(parent context.Context, runtime Runtime, command CommandContext) error {
-	if len(this.shutdown.Hooks) == 0 {
+// runShutdownActions 并发执行语义化 Workload 收敛与高级 Shutdown Hooks。
+// 阶段角色：run context 取消后、Runtime Close 前建立“主动工作已停止”的强屏障。
+func (this *App) runShutdownActions(
+	parent context.Context,
+	runtime Runtime,
+	command CommandContext,
+	workloads *workloadSupervisor,
+	disableShutdownHooks bool,
+	shutdownPolicy executionShutdownPolicy,
+) error {
+	hookCount := len(this.shutdown.Hooks)
+	if disableShutdownHooks {
+		hookCount = 0
+	}
+	actionCount := hookCount
+	if workloads != nil {
+		actionCount++
+	}
+	if actionCount == 0 {
 		return nil
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), this.shutdown.GracefulTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), shutdownPolicy.WorkloadGracefulTimeout)
 	defer cancel()
 
-	results := make([]error, len(this.shutdown.Hooks))
-	done := make(chan int, len(this.shutdown.Hooks))
-	for index, item := range this.shutdown.Hooks {
+	results := make([]error, actionCount)
+	done := make(chan int, actionCount)
+	resultOffset := 0
+	if workloads != nil {
+		go func() {
+			results[0] = workloads.Shutdown(shutdownCtx, runtime, command)
+			done <- 0
+		}()
+		resultOffset = 1
+	}
+	for index, item := range this.shutdown.Hooks[:hookCount] {
 		go func(index int, item namedShutdownHook) {
-			results[index] = executeShutdownHook(shutdownCtx, runtime, command, item)
-			done <- index
+			resultIndex := resultOffset + index
+			results[resultIndex] = executeShutdownHook(shutdownCtx, runtime, command, item)
+			done <- resultIndex
 		}(index, item)
 	}
-	for range this.shutdown.Hooks {
+	for index := 0; index < actionCount; index++ {
 		<-done
 	}
 	return errors.Join(results...)

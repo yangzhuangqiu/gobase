@@ -48,7 +48,7 @@ func run() error {
 		baseapp.WithLogging(apphlogzap.Wrap(applogzap.New())),
 		baseapp.WithBeanDefinitions(applicationDefinitions()...),
 		baseapp.WithModules(observationModule(), appwebhertz.NewModule()),
-		baseapp.WithRunner(webhertzobserve.Runner()),
+		baseapp.WithWorkloads(baseapp.Runner(webhertzobserve.Runner())),
 	)
 }
 

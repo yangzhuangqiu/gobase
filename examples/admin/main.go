@@ -126,7 +126,7 @@ func main() {
 				},
 			},
 		),
-		app.WithRunner(func(_ context.Context, runtime app.Runtime) error {
+		app.WithWorkloads(app.Runner(func(_ context.Context, runtime app.Runtime) error {
 			cfg := &AppConfig{}
 			if err := runtime.ConfigManager().Current().Decode("", cfg); err != nil {
 				return errcode.New[ErrorCode](ErrCodeExampleRuntimeNotReady, "runtime config is not ready")
@@ -144,7 +144,7 @@ func main() {
 				version,
 			)
 			return nil
-		}),
+		})),
 	)
 }
 

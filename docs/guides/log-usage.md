@@ -66,16 +66,16 @@ func main() {
             },
         })),
         app.WithLogging(applogzap.New()),
-        app.WithRunner(func(ctx context.Context, runtime app.Runtime) error {
+        app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime) error {
             logger := runtime.Logger("order.service")
             logger.Info(ctx, "service started", log.Op("service.start"), log.Result(log.ResultOK))
             return serve(ctx, logger)
-        }),
+        })),
     )
 }
 ```
 
-app 负责 ConfigManager、日志 Provider 和业务运行事务；Runner 不关闭 Logger、Provider 或 Manager。构建失败、业务失败和关闭失败最终由 app 聚合并映射为进程结果。完整命令、Config Flag 和应用关闭语义见 [App 使用指南](app-usage.md)。
+app 负责 ConfigManager、日志 Provider 和业务运行事务；这里的 `Runner` 只把函数包装成 Workload，不关闭 Logger、Provider 或 Manager。构建失败、业务失败和关闭失败最终由 app 聚合并映射为进程结果。完整命令、Config Flag 和应用关闭语义见 [App 使用指南](app-usage.md)。
 
 ## 3. 记录可检索的结构化事件
 

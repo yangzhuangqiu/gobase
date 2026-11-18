@@ -2,27 +2,28 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
-	"sync"
-	"sync/atomic"
 	"syscall"
 )
 
 // processSignalSource 定义进程入口使用的信号订阅适配边界。
 // 阶段角色：App.Run 安装和恢复进程级信号行为；ExecuteContext 不使用该能力。
 type processSignalSource interface {
-	// Notify 创建首个配置信号到达时取消的 context，并返回恢复默认行为的函数。
-	Notify(parent context.Context, signals ...os.Signal) (context.Context, func())
+	// Notify 订阅配置信号并返回信号事件和恢复默认行为的函数。
+	Notify(signals ...os.Signal) (<-chan os.Signal, func())
 }
 
 // osProcessSignalSource 使用标准库实现进程信号订阅。
 type osProcessSignalSource struct{}
 
-// Notify 把所选进程信号转换为 context 取消，并允许 Shutdown 开始时立即恢复默认信号行为。
-func (this osProcessSignalSource) Notify(parent context.Context, signals ...os.Signal) (context.Context, func()) {
-	return signal.NotifyContext(parent, signals...)
+// Notify 订阅所选进程信号，并保留实际信号身份供 Run 构造类型化取消原因。
+func (this osProcessSignalSource) Notify(signals ...os.Signal) (<-chan os.Signal, func()) {
+	events := make(chan os.Signal, 1)
+	signal.Notify(events, signals...)
+	return events, func() { signal.Stop(events) }
 }
 
 // defaultShutdownSignals 返回当前平台最小且可预期的默认退出信号集合。
@@ -34,58 +35,41 @@ func defaultShutdownSignals() []os.Signal {
 	return []os.Signal{os.Interrupt, syscall.SIGTERM}
 }
 
-// executionControl 保存一次进程入口执行独占的信号恢复能力。
-// 阶段角色：任一 Shutdown 触发后立即恢复系统默认信号行为，使后续信号可强制终止进程。
-type executionControl struct {
-	// RestoreSignals 恢复本次 Run 安装前的进程信号行为；允许重复调用。
-	RestoreSignals func()
-	// coordinatorStarted 标记取消已经由 Runner/Shutdown 协调器接管。
-	coordinatorStarted atomic.Bool
+// processSignalCause 表示 Run 因具体进程信号进入关闭流程。
+type processSignalCause struct {
+	// Signal 是本次 Run 实际收到的首个配置信号。
+	Signal os.Signal
 }
 
-// executionControlContextKey 隔离进程信号控制器在命令 context 中的存储键。
-type executionControlContextKey struct{}
-
-// newExecutionControl 把底层恢复函数封装为并发安全、最多执行一次的进程入口控制器。
-func newExecutionControl(restore func()) *executionControl {
-	var once sync.Once
-	return &executionControl{RestoreSignals: func() {
-		once.Do(func() {
-			if restore != nil {
-				restore()
-			}
-		})
-	}}
-}
-
-// withExecutionControl 把进程入口控制能力附加到本次命令 context。
-func withExecutionControl(ctx context.Context, control *executionControl) context.Context {
-	return context.WithValue(ctx, executionControlContextKey{}, control)
-}
-
-// markExecutionCoordinatorStarted 标记后续 signal cancellation 已进入统一 Shutdown 流程。
-func markExecutionCoordinatorStarted(ctx context.Context) {
-	if control := executionControlFrom(ctx); control != nil {
-		control.coordinatorStarted.Store(true)
+// Error 返回可检索的信号关闭原因，并保留具体信号名称。
+func (this *processSignalCause) Error() string {
+	if this == nil || this.Signal == nil {
+		return "op=app.run result=triggered reason=process_signal source=process_signal signal=unknown"
 	}
+	return fmt.Sprintf("op=app.run result=triggered reason=process_signal source=process_signal signal=%s", this.Signal)
 }
 
-// executionCoordinatorStarted 判断进程入口是否已经进入 Runner/Shutdown 协调阶段。
-func executionCoordinatorStarted(ctx context.Context) bool {
-	control := executionControlFrom(ctx)
-	return control != nil && control.coordinatorStarted.Load()
+// Unwrap 保留标准 context 取消分支，同时让调用方可以读取类型化信号身份。
+func (this *processSignalCause) Unwrap() error {
+	return context.Canceled
 }
 
-// executionControlFrom 读取 Run 注入的进程入口控制器；ExecuteContext 返回 nil。
-func executionControlFrom(ctx context.Context) *executionControl {
-	control, _ := ctx.Value(executionControlContextKey{}).(*executionControl)
-	return control
-}
-
-// restoreExecutionSignals 在 Shutdown 开始时恢复进程信号默认行为；嵌入式入口为 no-op。
-func restoreExecutionSignals(ctx context.Context) {
-	control := executionControlFrom(ctx)
-	if control != nil && control.RestoreSignals != nil {
-		control.RestoreSignals()
+// watchProcessSignals 把首个具体信号转换为类型化 context cause，并立即恢复默认行为。
+// 阶段角色：Run 启动后独立等待信号；正常执行先结束时由 executionSession 通知退出。
+func watchProcessSignals(
+	events <-chan os.Signal,
+	session *executionSession,
+	cancel context.CancelCauseFunc,
+) {
+	select {
+	case received := <-events:
+		if received == nil {
+			return
+		}
+		cause := session.RecordSignal(&processSignalCause{Signal: received})
+		// 先恢复默认处理，再发布取消，保证关闭流程启动时第二次信号已经可以强制退出。
+		session.RestoreSignals()
+		cancel(cause)
+	case <-session.SignalsRestored():
 	}
 }

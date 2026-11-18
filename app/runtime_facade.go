@@ -7,7 +7,7 @@ import (
 	baselog "github.com/yangzhuangqiu/gobase/log"
 )
 
-// Runtime 是 Runner 和 hooks 可见的只读运行时能力集合。
+// Runtime 是 Workload、CommandRunner 和 hooks 可见的只读运行时能力集合。
 //
 // 典型调用场景：命令执行期间读取配置、获取 logger 或在 composition root 解析 bean。
 // 该接口不暴露 Close；Runtime 生命周期始终由 app 命令事务拥有。

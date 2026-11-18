@@ -69,6 +69,8 @@ func (this *runnerRuntimeStub) Container() ioc.Container {
 type runnerServerStub struct {
 	// runContext 是 Run 实际收到的上下文。
 	runContext context.Context
+	// shutdownContext 是 Shutdown 实际收到的上下文。
+	shutdownContext context.Context
 }
 
 // Run 记录运行上下文并立即成功返回。
@@ -77,8 +79,9 @@ func (this *runnerServerStub) Run(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown 满足 web.Server 合同；本测试不主动调用停止。
-func (this *runnerServerStub) Shutdown(context.Context) error {
+// Shutdown 记录语义化 Workload 传入的 graceful 上下文。
+func (this *runnerServerStub) Shutdown(ctx context.Context) error {
+	this.shutdownContext = ctx
 	return nil
 }
 
@@ -225,5 +228,37 @@ func TestRunnerResolvesAndRunsUniqueServer(t *testing.T) {
 	}
 	if server.runContext != runCtx {
 		t.Fatal("expected runner to preserve server run context")
+	}
+}
+
+// TestWorkloadResolvesRunsAndShutsDownUniqueServer 验证推荐 Workload 适配器复用同一 IOC Server。
+//
+// 测试方法：在容器声明唯一 web.Server，分别调用 Workload Run/Shutdown，断言名称稳定且上下文原样传递。
+func TestWorkloadResolvesRunsAndShutsDownUniqueServer(t *testing.T) {
+	container := ioc.New()
+	server := &runnerServerStub{}
+	if err := container.Register(server, ioc.WithDeclare[baseweb.Server]()); err != nil {
+		t.Fatalf("register workload server: %v", err)
+	}
+	if err := container.Build(context.Background()); err != nil {
+		t.Fatalf("build workload container: %v", err)
+	}
+	defer func() { _ = container.Close(context.Background()) }()
+
+	workload := Workload()
+	if workload.Name() != workloadName {
+		t.Fatalf("unexpected workload name: %s", workload.Name())
+	}
+	runtime := &runnerRuntimeStub{container: container}
+	runCtx := context.WithValue(context.Background(), struct{ name string }{"run"}, "run")
+	shutdownCtx := context.WithValue(context.Background(), struct{ name string }{"shutdown"}, "shutdown")
+	if err := workload.Run(runCtx, runtime, nil); err != nil {
+		t.Fatalf("run workload server: %v", err)
+	}
+	if err := workload.Shutdown(shutdownCtx, runtime, nil); err != nil {
+		t.Fatalf("shutdown workload server: %v", err)
+	}
+	if server.runContext != runCtx || server.shutdownContext != shutdownCtx {
+		t.Fatalf("expected contexts to be preserved: run=%v shutdown=%v", server.runContext, server.shutdownContext)
 	}
 }

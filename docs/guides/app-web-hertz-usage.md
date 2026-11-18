@@ -7,7 +7,7 @@
 | 能力 | 解决的问题 | 启用入口 | 默认状态 | 业务入口 | 不适用场景 |
 |---|---|---|---|---|---|
 | IOC 自动装配 | 从依赖图聚合组件并统一关闭 | `NewModule` + `Register` | 需显式声明 | `ioc.ResolveAs[web.Server]` | Build 后动态加组件 |
-| App 生命周期整合 | 解析并运行唯一 Server，由 app 负责取消与 Runtime Close | `appwebhertz.Runner()` | 需显式启用 | `app.WithRunner` | 多 Server 监督 |
+| App 生命周期整合 | 声明唯一 Server 的 Run/Shutdown，由 app 负责收敛与 Runtime Close | `appwebhertz.Workload()` | 需显式启用 | `app.WithWorkloads` | 无 IOC 的原生 Server |
 | 自动路由 | 简单静态方法到 URL 映射 | Controller 导出方法 | Kebab | Hertz Handler | 动态路径或复杂链 |
 | 原生路由 | 保留 Hertz RouterGroup 完整能力 | `RouteRegistrar` | 可选 | `RegisterRoutes` | 框架无关路由 DSL |
 | 全局 Filter | 提供稳定 Middleware 顺序 | `Filter` 接口声明 | 无默认 Filter | `DoFilter` | 分组策略 |
@@ -131,7 +131,7 @@ return webServer.Run(runCtx)
 
 IOC 自动注入 `[]Controller`、`[]Filter`、`[]NoRouteHandler` 和 `[]NoMethodHandler`。切片候选按注册顺序稳定排列；Filter 和 fallback handler 随后分别按 Order 稳定排序。Module 不自动 Run，因为阻塞型工作负载应由应用入口协调 context、退出码和并发任务。
 
-使用 `app` 时，常规单 Server 应用只需要声明组件 Definitions、Server Module 和 Runner：
+使用 `app` 时，常规单 Server 应用只需要声明组件 Definitions、Server Module 和 Workload：
 
 ```go
 app.Main(
@@ -144,11 +144,11 @@ app.Main(
 		appwebhertz.DefineNoMethodHandler(&JSONMethodNotAllowed{}),
 	),
 	app.WithModules(appwebhertz.NewModule()),
-	app.WithRunner(appwebhertz.Runner()),
+	app.WithWorkloads(appwebhertz.Workload()),
 )
 ```
 
-Runtime 已注册 borrowed `config.Manager`。`appwebhertz.Runner()` 解析唯一 `web.Server` 并调用 Run；context 取消后 Server 自行优雅停止，随后 app 关闭 IOC Runtime。多 Server 场景不要使用该 Runner，由 composition root 统一监督。
+Runtime 已注册 borrowed `config.Manager`。`appwebhertz.Workload()` 解析唯一 `web.Server`：app 并发执行 `Run`，关闭时调用 `Shutdown`，并继续等待 `Run` 真正返回，之后才关闭 IOC Runtime。`Runner()` 只返回可交给 `app.Runner(...)` 的函数式兼容适配器；新代码优先使用声明式 Workload。多 Server 可声明多个具有唯一名称的 Workload 适配器。
 
 ### 2.3 Option 归并
 
@@ -361,13 +361,13 @@ web.Server Run 返回
 3. Controller/Filter 不能反向注入 `web.Server`，否则形成 `Controller -> Server -> Controller` 循环并在 Build 时失败。
 4. Shutdown context 语义完全由 `web-hertz` 保留；等待中断仍可匹配 `webhertz.ErrShutdownWaitInterrupted`。
 5. 地址和 timeout 只在 Init 读取一次，配置刷新不会修改正在运行的 Server。
-6. 首次 Container Close context 必须覆盖完整优雅停止窗口；IOC 等待超时后会继续关闭后续 bean，不能把短 deadline 当作后台安全停止机制。
+6. app Workload 先完成主动停止；Container Close 是幂等资源兜底。IOC timeout 只发出协作式取消，并等待 Server Closer 返回后再关闭依赖。
 
 ### 7.1 独立诊断端口与统一监督
 
-`Runner()` 只监督唯一业务 Server。需要业务 Server 与诊断 Server 等多个工作负载时，
-composition root 应提供自定义 Runner：任一成员意外退出就取消其他成员，并在 Runner
-返回前等待全部 Run/Shutdown 结果收敛。
+`Workload()` 当前解析唯一业务 Server。需要业务 Server 与诊断 Server 等多个工作负载时，
+composition root 可分别声明多个具有稳定唯一名称的 Workload；app 在任一成员意外退出后
+关闭全组，并等待全部 Run/Shutdown 结果收敛。
 
 Metrics Handler、私有 ServeMux、listener 获取顺序和诊断端口安全策略见
 [Web 可观测性使用指南](web-observability.md#独立诊断-server)。当前只有一个真实

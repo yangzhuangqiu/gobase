@@ -23,19 +23,23 @@ type App struct {
 	runtimeApplication *appruntime.Application
 	// runtimeOptions 用于未显式提供 runtimeApplication 时构建默认蓝图。
 	runtimeOptions []appruntime.Option
-	// runner 是 root 命令业务入口。
-	runner Runner
+	// workloads 是由 root 命令统一启动、停止并等待收敛的主动工作负载。
+	workloads []Workload
+	// workloadNames 用于在声明阶段拒绝重复的主动工作负载名称。
+	workloadNames map[string]struct{}
 	// rootFlagBinder 声明并绑定 root 业务 flags。
 	rootFlagBinder FlagBinder
 	// commands 是业务子命令描述集合。
 	commands []Command
-	// beforeHooks 在 Runtime 存活期间、Runner 前执行。
+	// beforeHooks 在 Runtime 存活期间、Workload/CommandRunner 前执行。
 	beforeHooks []BeforeRunHook
 	// shutdown 保存应用级信号、时间预算与主动工作负载 Hook 声明。
 	shutdown shutdownConfiguration
 	// signalSource 是 Run 使用的进程信号适配器；测试可替换，ExecuteContext 不使用。
 	signalSource processSignalSource
-	// root 是私有 Cobra 命令实现，不通过公共 API 暴露。
+	// executionBinding 为缓存命令树换入当前一次执行的 session。
+	executionBinding *commandExecutionBinding
+	// root 是只构建一次的私有 Cobra 命令树，不通过公共 API 暴露。
 	root *cobra.Command
 	// output 是 help/version/schema 等标准输出目标；为空时使用 Cobra 默认值。
 	output io.Writer
@@ -48,11 +52,13 @@ type App struct {
 // New 创建命令行应用，并在未显式注入时创建默认 app-runtime 蓝图。
 func New(options ...Option) *App {
 	result := &App{
-		name:         "app",
-		description:  "Application built by App",
-		version:      "dev",
-		shutdown:     newDefaultShutdownConfiguration(),
-		signalSource: osProcessSignalSource{},
+		name:             "app",
+		description:      "Application built by App",
+		version:          "dev",
+		shutdown:         newDefaultShutdownConfiguration(),
+		signalSource:     osProcessSignalSource{},
+		executionBinding: &commandExecutionBinding{},
+		workloadNames:    make(map[string]struct{}),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -79,20 +85,25 @@ func (this *App) Run() error {
 	if this == nil {
 		return errorForAppInternal(messagef("op=app.run result=failed stage=precheck reason=app_is_nil"))
 	}
-	signalCtx, stop := this.signalSource.Notify(context.Background(), this.shutdown.Signals...)
-	control := newExecutionControl(stop)
-	ctx := withExecutionControl(signalCtx, control)
+	// 阶段一：订阅实际信号，并为本次命令事务建立显式控制状态和类型化取消入口。
+	events, stop := this.signalSource.Notify(this.shutdown.Signals...)
+	session := newExecutionSession(stop)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+	defer session.RestoreSignals()
+	go watchProcessSignals(events, session, cancel)
 
-	// 首个信号应立即恢复默认处理，不等待 Runtime Build 或业务阶段走到 Shutdown 协调器。
-	go func() {
-		<-signalCtx.Done()
-		control.RestoreSignals()
-	}()
-	defer control.RestoreSignals()
-	err := this.executeContext(ctx, os.Args[1:])
+	// 阶段二：命令、Runtime、Workload/CommandRunner 与 Shutdown 共享本次 session，但业务只接收标准 context。
+	err := this.executeContext(ctx, os.Args[1:], session)
+	// 阶段三：进程信号本身是正常退出原因；其他阶段失败时补充实际 signal 诊断上下文。
+	signalCause := session.SignalCause()
 	// Runtime Build/Before 阶段尚未进入协调器时，纯信号取消仍属于正常进程退出。
-	if signalCtx.Err() != nil && !executionCoordinatorStarted(ctx) && isCancellationOnly(err, context.Cause(signalCtx)) {
+	if signalCause != nil &&
+		!session.CoordinatorStarted() && isCancellationOnly(err, signalCause) {
 		return nil
+	}
+	if signalCause != nil && err != nil {
+		return errorf("op=app.run result=failed reason=shutdown_after_process_signal source=process_signal signal=%s cause=%w", signalCause.Signal, err)
 	}
 	return err
 }
@@ -105,22 +116,27 @@ func (this *App) ExecuteContext(ctx context.Context, args []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return this.executeContext(ctx, args)
+	return this.executeContext(ctx, args, nil)
 }
 
 // executeContext 执行一次不额外安装进程信号的命令事务。
 // 阶段角色：Run 与 ExecuteContext 的统一 Cobra 适配入口。
-func (this *App) executeContext(ctx context.Context, args []string) error {
+func (this *App) executeContext(ctx context.Context, args []string, session *executionSession) error {
 	command := this.command()
+	restoreBinding := this.executionBinding.bindSession(session)
+	defer restoreBinding()
 	command.SetArgs(append([]string{}, args...))
 	return command.ExecuteContext(ctx)
 }
 
-// command 返回私有 Cobra root，并按需构建。
-// 阶段角色：ExecuteContext 的底层 CLI 适配入口。
+// command 返回只构建一次的私有 Cobra root，并让后续执行复用 Flag 声明。
+// 阶段角色：首次执行冻结命令树；每次调用只通过 executionBinding 替换 session。
 func (this *App) command() *cobra.Command {
+	if this.executionBinding == nil {
+		this.executionBinding = &commandExecutionBinding{}
+	}
 	if this.root == nil {
-		this.root = this.buildCommand()
+		this.root = this.buildCommand(this.executionBinding)
 	}
 	return this.root
 }

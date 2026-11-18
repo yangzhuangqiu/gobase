@@ -2,6 +2,8 @@ package app
 
 import (
 	"io"
+	"reflect"
+	"strings"
 
 	appruntime "github.com/yangzhuangqiu/gobase/app-runtime"
 )
@@ -63,13 +65,49 @@ func WithRuntimeOptions(options ...appruntime.Option) Option {
 	}
 }
 
-// WithRunner 设置 root 命令业务入口。
+// WithWorkloads 声明由 root 命令统一监督的主动工作负载。
 //
 // 参数：
-// - runner：Runtime 构建完成后执行的业务函数；为空时执行阶段返回 runner_required。
-func WithRunner(runner Runner) Option {
+// - workloads：至少一个非 nil Workload；名称 Trim 后必须非空且在 App 内唯一。
+//
+// 说明：一次性 root 任务可用 Runner 包装为 Workload；子命令继续使用自身 CommandRunner。
+func WithWorkloads(workloads ...Workload) Option {
 	return func(app *App) {
-		app.runner = runner
+		if len(workloads) == 0 {
+			app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=workloads_empty")))
+			return
+		}
+		for index, workload := range workloads {
+			if isNilWorkload(workload) {
+				app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=workload_is_nil index=%d", index)))
+				continue
+			}
+			name := strings.TrimSpace(workload.Name())
+			if name == "" {
+				app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=name_empty index=%d", index)))
+				continue
+			}
+			if _, exists := app.workloadNames[name]; exists {
+				app.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=name_duplicate name=%s", name)))
+				continue
+			}
+			app.workloadNames[name] = struct{}{}
+			app.workloads = append(app.workloads, workload)
+		}
+	}
+}
+
+// isNilWorkload 识别接口中的 typed nil，避免把声明错误推迟为执行期 panic。
+func isNilWorkload(workload Workload) bool {
+	if workload == nil {
+		return true
+	}
+	value := reflect.ValueOf(workload)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
 	}
 }
 

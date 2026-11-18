@@ -62,7 +62,7 @@ func TestUseCasePackageRunUsesRuntimeFacade(t *testing.T) {
 			return nil
 		})),
 		WithModules(&facadeModule{}),
-		WithRunner(func(_ context.Context, runtime Runtime) error {
+		WithWorkloads(Runner(func(_ context.Context, runtime Runtime) error {
 			runnerCalled = true
 			if runtime.Info().Name != "facade-service" {
 				return errors.New("runtime application name mismatch")
@@ -82,7 +82,7 @@ func TestUseCasePackageRunUsesRuntimeFacade(t *testing.T) {
 				return errors.New("auto configuration bean mismatch")
 			}
 			return nil
-		}),
+		})),
 	)
 	if err != nil {
 		t.Fatalf("run facade application failed: %v", err)
@@ -92,7 +92,7 @@ func TestUseCasePackageRunUsesRuntimeFacade(t *testing.T) {
 	}
 }
 
-// TestUseCasePackageRunSupportsCommandOnlyApplication 验证极简门面支持只有子命令、没有 root Runner 的应用。
+// TestUseCasePackageRunSupportsCommandOnlyApplication 验证极简门面支持只有子命令、没有 root Workload 的应用。
 //
 // 测试方法：通过 WithCommands 声明无 Runtime 的 status 子命令，执行后断言参数、命令路径和 nil Runtime 语义。
 func TestUseCasePackageRunSupportsCommandOnlyApplication(t *testing.T) {
@@ -179,10 +179,10 @@ func TestUseCaseMainReturnsAfterSuccessfulRun(t *testing.T) {
 	called := false
 	Main(
 		WithName("facade-main"),
-		WithRunner(func(context.Context, Runtime) error {
+		WithWorkloads(Runner(func(context.Context, Runtime) error {
 			called = true
 			return nil
-		}),
+		})),
 	)
 	if !called {
 		t.Fatalf("main runner was not called")
@@ -198,9 +198,9 @@ func TestUseCaseMainWritesErrorAndExits(t *testing.T) {
 		os.Args = []string{"facade-main", "--bootstrap-without-config-file"}
 		Main(
 			WithName("facade-main"),
-			WithRunner(func(context.Context, Runtime) error {
+			WithWorkloads(Runner(func(context.Context, Runtime) error {
 				return errors.New("expected main failure")
-			}),
+			})),
 		)
 		return
 	}

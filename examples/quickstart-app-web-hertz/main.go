@@ -134,7 +134,7 @@ func main() {
 	}
 }
 
-// run 使用 app Runtime、IOC Module 和 Runner 构建并运行唯一 Hertz Server。
+// run 使用 app Runtime、IOC Module 和 Workload 构建并运行唯一 Hertz Server。
 func run() error {
 	return baseapp.Run(
 		// 第一阶段：app 创建并拥有 Config、Logging 与 IOC Runtime。
@@ -149,15 +149,21 @@ func run() error {
 		// 第二阶段：Definition 发布组件语义，Module 在 IOC Init 聚合并构造 web.Server。
 		baseapp.WithBeanDefinitions(applicationDefinitions()...),
 		baseapp.WithModules(appwebhertz.NewModule()),
-		// 第三阶段：Runner 解析唯一 Server；取消与 Runtime Close 由 app 统一编排。
-		baseapp.WithRunner(appwebhertz.Runner()),
+		// 第三阶段：Workload 声明 Run/Shutdown 语义；app 等待 Server 收敛后再关闭 IOC Resource。
+		baseapp.WithWorkloads(appwebhertz.Workload()),
 	)
 }
 
 // defaultConfig 返回示例进程的最低优先级配置树。
 func defaultConfig() map[string]any {
-	// 唯一配置 scope 同时描述 provider Router 与 app-web-hertz 标准 Middleware。
+	// app.shutdown 冻结关闭预算；web.hertz 描述 provider Router 与标准 Middleware。
 	return map[string]any{
+		"app": map[string]any{
+			"shutdown": map[string]any{
+				"workloadGracePeriod":     "15s",
+				"runtimeCloseGracePeriod": "10s",
+			},
+		},
 		"web": map[string]any{
 			"hertz": map[string]any{
 				"address": loadAddress(),

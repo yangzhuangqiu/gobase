@@ -104,6 +104,7 @@ Init error 处理不可配置。是否把 Build error 转成 panic、日志或�
 5. Close 使用成功 Build 顺序的逆序；首个调用执行关闭，并发调用等待同一事务，重复调用返回首次结果。
 6. waiter 的 context 只取消自身等待，不改变首个 Close 使用的执行 context 和共享结果。
 7. 循环依赖兼容模式按注册顺序降级，无法保证依赖完成初始化后才初始化消费者。
+8. 单 bean Close timeout 是协作式取消：context 到期后容器仍等待该 Closer 返回，再继续关闭它依赖的资源。
 
 完整机制与设计理由见 [IOC 架构设计](../docs/architecture/ioc-design.md)。
 

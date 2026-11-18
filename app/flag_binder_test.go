@@ -1,11 +1,23 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
 	"testing"
 )
+
+// commandCountingBinder 记录同一 App 顺序执行时声明 Flag 的次数。
+type commandCountingBinder struct {
+	// BindCount 是当前 Binder 收到独立命令 Flag 集合的次数。
+	BindCount int
+}
+
+// Bind 记录一次声明阶段；测试不需要注册具体业务 Flag。
+func (this *commandCountingBinder) Bind(CommandFlags) {
+	this.BindCount++
+}
 
 // commandFlagLifecycleBinder 提供可观察的 Flag 补全与校验阶段。
 type commandFlagLifecycleBinder struct {
@@ -57,5 +69,38 @@ func TestUseCaseFlagBinderCompletesBeforeValidation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "stage=complete_flags") || !strings.Contains(err.Error(), "stage=validate_flags") {
 		t.Fatalf("expected flag lifecycle stages, got: %v", err)
+	}
+}
+
+// TestUseCaseFlagBinderDeclaresCommandTreeOnce 验证顺序复用同一 App 时缓存命令树且只调用一次 Binder。
+//
+// 测试方法：同一 App 使用两个 executionSession 连续执行子命令，断言 Binder 只声明一次、每次 session 均独立恢复且两次 Runner 均成功。
+func TestUseCaseFlagBinderDeclaresCommandTreeOnce(t *testing.T) {
+	binder := &commandCountingBinder{}
+	runCount := 0
+	restoreCounts := [2]int{}
+	// 第一阶段：构造可重复执行的纯命令，并让 root Binder 记录命令树声明。
+	application := New(
+		WithFlagBinder(binder),
+		WithCommands(Command{
+			Use:         "doctor",
+			RuntimeMode: RuntimeModeDisabled,
+			Runner: func(context.Context, Runtime, CommandContext) error {
+				runCount++
+				return nil
+			},
+		}),
+	)
+	// 第二阶段：顺序绑定不同 session，验证缓存 Cobra/Flag 集合仍可重复进入业务生命周期。
+	for index := 0; index < 2; index++ {
+		current := index
+		session := newExecutionSession(func() { restoreCounts[current]++ })
+		if err := application.executeContext(context.Background(), []string{"doctor"}, session); err != nil {
+			t.Fatalf("execute repeated command: %v", err)
+		}
+	}
+	// 第三阶段：Binder 只声明一次，但 Runner 和 session 恢复必须按执行次数发生。
+	if binder.BindCount != 1 || runCount != 2 || restoreCounts != [2]int{1, 1} {
+		t.Fatalf("unexpected cached command execution: bind=%d run=%d restore=%v", binder.BindCount, runCount, restoreCounts)
 	}
 }

@@ -325,10 +325,10 @@ Close 固定继续遍历全部 Closer，不提供 stop 策略：
 
 1. 每个 error、timeout 和被恢复的 panic 都转换为 `ioc.close.failed`。
 2. 全部失败最终使用 `errors.Join` 聚合，随后一次性发布 `closeErr` 和 `closed`。
-3. `WithCloseTimeout(d)` 为每个 bean 单独创建 timeout context；executor context 与单 bean timeout 共同限制等待时间。
+3. `WithCloseTimeout(d)` 为每个 bean 单独创建协作式 timeout context；到期记录错误，但 executor 等待 Closer 返回后才继续关闭依赖。
 4. `closed` 上的重复 Close 直接返回首次 `closeErr`，不会用后续 nil 覆盖失败。
 
-调用方 context 取消或单 bean timeout 都只能让容器停止等待并返回错误，Go 无法强制终止 `Closer.Close` 所在 goroutine。Closer 必须监听 context 并自行退出，否则仍可能留下后台工作。
+调用方 context 取消或单 bean timeout 都不能强制终止 `Closer.Close`。容器同步等待 Closer 返回，避免后台关闭动作越过依赖释放边界；Closer 必须监听 context 并尽快退出，否则 executor 会持续等待，硬边界由进程编排提供。
 
 Closer panic 在执行 goroutine 内恢复，记录 stack 并转换为 `ioc.close.failed/reason=close_panic`；容器继续关闭剩余资源并增加 `ClosePanicTotal`。这保证关闭结果和 waiter 可以收敛，但 panic 仍属于必须修复的编程异常。
 

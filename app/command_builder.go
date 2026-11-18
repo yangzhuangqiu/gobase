@@ -25,14 +25,16 @@ const (
 	commandFrameworkFlagAnnotationKey = "app.flag.framework"
 )
 
-// buildCommand 构建 root 命令并挂载所有子命令。
-func (this *App) buildCommand() *cobra.Command {
+// buildCommand 构建缓存 root 命令，并让回调从稳定绑定槽读取本次执行状态。
+func (this *App) buildCommand(binding *commandExecutionBinding) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           this.name,
 		Short:         this.description,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          this.runRootCommand,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return this.runRootCommand(binding.currentSession(), cmd, args)
+		},
 	}
 	cmd.InitDefaultHelpFlag()
 	if this.output != nil {
@@ -62,14 +64,14 @@ func (this *App) buildCommand() *cobra.Command {
 		this.rootFlagBinder.Bind(newPFlagCommandFlags(cmd.Flags()))
 	}
 	for _, sub := range this.commands {
-		cmd.AddCommand(this.buildSubCommand(sub))
+		cmd.AddCommand(this.buildSubCommand(binding, sub))
 	}
 	this.configureCommandHelp(cmd)
 	return cmd
 }
 
-// buildSubCommand 基于公共命令描述构建私有 Cobra 子命令。
-func (this *App) buildSubCommand(sub Command) *cobra.Command {
+// buildSubCommand 基于公共命令描述构建私有 Cobra 子命令，并读取当前执行绑定。
+func (this *App) buildSubCommand(binding *commandExecutionBinding, sub Command) *cobra.Command {
 	command := &cobra.Command{
 		Use:     sub.Use,
 		Short:   sub.Short,
@@ -77,7 +79,7 @@ func (this *App) buildSubCommand(sub Command) *cobra.Command {
 		Example: sub.Example,
 		Aliases: append([]string{}, sub.Aliases...),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return this.runSubCommand(sub, cmd, args)
+			return this.runSubCommand(binding.currentSession(), sub, cmd, args)
 		},
 	}
 	command.InitDefaultHelpFlag()

@@ -20,7 +20,8 @@ func WithLogger(logger baselog.Logger) Option {
 	}
 }
 
-// WithCloseTimeout 设置单个 bean Close 超时时间；小于等于 0 表示不启用超时控制。
+// WithCloseTimeout 设置单个 bean Close 的协作式取消时间；小于等于 0 表示不启用。
+// 说明：到期后容器仍等待 Closer 真实返回，再继续逆序释放其依赖，避免后台 Close 访问已销毁资源。
 func WithCloseTimeout(timeout time.Duration) Option {
 	return func(this *container) {
 		this.closeTimeout = timeout

@@ -14,6 +14,7 @@ type FlagBinder interface {
 	// 参数：
 	// - flags: 当前命令对应的 Flag 声明能力，调用方应只注册本命令语义相关参数。
 	//   语义约束：影响配置合并的参数使用 Config*；普通命令参数使用无前缀方法。
+	//   生命周期：App 首次 Run/ExecuteContext 构建缓存命令树时调用一次；实现应保持声明式，不产生外部副作用。
 	Bind(flags CommandFlags)
 }
 

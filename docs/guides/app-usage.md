@@ -2,20 +2,22 @@
 
 本文面向使用 `app` 构建命令行应用的开发者，完整说明 app 提供的能力、每项能力如何配置，以及业务代码如何取得和使用最终结果。设计边界与决策理由见 [App Design](../architecture/app-design.md)，精确退出状态机见 [App 生命周期管理](../architecture/app-lifecycle-design.md)。
 
-app 的公共 API 不暴露 Cobra/Pflag。使用者只需要理解五类配置入口：
+app 的公共 API 不暴露 Cobra/Pflag。使用者只需要理解六类配置入口：
 
-1. `app.Option`：配置整个应用，例如名称、Runtime、Root Runner、全局 Hooks。
+1. `app.Option`：配置整个应用，例如名称、Runtime、Root Workloads、全局 Hooks。
 2. `app.Command`：配置一个子命令，例如参数、Flags、RuntimeMode 和 Runner。
-3. `app.ShutdownOption`：配置应用级信号、关闭时间预算和主动工作负载 Hooks。
-4. `config.Option`、`app.Logging`、`app.Module`、`ioc.Option`：配置 Runtime 内的 config/log/IOC 能力。
-5. CLI flags：为本次执行提供 bootstrap、pinned 配置覆盖和普通命令参数。
+3. `app.Workload`：声明 Server、Consumer、Scheduler 等主动运行单元的 Run/Shutdown 语义。
+4. `app.Resource`：IOC 托管被动资源的 Close 语义；它是 `ioc.Closer` 的语义别名。
+5. `app.ShutdownPolicy`：统一配置进程信号、Workload graceful 和 Runtime Close 预算；`ShutdownHook` 只作高级逃生口。
+6. `config.Option`、`app.Logging`、`app.Module`、`ioc.Option` 与 CLI flags：配置 Runtime 能力和本次输入。
 
 ## 0. 能力总览
 
 | 能力 | 配置入口 | 业务使用入口 | app 负责什么 |
 |---|---|---|---|
 | 应用身份与帮助 | `WithName/WithDescription/WithVersion` | `--help`、`--version` | 构建 root 命令并渲染稳定 help |
-| Root 业务入口 | `WithRunner` | `Runner(ctx, runtime)` | 构建 Runtime 后调用 Runner |
+| 一次性 Root 任务 | `WithWorkloads(Runner(fn))` | `fn(ctx, runtime)` | 包装为固定名称 `runner` 的 Workload |
+| 主动工作负载 | `WithWorkloads` | `Workload.Run/Shutdown` | 任一 Run 返回后关闭全组，并等待全部 Run 收敛 |
 | 子命令 | `WithCommands`、`App.AddCommand`、`Command` | `CommandRunner(ctx, runtime, command)` | 选择一个命令并执行同一生命周期 |
 | 位置参数 | `Command.Use/ValidateArgs` | `CommandContext.Args()` | 在 Runtime Build 前校验并生成只读快照 |
 | 业务 Flags | `WithFlagBinder`、`Command.FlagBinder` | Binder 绑定字段 | 解析、Complete、Validate，不进入配置快照 |
@@ -24,7 +26,7 @@ app 的公共 API 不暴露 Cobra/Pflag。使用者只需要理解五类配置�
 | 日志 | `WithLogging` | `Runtime.Logger(name)` 或 IOC 注入 | 在 config 后初始化，在 IOC 后关闭/flush |
 | IOC | `WithBeanDefinitions/WithModules/WithIOCOptions` | `Runtime.Container()` 或字段注入 | 构建 Container 并统一释放 managed beans |
 | 运行前准备 | `WithBeforeRunHook` | Hook 参数中的 Runtime/CommandContext | Runner 前按声明顺序执行并聚合错误 |
-| 优雅退出 | `WithShutdown(WithShutdown*...)` | Shutdown Hook | 协调信号、Runner、Hooks 和 Runtime Close |
+| 优雅退出 | `WithShutdownPolicy` | Workload / Resource | 协调信号、主动工作收敛和 Runtime Close；Hook 仅作逃生口 |
 | 测试与嵌入 | `New/ExecuteContext/WithOutput` | 显式 context、args、buffer | 不安装全局信号，返回完整错误链 |
 
 普通路径只需要声明 Options，不需要调用方手工 Build 或 Close Runtime：
@@ -34,9 +36,9 @@ Options + args
   -> Parse / Complete / Validate
   -> Runtime Build（config -> log -> ioc）
   -> BeforeRunHooks
-  -> Runner
-  -> Shutdown Hooks + Runner convergence
-  -> Runtime Close（ioc -> log -> config）
+  -> Workload.Run（一次性函数由 Runner 包装）
+  -> Workload.Shutdown + wait all Run（可并发高级 Hooks）
+  -> Runtime Close / Resource Close（ioc -> log -> config）
   -> error / exit
 ```
 
@@ -64,19 +66,11 @@ func main() {
 
         app.WithFlagBinder(flags),
         app.WithBeforeRunHook(auditCommandStart),
-        app.WithShutdown(
-            app.WithShutdownGracefulTimeout(20*time.Second),
-            app.WithShutdownRuntimeCloseTimeout(10*time.Second),
-            app.WithShutdownHook("servers", servers.Shutdown),
-        ),
-
-        app.WithRunner(func(ctx context.Context, runtime app.Runtime) error {
-            service, err := ioc.ResolveAs[*OrderService](runtime.Container())
-            if err != nil {
-                return err
-            }
-            return servers.Serve(ctx, service)
+        app.WithShutdownPolicy(app.ShutdownPolicy{
+            WorkloadGracefulTimeout: 20*time.Second,
+            RuntimeCloseTimeout:     10*time.Second,
         }),
+        app.WithWorkloads(servers),
         app.WithCommands(app.Command{
             Use:                  "doctor",
             Short:                "Run local diagnostics",
@@ -88,7 +82,7 @@ func main() {
 }
 ```
 
-这里的 `config.Provider(nacos.New())` 只声明 Nacos 能力；地址、namespace 和 Sources 可以继续通过配置文件、环境变量或 `--bootstrap` 为本次运行提供。`servers` 是调用方持有的主动工作负载 controller，不属于 Runtime 内部资源。
+这里的 `config.Provider(nacos.New())` 只声明 Nacos 能力；地址、namespace 和 Sources 可以继续通过配置文件、环境变量或 `--bootstrap` 为本次运行提供。`servers` 实现 `app.Workload`，内部可在 `Run` 时从 Runtime 解析 Handler，在 `Shutdown` 时停止同一批 Server。
 
 ## 1. 选择启动入口
 
@@ -114,7 +108,7 @@ func main() {
 
 ## 2. 创建 Root 应用
 
-无参数时执行业务 Runner：
+无参数时执行一次性 root 任务：
 
 ```go
 func main() {
@@ -125,7 +119,7 @@ func main() {
             config.Defaults(defaultConfig()),
         ),
         app.WithConfigBinding[Config](""),
-        app.WithRunner(runServer),
+        app.WithWorkloads(app.Runner(runServer)),
     )
 }
 
@@ -138,7 +132,7 @@ func runServer(ctx context.Context, runtime app.Runtime) error {
 }
 ```
 
-默认流程：解析参数，构建 Runtime，执行 hooks 和 Runner，最后关闭 Runtime。
+默认流程：解析参数，构建 Runtime，执行 hooks 和 Workload，最后关闭 Runtime。
 
 ### 2.1 应用基础 Options
 
@@ -149,35 +143,39 @@ func runServer(ctx context.Context, runtime app.Runtime) error {
 | `WithVersion(version)` | `--version` 输出的完整文本 | `dev` | 只输出文本，不构建 Runtime、不执行 Hooks/Runner |
 | `WithOutput(writer)` | help、version、bootstrap schema 等框架输出目标 | Cobra 默认输出 | nil 表示不覆盖默认输出；测试通常传 `*bytes.Buffer`；不重定向业务的 `os.Stdout` |
 | `WithErrorOutput(writer)` | Cobra error output，以及 `app.Main` 的最终错误输出 | Cobra 默认错误输出；Main 回退 `os.Stderr` | 不改变 `Run/ExecuteContext` 的 error 返回值 |
-| `WithRunner(runner)` | `func(context.Context, app.Runtime) error` | nil | 配置 Root Runner；root 没有 Runner 但存在子命令时显示 help，否则返回 `runner_required` |
+| `Runner(run)` | `func(context.Context, app.Runtime) error` | 无 | 把一次性函数包装为固定名称 `runner` 的 Workload；nil 由 WithWorkloads 拒绝 |
+| `WithWorkloads(workloads...)` | 一个或多个唯一命名的 `app.Workload` | 空集合 | 唯一 root 执行入口；任一 Run 返回触发全组关闭 |
 | `WithCommands(commands...)` | 零个或多个 `app.Command` | 空集合 | 按声明追加子命令；叶子命令必须提供 Runner |
 | `WithFlagBinder(binder)` | root 级 `FlagBinder` | nil | 声明 root 本地业务 Flags；不自动继承给子命令 |
 | `WithBeforeRunHook(hook)` | `BeforeRunHook` | 空集合 | nil 被忽略；非 nil Hook 按声明顺序执行 |
-| `WithShutdown(options...)` | 一组 `ShutdownOption` | 默认信号和 timeout、空 Hooks | 聚合应用级退出配置，详见第 12 节 |
+| `WithShutdownPolicy(policy)` | `ShutdownPolicy` 值对象 | 平台默认信号、15s/10s 预算 | 显式字段优先；duration 零值允许 ConfigManager 补齐，详见第 12 节 |
+| `WithShutdownHook(name, hook)` | 稳定名称与 Hook | 空集合 | 顶层高级逃生口；常规关闭优先使用 Workload/Resource |
 | `WithRuntime(runtimeApplication)` | 非 nil `*app-runtime.Application` | 自动创建默认蓝图 | 完整替换 Runtime 蓝图；与 `WithRuntimeOptions`/Runtime 门面 Options 互斥 |
 | `WithRuntimeOptions(options...)` | app-runtime Options | 空集合 | 在默认蓝图上追加高级 Runtime 配置 |
 
 `WithConfig/WithLogging/WithBeanDefinitions/WithModules/WithIOCOptions/WithConfigBinding` 都是更具体的 Runtime 门面，内部等价于追加 `WithRuntimeOptions`。因此只要使用了其中任何一项，就不要再同时使用 `WithRuntime`。
 
-### 2.2 Root Runner 的输入与返回
+### 2.2 一次性 Runner 包装器的输入与返回
 
 ```go
-type Runner func(ctx context.Context, runtime app.Runtime) error
+func Runner(
+    run func(ctx context.Context, runtime app.Runtime) error,
+) app.Workload
 ```
 
 | 参数/返回 | 语义 |
 |---|---|
-| `ctx` | 本次命令的 run context；信号或宿主取消会关闭 `Done()`；Runner 应协作停止主动工作 |
-| `runtime` | Build 成功且尚未关闭的只读 Runtime 门面；Root Runner 中非 nil |
-| `error == nil` | Runner 正常完成；app 仍执行 Shutdown Hooks，再关闭 Runtime |
-| `error != nil` | 保留原始业务错误；app 不跳过 Shutdown Hooks 和 Runtime Close |
-| panic | app 先执行 Shutdown Hooks、关闭 Runtime，再恢复 panic |
+| `run` | 自行完成的一次性函数；nil 会由 WithWorkloads 拒绝 |
+| `ctx` | 本次命令的 run context；信号或宿主取消会关闭 `Done()`，函数应协作返回 |
+| `runtime` | Build 成功且尚未关闭的只读 Runtime 门面；root Workload 中非 nil |
+| 返回 Workload | 名称固定为 `runner`，`Shutdown` 无副作用；函数返回即是真实收敛点 |
+| `error/panic` | 保留原始业务结果；app 完成高级 Hooks 和 Runtime Close 后返回错误或恢复 panic |
 
-Root Runner 固定使用 `RuntimeModeEnabled`。如果一个入口完全不需要 config/log/IOC，应把它声明为 `RuntimeModeDisabled` 子命令；当前没有 Root RuntimeMode 开关。
+root Workload 固定使用 `RuntimeModeEnabled`。如果一个入口完全不需要 config/log/IOC，应把它声明为 `RuntimeModeDisabled` 子命令；当前没有 Root RuntimeMode 开关。
 
 ## 3. 创建 Command-Only 应用
 
-只有子命令时不需要占位 Root Runner：
+只有子命令时不需要占位 root Workload：
 
 ```go
 func main() {
@@ -261,7 +259,7 @@ type CommandRunner func(
 
 | 输入 | 语义 |
 |---|---|
-| `ctx` | 与 Root Runner 相同的 run context |
+| `ctx` | 与 root Workload 相同的 run context |
 | `runtime` | Enabled 非 nil；Disabled 必须按 nil 使用 |
 | `command.Name()` | 当前真实命令名，例如 `create` |
 | `command.Path()` | 包含 root 的完整路径，例如 `orderctl create` |
@@ -286,7 +284,7 @@ return application.Run()
 ```go
 app.Main(
     app.WithName("order-service"),
-    app.WithRunner(runServer),
+    app.WithWorkloads(app.Runner(runServer)),
     app.WithCommands(
         app.Command{Use: "migrate", Runner: runMigration},
         app.Command{
@@ -306,13 +304,13 @@ order-service --help   -> 展示 help，不构建 Runtime
 
 ### 4.1 Root 默认决策
 
-| Root Runner | Commands | 执行 root 的结果 |
+| Root Workload | Commands | 执行 root 的结果 |
 |---:|---:|---|
-| 有 | 任意 | root 是真实业务命令，执行 Root Runner |
+| 有 | 任意 | root 是真实业务命令，执行 Root Workload |
 | 无 | 有可用命令 | root 是命令目录，展示 help 并返回 nil |
 | 无 | 无 | 返回 `app.lifecycle.runner_required` |
 
-一次进程参数只选择 root 或一个一级子命令，不会同时执行 root Runner 和 Command Runner。当前公共 `Command` 模型不支持递归声明多级子命令树。
+一次进程参数只选择 root 或一个一级子命令，不会同时执行 root Workload 和 Command Runner。当前公共 `Command` 模型不支持递归声明多级子命令树。
 
 ### 4.2 一次命令的精确阶段
 
@@ -393,7 +391,7 @@ func (this *rootFlags) ValidateFlags() []error {
 
 app.Run(
     app.WithFlagBinder(&rootFlags{}),
-    app.WithRunner(run),
+    app.WithWorkloads(app.Runner(run)),
 )
 ```
 
@@ -414,7 +412,7 @@ app.Run(
 
 如果 root 和子命令都需要同一个业务 Flag，应由共享函数分别绑定到两个 Binder，不能假设 root 本地 Flag 会被继承。不要在同一命令上重复注册同名 Flag，否则底层 CLI 会拒绝或 panic。
 
-`Bind` 在命令树首次构建时调用，不是在每次 Runner 前调用。Binder 应只声明 Flags，不应读取 Runtime、连接外部服务或启动 goroutine。
+`Bind` 在命令树首次构建时调用一次，不是在每次 Runner 前调用。Binder 应保持声明式，只注册参数；不应读取 Runtime、连接外部服务或启动 goroutine。
 
 ### 6.2 配置覆盖 Flags：`Config*`
 
@@ -628,7 +626,7 @@ Runner 和 Hooks 得到的 `app.Runtime` 是只读能力门面：
 Runtime 不暴露 `Close`。Runner、BeforeRunHook、ShutdownHook 只能在自己的调用期间借用 Runtime；关闭责任始终属于 app。
 
 ```go
-app.WithRunner(func(ctx context.Context, runtime app.Runtime) error {
+app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime) error {
     info := runtime.Info()
     logger := runtime.Logger("order.bootstrap")
     snapshot := runtime.ConfigManager().Current()
@@ -643,7 +641,7 @@ app.WithRunner(func(ctx context.Context, runtime app.Runtime) error {
         log.F("config_version", snapshot.Version()),
     )
     return service.Serve(ctx)
-})
+}))
 ```
 
 普通业务对象不应持有 Runtime 或 Container；应通过 IOC 字段注入 `ConfigValue[T]`、Logger 和领域依赖。
@@ -722,7 +720,7 @@ app.Main(
     app.WithFlagBinder(&configFlags{}),
     app.WithConfigBinding[ApplicationConfig]("", validateConfig),
     app.WithBeanDefinitions(ioc.Define(&OrderService{})),
-    app.WithRunner(runServer),
+    app.WithWorkloads(app.Runner(runServer)),
 )
 ```
 
@@ -840,7 +838,7 @@ if meta, ok := snapshot.Explain("service.address"); ok {
 ```go
 app.Run(
 	app.WithLogging(applogzap.New()),
-	app.WithRunner(runServer),
+	app.WithWorkloads(app.Runner(runServer)),
 )
 ```
 
@@ -936,13 +934,13 @@ type Module interface {
 app.Run(
     app.WithConfigBinding[OrderConfig]("order", validateOrder),
     app.WithModules(&OrderModule{}),
-    app.WithRunner(func(ctx context.Context, runtime app.Runtime) error {
+    app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime) error {
         service, err := ioc.ResolveAs[*OrderService](runtime.Container())
         if err != nil {
             return err
         }
         return service.Serve(ctx)
-    }),
+    })),
 )
 ```
 
@@ -1000,7 +998,7 @@ Runtime Build -> BeforeRunHooks -> Runner -> Shutdown Hooks + Runner convergence
 2. Hook 不能启动 Server、Consumer、Scheduler 等长期主动工作负载。
 3. Hook 失败前必须撤销自己创建的临时副作用；app 仍关闭已经构建的 Runtime。
 4. `RuntimeModeDisabled` 不构建 Runtime，也不执行 BeforeRunHooks。
-5. 停止主动工作负载使用下一节的 Shutdown Hook；关闭 Runtime 内部资源交给 Runtime Close。
+5. 主动运行单元使用下一节的 Workload；关闭 Runtime 内部资源交给 IOC Resource Close。
 
 参数和返回：
 
@@ -1013,107 +1011,104 @@ Runtime Build -> BeforeRunHooks -> Runner -> Shutdown Hooks + Runner convergence
 | non-nil error | 继续执行同阶段其他 BeforeRunHooks 以收集错误，但最终不启动 Runner/Shutdown Hooks |
 | panic | Runtime 仍通过 defer 关闭，panic 继续向上传播 |
 
-`WithBeforeRunHook(nil)` 被忽略；多次调用按声明顺序追加。Hook 适合启动审计、tracing span 准备或不产生长期工作负载的可回滚检查，不适合建立必须由 Shutdown Hook 才能停止的 Server/Consumer。
+`WithBeforeRunHook(nil)` 被忽略；多次调用按声明顺序追加。Hook 适合启动审计、tracing span 准备或不产生长期工作负载的可回滚检查，不适合建立 Server/Consumer；后者应声明 Workload。
 
 ## 12. 优雅关闭常驻服务
 
-`app.Run/Main` 默认监听退出信号，并把信号、宿主 context 取消和 Runner 结果收敛到同一条 Shutdown 流程：
+常规代码只需要三个概念：`Workload` 表示主动运行单元，`Resource` 表示 IOC 拥有的被动资源，`ShutdownPolicy` 表示统一时间预算。`app.Run/Main` 把信号、宿主取消和任一 Workload 结果收敛到同一条关闭流程：
 
 ```text
 退出触发
   -> cancel(run context)
-  -> Shutdown Hooks 与 Runner 并行收敛
-  -> Runtime Close
+  -> Workload.Shutdown（高级 ShutdownHook 可并发加入）
+  -> wait every Workload.Run
+  -> Runtime Close -> IOC Resource.Close
   -> Error/Exit
 ```
 
 核心不变量：
 
-> Shutdown Hooks 已全部返回，并且 Runner 已完全退出后，app 才关闭 Runtime。
+> 每个 Workload 的 Shutdown 与 Run 都已返回后，app 才关闭 Runtime 和 Resource。
 
-本文使用 `Server` 统称 HTTP、gRPC、管理端口等常驻请求入口。app 只要求 Server 在 Runtime Close 前停止，不规定 Server 来自哪里、Runtime 内部如何装配或关闭资源；同一个 Server 必须只有一个生命周期所有者。
+本文使用 `Server` 统称 HTTP、gRPC、管理端口等常驻请求入口。Server、Consumer、Scheduler 通常是 Workload；连接池、Client、Provider 通常是 Resource。同一个对象只能有一个资源所有者：Workload 负责停止主动访问，IOC 负责最终资源释放。
 
-下文的 Shutdown/Force Close 表示通用生命周期动作：HTTP 通常对应 `Shutdown/Close`，gRPC 通常对应 `GracefulStop/Stop`。
-
-公共配置形态：
+公共模型：
 
 ```go
-app.WithShutdown(
-    app.WithShutdownSignals(os.Interrupt, syscall.SIGTERM),
-    app.WithShutdownGracefulTimeout(20*time.Second),
-    app.WithShutdownRuntimeCloseTimeout(10*time.Second),
-    app.WithShutdownHook("http", shutdownHTTP),
-    app.WithShutdownHook("grpc", shutdownGRPC),
-)
+type Workload interface {
+    Name() string
+    Run(ctx context.Context, runtime app.Runtime, command app.CommandContext) error
+    Shutdown(ctx context.Context, runtime app.Runtime, command app.CommandContext) error
+}
+
+type Resource = ioc.Closer
+```
+
+推荐配置形态：
+
+```go
+app.WithWorkloads(httpWorkload, consumerWorkload)
+app.WithShutdownPolicy(app.ShutdownPolicy{
+    Signals:                 []os.Signal{os.Interrupt, syscall.SIGTERM},
+    WorkloadGracefulTimeout: 20*time.Second,
+    RuntimeCloseTimeout:     10*time.Second,
+})
 ```
 
 | 入口 | 参数 | 默认/组合规则 | 无效输入 |
 |---|---|---|---|
-| `WithShutdown(options...)` | `ShutdownOption` 列表 | 可调用一次或多次，内部声明累积 | nil option 记录 setup error |
-| `WithShutdownSignals(signals...)` | 一个或多个 `os.Signal` | 替换平台默认集合；整个 App 只能声明一次 | 空集合、nil signal、重复声明失败 |
-| `WithShutdownGracefulTimeout(d)` | 正 `time.Duration` | 默认 15s；所有 Hooks 共享同一个 graceful deadline；只能声明一次 | `d <= 0`、重复声明失败 |
-| `WithShutdownRuntimeCloseTimeout(d)` | 正 `time.Duration` | 默认 10s；独立于 Hook context；只能声明一次 | `d <= 0`、重复声明失败 |
-| `WithShutdownHook(name, hook)` | 稳定名称、`ShutdownHook` | 可重复注册不同名称；执行时并发 | Trim 后空名、重复名、nil hook 失败 |
+| `WithWorkloads(workloads...)` | 一个或多个 `Workload` | 名称唯一；并发运行/关闭 | 空集合、nil、空名、重复名失败 |
+| `Runner(run)` | 两参数一次性函数 | 固定名称 `runner`、Shutdown 无副作用 | nil 由 WithWorkloads 拒绝、重复包装导致名称冲突 |
+| `WithShutdownPolicy(policy)` | `ShutdownPolicy` 值对象 | 显式字段 > ConfigManager 启动快照 > 内建默认；Signals 只读代码声明 | 空信号集合、nil signal、负 duration、重复声明失败 |
+| `WithShutdownHook(name, hook)` | 稳定名称、`ShutdownHook` | 顶层高级逃生口；与 Workload 并发执行 | Trim 后空名、重复名、nil hook 失败 |
 
-重复单值声明不会采用“最后一个覆盖”，而是在执行前 fail-fast，避免装配顺序悄悄改变退出策略。Hook name 进入错误中的 `name` 字段，应使用 `http`、`grpc`、`consumer.orders` 等稳定低基数名称。
+重复单值声明不会采用“最后一个覆盖”，而是在执行前 fail-fast，避免装配顺序悄悄改变退出策略。
 
-### 12.1 声明 Shutdown Group
+ConfigManager 使用以下固定键；只读取 Runtime Build 完成时的启动快照，不订阅热更新：
 
-Runner 与 Shutdown Hook 应共享同一个并发安全 controller。Runner 负责运行工作负载，Hook 负责停止并等待同一工作负载：
+```yaml
+app:
+  shutdown:
+    workloadGracePeriod: 20s
+    runtimeCloseGracePeriod: 10s
+```
+
+归并按字段执行：显式字段屏蔽对应配置；未显式字段读取启动快照；仍缺失才使用 15s/10s 内建默认。非法且实际参与归并的配置会在 `BeforeRunHook`、Workload 启动前以 `stage=resolve_shutdown_policy` 失败。`RuntimeModeDisabled` 不构建 ConfigManager，因此只使用显式 Policy 与内建默认。Signals 必须在 Runtime Build 前安装，始终不从 ConfigManager 读取。
+
+注意：把 `DefaultShutdownPolicy()` 的完整返回值再次传给 `WithShutdownPolicy`，等价于显式声明全部字段，因此两个 duration 不再接受 ConfigManager 覆盖。只需显式信号时应仅填写 `Signals`。
+
+### 12.1 声明 Workload
+
+Workload 的 `Run` 与 `Shutdown` 必须定位同一个并发安全实例。app 并发启动全部 `Run`；任一个返回都会取消 run context、调用全组 `Shutdown`，最后等待全部 `Run`：
 
 ```go
 func main() {
-    servers := newServerController()
     app.Main(
         app.WithName("order-service"),
-        app.WithRunner(func(ctx context.Context, runtime app.Runtime) error {
-            handler, err := ioc.ResolveAs[*HTTPHandler](runtime.Container())
-            if err != nil {
-                return err
-            }
-            return servers.Serve(ctx, handler)
+        app.WithWorkloads(newHTTPWorkload()),
+        app.WithShutdownPolicy(app.ShutdownPolicy{
+            WorkloadGracefulTimeout: 20*time.Second,
+            RuntimeCloseTimeout:     10*time.Second,
         }),
-        app.WithShutdown(
-            app.WithShutdownGracefulTimeout(20*time.Second),
-            app.WithShutdownRuntimeCloseTimeout(10*time.Second),
-            app.WithShutdownHook("servers", servers.Shutdown),
-        ),
     )
 }
 ```
 
-`servers.Shutdown(ctx, runtime, command)` 必须提供完整的 graceful→必要时 force→wait 语义。不能把原始 `http.Server.Shutdown` 直接注册为 Hook，因为它没有表达 graceful 失败后的 Force Close，也未必等待业务侧 Serve goroutine 完全退出。
+Workload 契约：
 
-Hook 的强契约：
+1. `Name` 非空、稳定且在 App 内唯一，用于 `op/result/reason/name` 诊断。
+2. `Run` 阻塞到内部执行单元全部退出；不能启动后台 goroutine后立即返回成功。
+3. `Shutdown` 与 `Run` 可并发，且在 `Run` 已返回后重复调用仍安全。
+4. shutdown context 只界定 graceful 阶段；实现可在到期后 Force Close，但 app 仍以 `Run` 返回作为真实收敛点。
+5. Workload 只能借用 Runtime，不能调用 Runtime Close；常规底层资源由 IOC Resource Close 回收。
 
-1. 返回时，其管理的工作负载必须已经停止访问 Runtime。
-2. shutdown context 的 deadline 只结束 graceful 阶段；到期后 Hook 必须 Force Close 并继续等待工作负载退出。
-3. 返回 error 表示发生过关闭失败或降级，不表示工作负载仍在运行。
-4. Hook 必须幂等，并与 Runner 的 Start/Serve 线性化，不能在 Hook 返回后才发布新工作负载。
-5. Hook 只能借用传入 Runtime，不能调用 Runtime Close。
-
-`ShutdownHook` 参数：
+`ShutdownHook` 仍保留，但只用于无法自然表达为 Workload/Resource 的遗留回调、跨系统补偿或进程级全局状态恢复：
 
 ```go
-type ShutdownHook func(
-    ctx context.Context,
-    runtime app.Runtime,
-    command app.CommandContext,
-) error
+app.WithShutdownHook("legacy.lease", releaseLegacyLease)
 ```
 
-| 参数/返回 | 语义 |
-|---|---|
-| `ctx` | 从已取消 run context 去除取消状态后创建的独立 graceful context；默认 15s deadline |
-| `runtime` | Enabled 命令非 nil；Disabled 命令 nil；Hook 只能借用，不能 Close |
-| `command` | 本次实际执行命令的稳定快照，可用于日志和少量命令分支 |
-| nil error | 工作负载已停止，且没有需要上报的 graceful/force 错误 |
-| non-nil error | 工作负载已经停止，但关闭发生错误或降级；app 聚合错误后仍 Close Runtime |
-| panic | 转换为 `app.internal` shutdown_hook 错误，不跳过其他 Hooks 和 Runtime Close |
-
-多个互相独立的 Hooks 并发执行；声明顺序不表示关闭顺序。有依赖的 HTTP/gRPC/Consumer 应封装为一个 Group，由 Group 内部显式编排。
-
-Runner 保持在命令调用 goroutine：阻塞型 `Serve/Spin` 可直接在 Runner 中运行，由并发 Shutdown Hook 使其返回；后台型 Server 由 controller 等待 Serve 结果。两种写法不需要不同的 app 配置。
+高级 Hook 与 Workload Shutdown 并发，仍必须在返回前停止访问 Runtime。`Command.DisableShutdownHooks` 只关闭高级 Hook，不影响 Workload；root Workload 不会在子命令路径启动。`app-web-hertz.Workload()` 已把唯一 Hertz Server 接入该模型。原生 `net/http.Server` 可由薄适配器实现 Workload：`Run` 调用 `Serve`，`Shutdown` 调用 `Shutdown(ctx)`，必要时 `Close()`；app 会额外等待 `Serve` 返回。
 
 ### 12.2 信号、宿主与返回错误
 
@@ -1121,27 +1116,27 @@ Runner 保持在命令调用 goroutine：阻塞型 `Serve/Spin` 可直接在 Run
 |---|---|
 | `Run/Main` + SIGINT/SIGTERM | 完整 Shutdown；其他阶段成功时返回 nil |
 | `ExecuteContext` + 宿主取消 | 完整 Shutdown；返回 `context.Cause(ctx)` |
-| Runner 正常返回 | 执行 Shutdown Group 后正常关闭 Runtime |
-| Runner 返回业务错误 | 保留业务错误，仍执行 Hooks 和 Runtime Close |
+| 任一 Workload 正常返回 | 触发全组 Shutdown，等待全部 Run 后正常关闭 Runtime |
+| Workload Run 返回业务错误 | 保留首因与其他 Run 错误，仍执行 Shutdown 和 Runtime Close |
 | Shutdown Hook 失败 | 保留 Hook 错误，不跳过其他 Hooks 和 Runtime Close |
 
-Unix 默认监听 `os.Interrupt` 和 SIGTERM，Windows 默认监听 `os.Interrupt`。第一次信号启动 Shutdown 并立即恢复默认信号行为；第二次同类信号由操作系统直接终止进程。自定义宿主不要调用 `Run`，而应通过 `ExecuteContext(ctx, args)` 自己管理信号和取消来源。
+Unix 默认监听 `os.Interrupt` 和 SIGTERM，Windows 默认监听 `os.Interrupt`。第一次信号以包含具体 signal 名称的 cause 取消 run context，并立即恢复默认信号行为；Workload/Runner 可用 `context.Cause(ctx)` 记录来源，关闭阶段失败时 `Run` 错误也包含 `source=process_signal signal=...`。第二次同类信号由操作系统直接终止进程。自定义宿主不要调用 `Run`，而应通过 `ExecuteContext(ctx, args)` 自己管理信号和取消来源。
 
 自定义进程信号使用替换语义：
 
 ```go
-app.WithShutdown(
-    app.WithShutdownSignals(os.Interrupt, syscall.SIGTERM),
-)
+app.WithShutdownPolicy(app.ShutdownPolicy{
+    Signals: []os.Signal{os.Interrupt, syscall.SIGTERM},
+})
 ```
 
 ### 12.3 配置默认值和子命令
 
 | 配置 | 默认值 |
 |---|---|
-| `WithShutdownSignals` | Unix：Interrupt+SIGTERM；Windows：Interrupt |
-| `WithShutdownGracefulTimeout` | 15 秒，共享给全部 Shutdown Hooks |
-| `WithShutdownRuntimeCloseTimeout` | 10 秒，独立于 graceful context |
+| `ShutdownPolicy.Signals` | Unix：Interrupt+SIGTERM；Windows：Interrupt |
+| `ShutdownPolicy.WorkloadGracefulTimeout` | 15 秒，共享给全部 Workload 与高级 Shutdown Hooks |
+| `ShutdownPolicy.RuntimeCloseTimeout` | 10 秒，独立于 graceful context |
 | Shutdown Hooks | 空集合 |
 | 子命令 | 继承应用 Hooks |
 
@@ -1150,12 +1145,14 @@ app.WithShutdown(
 时间预算不是一个总 timeout：
 
 ```text
-Shutdown Hooks graceful deadline（默认 15s）
-  -> Hook 内必要的 Force Close + 最终 wait（可能超过 deadline）
+Workload/高级 Hook graceful deadline（默认 15s）
+  -> 必要的 Force Close + wait every Run（可能超过 deadline）
   -> Runtime Close 独立 deadline（默认 10s）
 ```
 
-Hook context 到期只通知 adapter 从 graceful 切换到 force。app 不在后台遗留 Hook goroutine 并继续关闭 Runtime，否则工作负载可能访问已经关闭的依赖；因此 Force Close 后仍无法退出时，进程等待第二次信号或平台 SIGKILL。Runtime Close timeout 同样只向下传播 context，不能强制终止不响应 context 的 Closer。
+shutdown context 到期只通知 adapter 从 graceful 切换到 force。app 不在后台遗留 Workload、Hook 或 Resource Close 并继续销毁依赖；因此 Force Close 后仍无法退出时，进程等待第二次信号或平台 SIGKILL。Runtime/IOC timeout 同样只向下传播 context，必须等待 Closer 真实返回。
+
+IOC `WithCloseTimeout` 不允许容器超时后遗弃 Closer，因此 Closer 必须监听 context 并真实结束。一次性 root 任务通过 `WithWorkloads(Runner(fn))` 声明，常驻服务直接实现 Workload。
 
 不需要应用 Shutdown Group 的子命令显式关闭继承：
 
@@ -1178,9 +1175,9 @@ app.Command{
 3. 等待存量请求、RPC 和 Stream 完成；
 4. graceful shutdown 超时后的强制 Close；
 5. 等待 `Serve/Spin` 完全退出；
-6. 把意外运行错误返回 Runner。
+6. 把意外运行错误从 Workload Run 返回。
 
-app 核心只提供固定的 Shutdown Group，不增加 Gin/Hertz/gRPC 类型，也不发现或管理 IOC 内部资源。多个 Server 可由 adapter 内的 `ServerGroup` 统一管理，再作为一个 Shutdown Hook 参与应用退出。完整契约见 [App 生命周期管理](../architecture/app-lifecycle-design.md#8-withshutdown-配置模型)。
+app 核心只提供 Workload/Resource/ShutdownPolicy 语义，不增加 Gin/Hertz/gRPC 类型，也不发现 IOC 内部资源。多个 Server 可分别声明 Workload，存在严格内部依赖时再封装为一个复合 Workload。完整契约见 [App 生命周期管理](../architecture/app-lifecycle-design.md#8-workload--resource--shutdownpolicy-概念模型)。
 
 ### 12.5 Kubernetes 配合
 
@@ -1200,7 +1197,7 @@ Kubernetes 终止语义见 [Pod 与 Endpoint 终止流程](https://kubernetes.io
 
 1. 进程入口是否使用 `Run/Main`，嵌入式宿主是否使用 `ExecuteContext`？
 2. 第一次信号是否开始优雅退出，第二次信号是否恢复默认强制终止能力？
-3. Shutdown Hook 返回时是否保证全部工作负载已经停止访问 Runtime？
+3. 每个 Workload Run 是否在内部执行单元完全退出后才返回？
 4. graceful shutdown 失败后是否执行 Force Close，并等待 Serve/Spin goroutine 结束？
 5. 每个 Server 是否只有一个明确的生命周期所有者？
 6. 多个有顺序依赖的关闭动作是否封装在同一 Group 内？
@@ -1214,7 +1211,7 @@ Config 使用 config.Options；IOC 底层策略使用显式高级入口：
 app.Run(
 	app.WithConfig(config.Provider(provider)),
 	app.WithIOCOptions(ioc.WithCloseTimeout(5*time.Second)),
-    app.WithRunner(runServer),
+    app.WithWorkloads(app.Runner(runServer)),
 )
 ```
 
@@ -1229,7 +1226,7 @@ runtimeApplication := appruntime.New(
 application := app.New(
     app.WithName("orderctl"),
     app.WithRuntime(runtimeApplication),
-    app.WithRunner(runServer),
+    app.WithWorkloads(app.Runner(runServer)),
 )
 ```
 
@@ -1289,7 +1286,7 @@ func TestStatusCommand(t *testing.T) {
 | Main/CLI 错误输出 | `WithErrorOutput(&bytes.Buffer{})`；单元测试通常不直接调用会 `os.Exit` 的失败 Main |
 | 宿主取消 | `context.WithCancelCause` 后调用 `ExecuteContext` |
 | Runtime 关闭 | 注册可观察 `ioc.Closer` 或 config/log 测试 Provider |
-| Shutdown Hook | 使用 channel/controller 断言 Hook 返回前 Runner 已收敛 |
+| Workload | 使用 channel/controller 断言任一返回会触发全组 Shutdown，且 Resource Close 前全部 Run 已收敛 |
 
 测试 `--version` 的 Runtime 前短路：
 
@@ -1300,10 +1297,10 @@ func TestVersionDoesNotRunBusiness(t *testing.T) {
     application := app.New(
         app.WithVersion("v1.2.3"),
         app.WithOutput(&output),
-        app.WithRunner(func(context.Context, app.Runtime) error {
+        app.WithWorkloads(app.Runner(func(context.Context, app.Runtime) error {
             runnerCalled = true
             return nil
-        }),
+        })),
     )
 
     err := application.ExecuteContext(context.Background(), []string{"--version"})
@@ -1370,7 +1367,7 @@ if err := application.ExecuteContext(ctx, args); err != nil {
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `runner_required` | 没有 Root Runner，也没有可用 Commands | 声明 `WithRunner` 或 `WithCommands` |
+| `runner_required` | 没有 Root Workload，也没有可用 Commands | 声明 `WithWorkloads` 或 `WithCommands` |
 | `command_runner_required` | 叶子 Command 没有 Runner | 设置 `Command.Runner` |
 | Runtime 与 RuntimeOptions 冲突 | 同时使用 `WithRuntime` 和 `WithRuntimeOptions` | 选择完整替换或增量配置之一 |
 | doctor 执行了 Runtime | 未声明 `RuntimeModeDisabled` | 为纯 CLI 命令设置该模式 |
@@ -1381,7 +1378,7 @@ if err := application.ExecuteContext(ctx, args); err != nil {
 | `--override code=01` 得到字符串 | 前导零整数为避免信息丢失会保留 string | 使用 ConfigInt，或把配置字段定义为 string |
 | 取消 context 后仍等待关闭 | Shutdown Hook 强契约要求 force 后继续等待；timeout 不能终止 goroutine | 检查 adapter 的 Force Close 与 wait 实现，必要时用第二次信号或平台 SIGKILL 硬终止 |
 | Pod 退出时仍有迟到请求 | Endpoint/Ingress/LB 状态传播和既有连接不是瞬时消失 | 先设置 draining，等待传播，再 Shutdown；全部 Server 停止后才允许 Runner 返回 |
-| Runtime 关闭后仍有请求访问运行能力 | Shutdown Hook 在 Serve/Spin 完全退出前返回 | Force Close 后继续等待工作负载完全退出，再从 Hook 返回 |
+| Runtime 关闭后仍有请求访问运行能力 | Workload Run 在 Serve/Spin 完全退出前返回 | Run 必须成为真实收敛点；Shutdown 只负责发出 graceful/force 请求 |
 
 ## 17. 可运行示例
 

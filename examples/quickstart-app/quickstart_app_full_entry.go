@@ -376,8 +376,8 @@ func runQuickstartAppFull() error {
 			},
 		),
 
-		// [必须][推荐] app.WithRunner：root 极简业务入口。
-		app.WithRunner(func(ctx context.Context, runtime app.Runtime) error {
+		// [必须][推荐] app.Runner：把一次性 root 函数包装为统一 Workload。
+		app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime) error {
 			iocContainer := runtime.Container()
 			worker, err := ioc.ResolveByNameAs[*quickstartFullIOCWorker](iocContainer, "QuickstartIOCWorker")
 			if err != nil {
@@ -415,7 +415,7 @@ func runQuickstartAppFull() error {
 			)
 			_, _ = fmt.Fprintf(os.Stdout, "ioc.worker=%s\n", worker.Status())
 			return nil
-		}),
+		})),
 	)
 }
 

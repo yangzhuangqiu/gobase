@@ -59,13 +59,12 @@ func (this *benchFastCloser) Close(context.Context) error {
 	return nil
 }
 
-type benchBlockingCloser struct {
-	release <-chan struct{}
-}
+type benchBlockingCloser struct{}
 
-func (this *benchBlockingCloser) Close(context.Context) error {
-	<-this.release
-	return nil
+// Close 模拟只会响应单 bean deadline 的慢资源，使基准稳定覆盖协作式 timeout 路径。
+func (this *benchBlockingCloser) Close(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // BenchmarkBuildLargeBeanGraph 基准评估“大规模 bean 装配”的 Build 开销。
@@ -140,10 +139,9 @@ func BenchmarkCloseTimeoutOverhead(b *testing.B) {
 	b.Run("blocking_close_with_timeout", func(b *testing.B) {
 		b.ReportAllocs()
 		for index := 0; index < b.N; index++ {
-			release := make(chan struct{})
-			container := New(WithLogger(&benchSilentLogger{}), WithCloseTimeout(2*time.Millisecond))
+			container := New(WithLogger(&benchSilentLogger{}), WithCloseTimeout(time.Second))
 			for i := 0; i < timeoutBeanCount; i++ {
-				bean := &benchBlockingCloser{release: release}
+				bean := &benchBlockingCloser{}
 				if err := container.Register(bean, WithName(fmt.Sprintf("BlockingCloser%d", i))); err != nil {
 					b.Fatalf("register blocking closer failed: %v", err)
 				}
@@ -151,8 +149,10 @@ func BenchmarkCloseTimeoutOverhead(b *testing.B) {
 			if err := container.Build(context.Background()); err != nil {
 				b.Fatalf("build failed: %v", err)
 			}
-			_ = container.Close(context.Background())
-			close(release)
+			// 已过期父 Context 让所有 Closer 同步进入 deadline 分支，排除平台 timer 粒度。
+			expiredContext, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Nanosecond))
+			_ = container.Close(expiredContext)
+			cancel()
 		}
 	})
 }

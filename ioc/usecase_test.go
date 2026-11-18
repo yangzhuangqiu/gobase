@@ -1107,14 +1107,18 @@ func TestUseCaseCloseAlwaysContinuesAndAggregates(t *testing.T) {
 }
 
 type closeBlockingBean struct {
-	release <-chan struct{}
-	Trace   *[]string `ioc:"-"`
+	release          <-chan struct{}
+	deadlineObserved chan<- struct{} `ioc:"-"`
+	Trace            *[]string       `ioc:"-"`
 }
 
-func (this *closeBlockingBean) Close(_ context.Context) error {
+// Close 先确认收到协作式 deadline，再等待测试释放，以验证容器不会遗弃后台关闭动作。
+func (this *closeBlockingBean) Close(ctx context.Context) error {
+	<-ctx.Done()
+	close(this.deadlineObserved)
 	<-this.release
 	*this.Trace = append(*this.Trace, "close-blocking")
-	return nil
+	return ctx.Err()
 }
 
 type closeFastBean struct {
@@ -1139,35 +1143,52 @@ func (this *closeContextAwareBean) Close(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// TestUseCaseCloseTimeout 验证 Close 超时策略会返回超时错误并记录指标。
+// TestUseCaseCloseTimeout 验证 Close timeout 只发出协作式取消，且容器仍等待资源真实收敛。
 //
 // 测试方法：
 // 1. 配置 CloseTimeout 和 continue 策略；
 // 2. 注册一个阻塞 Closer 和一个快速 Closer；
-// 3. 断言 Close 返回超时错误，且指标记录 timeout 次数。
+// 3. 观察 deadline 后确认 Close 尚未返回、依赖尚未关闭，再释放阻塞点并断言错误和指标。
 func TestUseCaseCloseTimeout(t *testing.T) {
 	// 阶段一：注册快速与阻塞 Closer，并配置单 bean timeout。
 	trace := make([]string, 0, 2)
 	release := make(chan struct{})
+	deadlineObserved := make(chan struct{})
 	container := New(
 		WithCloseTimeout(20 * time.Millisecond),
 	)
 	if err := container.Register(&closeFastBean{Trace: &trace}); err != nil {
 		t.Fatalf("register fast bean failed: %v", err)
 	}
-	if err := container.Register(&closeBlockingBean{release: release, Trace: &trace}); err != nil {
+	if err := container.Register(&closeBlockingBean{release: release, deadlineObserved: deadlineObserved, Trace: &trace}); err != nil {
 		t.Fatalf("register blocking bean failed: %v", err)
 	}
-	// 阶段二：Build 后执行 Close，阻塞节点应由 timeout 结束等待。
+	// 阶段二：Build 后异步执行 Close；deadline 只取消 Closer，不允许越过未收敛节点。
 	if err := container.Build(context.Background()); err != nil {
 		t.Fatalf("build failed: %v", err)
 	}
-	err := container.Close(context.Background())
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- container.Close(context.Background())
+	}()
+	<-deadlineObserved
+	select {
+	case err := <-closeDone:
+		t.Fatalf("close must wait for blocking resource convergence, got=%v", err)
+	default:
+	}
+	if len(trace) != 0 {
+		t.Fatalf("dependency must not close before blocking resource returns, trace=%v", trace)
+	}
 	close(release)
+	err := <-closeDone
 	if err == nil {
 		t.Fatalf("close should fail with timeout")
 	}
-	// 阶段三：验证 timeout 和 bean 失败指标分别累计。
+	// 阶段三：验证逆序收敛、timeout 和 bean 失败指标分别累计。
+	if !slices.Equal(trace, []string{"close-blocking", "close-fast"}) {
+		t.Fatalf("unexpected close trace: %v", trace)
+	}
 	metrics := container.Metrics()
 	if metrics.CloseTimeoutTotal != 1 {
 		t.Fatalf("expect CloseTimeoutTotal=1, got=%d", metrics.CloseTimeoutTotal)
