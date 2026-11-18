@@ -40,7 +40,7 @@ type App struct {
 // New 创建命令行应用，并在未显式注入时创建默认 app-runtime 蓝图。
 func New(options ...Option) *App {
 	result := &App{
-		rootCommand:      newCommandConfiguration("app", RuntimeModeEnabled),
+		rootCommand:      newCommandConfiguration("app", runtimeRequirementRequired),
 		version:          "dev",
 		shutdown:         newDefaultShutdownConfiguration(),
 		signalSource:     osProcessSignalSource{},

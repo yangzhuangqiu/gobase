@@ -93,15 +93,19 @@ func WithRuntimeOptions(options ...appruntime.Option) Option {
 	return appOptionFunc(func(app *App) { app.runtimeOptions = append(app.runtimeOptions, options...) })
 }
 
-// WithRuntimeMode 设置当前节点的 Runtime 构建语义。
-// 子命令未声明时自动继承；调用方只需在 Enabled 与 Disabled 之间选择。
-func WithRuntimeMode(mode RuntimeMode) NodeOption {
+// WithoutRuntime 声明当前命令及未覆盖子节点不需要构建应用 Runtime。
+// 典型调用场景：纯本地诊断、离线转换或修复 Runtime 启动条件的命令。
+func WithoutRuntime() NodeOption {
 	return nodeOptionFunc(func(command *commandConfiguration) {
-		if mode != RuntimeModeEnabled && mode != RuntimeModeDisabled {
-			command.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_runtime_mode reason=unsupported_mode mode=%d", mode)))
-			return
-		}
-		command.RuntimeMode = mode
+		command.RuntimeRequirement = runtimeRequirementDisabled
+	})
+}
+
+// RequireRuntime 显式恢复当前命令及未覆盖子节点的完整 Runtime 构建语义。
+// 典型调用场景：在 WithoutRuntime 子树中，仅为少数依赖 config/log/ioc 的命令重新启用 Runtime。
+func RequireRuntime() NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) {
+		command.RuntimeRequirement = runtimeRequirementRequired
 	})
 }
 

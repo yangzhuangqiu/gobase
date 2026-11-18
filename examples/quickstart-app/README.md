@@ -29,7 +29,7 @@ $env:QUICKSTART_MODE="full"; ./scripts/go.ps1 -C examples run ./quickstart-app d
 
 ## 全量入口覆盖内容
 
-1. `app.WithConfig/WithLogging/WithModules`、`WithFlagBinder`、hooks、subcommands、`RuntimeModeDisabled`。
+1. `app.WithConfig/WithLogging/WithModules`、`WithFlagBinder`、hooks、subcommands、`WithoutRuntime`。
 2. `app.WithConfig(config.Provider(...))` 逐项注册动态或已有连接适配的 Provider。
 3. `CommandFlags` 全类型参数声明。
 4. `app.WithXxx` 处均标注了“必须/可选”和“是否推荐”。

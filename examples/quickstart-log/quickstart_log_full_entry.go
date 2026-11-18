@@ -147,9 +147,9 @@ func runQuickstartLogFull() error {
 			),
 			app.NewCommand("doctor",
 				app.WithDescription("Run diagnostics without loading config"),
-				app.WithRuntimeMode(app.RuntimeModeDisabled),
+				app.WithoutRuntime(),
 				app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
-					_, _ = fmt.Fprintln(os.Stdout, "doctor: ok (RuntimeModeDisabled)")
+					_, _ = fmt.Fprintln(os.Stdout, "doctor: ok (WithoutRuntime)")
 					return nil
 				})),
 			),

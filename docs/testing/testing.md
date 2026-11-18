@@ -60,7 +60,7 @@
 | `config` | Build/Read/Explain、Watch/Refresh、Close 收敛 | `config/usecase_test.go` + `config/manager_test.go` |
 | `config-nacos` | Bootstrap 计划生成、SDK Get/Watch/Close | `config-nacos/usecase_test.go` + `config-nacos/sdk_client_test.go` |
 | `config-consul` | Bootstrap 计划生成、SDK Get/Watch/Close | `config-consul/usecase_test.go` + `config-consul/sdk_client_test.go` |
-| `app` | 命令输入、RuntimeMode 与 hooks 编排 | `app/runtime_input_test.go` + `app/command_lifecycle_test.go` + `app/shutdown_execution_test.go` |
+| `app` | 命令输入、Runtime 需求继承与 hooks 编排 | `app/runtime_input_test.go` + `app/command_lifecycle_test.go` + `app/shutdown_execution_test.go` |
 | `app-runtime` | config/log/ioc 构建、回滚与关闭 | `app-runtime/runtime_test.go` |
 | `ioc` | Register/Build/Resolve/Close 生命周期 | `ioc/usecase_test.go` |
 
@@ -127,8 +127,9 @@
    - `app/shutdown_execution_test.go:TestUseCaseHostCancellationRunsShutdownBeforeRunnerConverges`
 4. 失败场景：before hook 失败仍关闭 Runtime
    - `app/command_lifecycle_test.go:TestUseCaseRuntimeClosesWhenBeforeHookFails`
-5. 子命令场景：`RuntimeModeDisabled` 不构建 app-runtime
-   - `app/command_lifecycle_test.go:TestUseCaseDisabledRuntimeCommand`
+5. 子命令场景：`WithoutRuntime()` 不构建 app-runtime，`RequireRuntime()` 可在子树中恢复
+   - `app/command_lifecycle_test.go:TestUseCaseWithoutRuntimeCommand`
+   - `app/command_lifecycle_test.go:TestUseCaseRequireRuntimeRestoresDisabledSubtree`
    - `app/shutdown_execution_test.go:TestUseCaseCommandCanDisableInheritedShutdownHooks`
 6. 公共模型：输出与参数校验不依赖 Cobra 类型
    - `app/command_execution_test.go:TestUseCasePublicOutputWithoutCobraCommand`

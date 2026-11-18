@@ -39,7 +39,7 @@ func TestUseCaseSubCommandVersionSkipsRuntimeAndRunner(t *testing.T) {
 	hookCalled := false
 	runnerCalled := false
 
-	// 构造 RuntimeModeEnabled 子命令，确保短路不是 Disabled 模式带来的结果。
+	// 显式 RequireRuntime，确保短路不是 WithoutRuntime 带来的结果。
 	application := New(
 		WithVersion("v3.0.0"),
 		WithOutput(&output),
@@ -53,7 +53,7 @@ func TestUseCaseSubCommandVersionSkipsRuntimeAndRunner(t *testing.T) {
 			return nil
 		}),
 		WithCommands(NewCommand("serve",
-			WithRuntimeMode(RuntimeModeEnabled),
+			RequireRuntime(),
 			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 				runnerCalled = true
 				return nil
@@ -81,7 +81,7 @@ func TestUseCaseSubCommandVersionSkipsRuntimeAndRunner(t *testing.T) {
 // 3. 断言校验错误原样进入命令错误链。
 func TestUseCaseArgumentValidatorHidesCobra(t *testing.T) {
 	application := New(WithCommands(NewCommand("inspect",
-		WithRuntimeMode(RuntimeModeDisabled),
+		WithoutRuntime(),
 		WithArgsValidator(func(args []string) error {
 			if len(args) != 1 {
 				return errors.New("one argument required")

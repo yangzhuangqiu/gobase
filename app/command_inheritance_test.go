@@ -32,7 +32,7 @@ func TestExecutionPlanInheritanceMatrix(t *testing.T) {
 	rootBinder := &commandCountingBinder{}
 	levelOneBinder := &commandCountingBinder{}
 	levelTwoBinder := &commandCountingBinder{}
-	root := newCommandConfiguration("root", RuntimeModeEnabled)
+	root := newCommandConfiguration("root", runtimeRequirementRequired)
 	root.FlagBinder = rootBinder
 	root.BeforeHooks = []BeforeRunHook{func(context.Context, Runtime, CommandContext) error { return nil }}
 	root.Workloads = []Workload{&inheritanceTestWorkload{name: "root"}}
@@ -43,14 +43,14 @@ func TestExecutionPlanInheritanceMatrix(t *testing.T) {
 		WorkloadGracefulTimeoutSet: true,
 		RuntimeCloseTimeoutSet:     true,
 	}
-	levelOne := newCommandConfiguration("level-one", RuntimeModeDisabled)
+	levelOne := newCommandConfiguration("level-one", runtimeRequirementDisabled)
 	levelOne.FlagBinder = levelOneBinder
 	levelOne.BeforeHooks = []BeforeRunHook{func(context.Context, Runtime, CommandContext) error { return nil }}
 	levelOne.Workloads = []Workload{&inheritanceTestWorkload{name: "level-one"}}
 	levelOne.ShutdownHooks = []namedShutdownHook{{Name: "level-one"}}
 	levelOne.ShutdownBudget.WorkloadGracefulTimeout = 3 * time.Second
 	levelOne.ShutdownBudget.WorkloadGracefulTimeoutSet = true
-	levelTwo := newCommandConfiguration("level-two", runtimeModeUnspecified)
+	levelTwo := newCommandConfiguration("level-two", runtimeRequirementUnspecified)
 	levelTwo.FlagBinder = levelTwoBinder
 	levelTwo.BeforeHooks = []BeforeRunHook{func(context.Context, Runtime, CommandContext) error { return nil }}
 	levelTwo.Workloads = []Workload{&inheritanceTestWorkload{name: "level-two"}}
@@ -62,7 +62,7 @@ func TestExecutionPlanInheritanceMatrix(t *testing.T) {
 	tests := []struct {
 		name           string
 		path           []commandConfiguration
-		runtimeMode    RuntimeMode
+		requirement    runtimeRequirement
 		binder         FlagBinder
 		workloadName   string
 		beforeCount    int
@@ -70,9 +70,9 @@ func TestExecutionPlanInheritanceMatrix(t *testing.T) {
 		workloadBudget time.Duration
 		runtimeBudget  time.Duration
 	}{
-		{"root", []commandConfiguration{root}, RuntimeModeEnabled, rootBinder, "root", 1, []string{"root"}, time.Second, 2 * time.Second},
-		{"level-one", []commandConfiguration{root, levelOne}, RuntimeModeDisabled, levelOneBinder, "level-one", 2, []string{"root", "level-one"}, 3 * time.Second, 2 * time.Second},
-		{"level-two", []commandConfiguration{root, levelOne, levelTwo}, RuntimeModeDisabled, levelTwoBinder, "level-two", 3, []string{"level-two"}, 3 * time.Second, 4 * time.Second},
+		{"root", []commandConfiguration{root}, runtimeRequirementRequired, rootBinder, "root", 1, []string{"root"}, time.Second, 2 * time.Second},
+		{"level-one", []commandConfiguration{root, levelOne}, runtimeRequirementDisabled, levelOneBinder, "level-one", 2, []string{"root", "level-one"}, 3 * time.Second, 2 * time.Second},
+		{"level-two", []commandConfiguration{root, levelOne, levelTwo}, runtimeRequirementDisabled, levelTwoBinder, "level-two", 3, []string{"level-two"}, 3 * time.Second, 4 * time.Second},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -81,7 +81,7 @@ func TestExecutionPlanInheritanceMatrix(t *testing.T) {
 			for _, hook := range plan.ShutdownHooks {
 				shutdownNames = append(shutdownNames, hook.Name)
 			}
-			if plan.RuntimeMode != test.runtimeMode || plan.FlagBinder != test.binder ||
+			if plan.RuntimeRequirement != test.requirement || plan.FlagBinder != test.binder ||
 				len(plan.Workloads) != 1 || plan.Workloads[0].Name() != test.workloadName ||
 				len(plan.BeforeHooks) != test.beforeCount || !slices.Equal(shutdownNames, test.shutdownNames) ||
 				plan.ShutdownBudget.WorkloadGracefulTimeout != test.workloadBudget ||
@@ -104,7 +104,7 @@ func TestNestedCommandUsesUnifiedWorkloadPath(t *testing.T) {
 		WithName("tool"),
 		WithCommands(NewCommand("admin",
 			WithCommands(NewCommand("status [service]",
-				WithRuntimeMode(RuntimeModeDisabled),
+				WithoutRuntime(),
 				WithWorkloads(Runner(func(_ context.Context, _ Runtime, command CommandContext) error {
 					observedName = command.Name()
 					observedPath = command.Path()

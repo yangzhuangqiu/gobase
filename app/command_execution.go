@@ -71,12 +71,9 @@ func (this *App) executeCommand(
 	shutdownPolicy := this.shutdown.executionPolicy(plan.ShutdownBudget)
 	supervisor := newWorkloadSupervisor(plan.Workloads)
 
-	// 阶段二：Disabled 不创建 Runtime/执行 Before Hooks，但仍进入统一 Workload 与 Shutdown 协调。
-	if plan.RuntimeMode == RuntimeModeDisabled {
+	// 阶段二：WithoutRuntime 不创建 Runtime/执行 Before Hooks，但仍进入统一 Workload 与 Shutdown 协调。
+	if plan.RuntimeRequirement == runtimeRequirementDisabled {
 		return this.executeManagedWorkloads(session, ctx, nil, commandContext, supervisor, plan.ShutdownHooks, shutdownPolicy)
-	}
-	if plan.RuntimeMode != RuntimeModeEnabled {
-		return errorForAppInternal(messagef("op=app.command result=failed stage=resolve_runtime_mode reason=unsupported_mode mode=%d", plan.RuntimeMode))
 	}
 	input, inputErr := buildRuntimeInput(cmd)
 	if inputErr != nil {

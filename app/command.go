@@ -13,16 +13,16 @@ type ArgumentValidator func(args []string) error
 // 典型调用场景：迁移、生成、校验等任务通过 Runner 适配为 Workload。
 type RunFunc func(ctx context.Context, runtime Runtime, command CommandContext) error
 
-// RuntimeMode 定义命令节点是否需要构建完整应用运行时。
-type RuntimeMode uint8
+// runtimeRequirement 表示命令节点对完整应用 Runtime 的内部声明状态。
+type runtimeRequirement uint8
 
 const (
-	// runtimeModeUnspecified 表示子命令未显式声明 RuntimeMode，归并时继承最近祖先。
-	runtimeModeUnspecified RuntimeMode = iota
-	// RuntimeModeEnabled 表示启用并构建 config/log/ioc 完整运行时；root 默认使用该模式。
-	RuntimeModeEnabled
-	// RuntimeModeDisabled 表示不构建应用运行时，也不执行依赖 Runtime 的 BeforeRunHooks。
-	RuntimeModeDisabled
+	// runtimeRequirementUnspecified 表示节点未声明 Runtime 需求，归并时继承最近祖先。
+	runtimeRequirementUnspecified runtimeRequirement = iota
+	// runtimeRequirementRequired 表示构建 config/log/ioc 完整运行时；root 默认使用该状态。
+	runtimeRequirementRequired
+	// runtimeRequirementDisabled 表示不构建 Runtime，也不执行依赖 Runtime 的 BeforeRunHooks。
+	runtimeRequirementDisabled
 )
 
 // Command 是通过 NewCommand 构建的不可变命令节点声明。
@@ -46,8 +46,8 @@ type commandConfiguration struct {
 	Aliases []string
 	// ValidateArgs 校验当前节点的位置参数。
 	ValidateArgs ArgumentValidator
-	// RuntimeMode 是当前节点显式声明；内部 unspecified 零值表示沿命令路径继承。
-	RuntimeMode RuntimeMode
+	// RuntimeRequirement 是当前节点的内部声明；unspecified 表示沿命令路径继承。
+	RuntimeRequirement runtimeRequirement
 	// FlagBinder 只声明、完成并校验当前节点自己的业务 flags，不参与继承。
 	FlagBinder FlagBinder
 	// BeforeHooks 是当前节点追加的业务前置切面，执行时按 root 到叶子归并。
@@ -76,7 +76,7 @@ type commandConfiguration struct {
 // - use：命令用法声明，例如 doctor [target]；必须非空。
 // - options：只接受 CommandOption；NodeOption 可同时用于 root 和子命令。
 func NewCommand(use string, options ...CommandOption) Command {
-	configuration := newCommandConfiguration(strings.TrimSpace(use), runtimeModeUnspecified)
+	configuration := newCommandConfiguration(strings.TrimSpace(use), runtimeRequirementUnspecified)
 	if configuration.Use == "" {
 		configuration.recordInputError(errorForAppInternal(messagef("op=app.command result=failed stage=new_command reason=use_empty")))
 	}
@@ -90,12 +90,12 @@ func NewCommand(use string, options ...CommandOption) Command {
 
 // newCommandConfiguration 创建节点独占的声明容器。
 // 阶段角色：App root 与 NewCommand 的统一构建基线。
-func newCommandConfiguration(use string, runtimeMode RuntimeMode) commandConfiguration {
+func newCommandConfiguration(use string, requirement runtimeRequirement) commandConfiguration {
 	return commandConfiguration{
-		Use:               use,
-		RuntimeMode:       runtimeMode,
-		WorkloadNames:     make(map[string]struct{}),
-		ShutdownHookNames: make(map[string]struct{}),
+		Use:                use,
+		RuntimeRequirement: requirement,
+		WorkloadNames:      make(map[string]struct{}),
+		ShutdownHookNames:  make(map[string]struct{}),
 	}
 }
 

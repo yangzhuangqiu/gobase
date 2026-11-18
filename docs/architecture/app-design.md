@@ -32,7 +32,7 @@ func WithCommands(commands ...Command) NodeOption
 Option 分类是编译期语义约束：
 
 - App 级：名称、版本、输出、Runtime 蓝图、进程信号与默认 Shutdown Policy。
-- Node 级：描述、参数规则、RuntimeMode、FlagBinder、Workload、Hook、子命令。
+- Node 级：描述、参数规则、Runtime 需求、FlagBinder、Workload、Hook、子命令。
 - Command 级：关闭预算覆盖、清空祖先 Shutdown Hook。
 
 `Command` 不公开可直接写入的字段，防止调用方绕过 Option 校验和归并规则。
@@ -44,7 +44,7 @@ Option 分类是编译期语义约束：
 | 字段 | 归并方式 | 原因 |
 |---|---|---|
 | 描述/别名/参数校验 | leaf 局部 | 只描述当前 CLI 节点 |
-| RuntimeMode | 最近显式值 | 子节点可以覆盖进程默认行为 |
+| Runtime 需求 | 最近显式值 | 子节点可以通过语义 Option 覆盖进程默认行为 |
 | FlagBinder | leaf 局部 | Flag 的声明、补全和校验必须同域 |
 | Workloads | leaf 局部 | 选择命令只执行该命令的业务单元 |
 | BeforeRunHooks | root→leaf 追加 | 通用审计/准备与局部准备自然组合 |
@@ -85,12 +85,13 @@ root 与所有子命令都走同一个执行函数：没有 root runner、subcom
 
 ## 6. Runtime 与配置
 
-`RuntimeMode`：
+Runtime 需求：
 
-- root 默认 `RuntimeModeEnabled`；
-- 子命令未声明时自动继承最近祖先；该未声明状态仅存在于框架内部；
-- 最近显式 `Enabled/Disabled` 覆盖祖先；
-- Disabled 不 Build Runtime、不执行 BeforeRunHook，Workload/ShutdownHook 收到 nil Runtime。
+- root 默认需要 Runtime；普通命令不需要声明任何 Option；
+- 子命令未声明时自动继承最近祖先；内部使用未声明/需要/禁用三态完成归并；
+- `WithoutRuntime()` 声明当前节点及未覆盖子节点不构建 Runtime；
+- `RequireRuntime()` 仅用于在禁用 Runtime 的子树中恢复完整 Runtime；
+- 不构建 Runtime 时不执行 BeforeRunHook，Workload/ShutdownHook 收到 nil Runtime。
 
 Shutdown duration 优先级：
 

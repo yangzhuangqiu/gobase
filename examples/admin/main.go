@@ -117,7 +117,7 @@ func main() {
 			),
 			app.NewCommand("doctor",
 				app.WithDescription("Run quick diagnostics without loading runtime config"),
-				app.WithRuntimeMode(app.RuntimeModeDisabled),
+				app.WithoutRuntime(),
 				app.WithWorkloads(app.Runner(func(_ context.Context, _ app.Runtime, _ app.CommandContext) error {
 					_, _ = fmt.Fprintln(os.Stdout, "doctor: ok")
 					return nil

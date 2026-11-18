@@ -30,7 +30,7 @@ func main() {
 }
 ```
 
-`Runner` 返回固定名称 `runner` 的 Workload。函数返回表示任务真实完成；它适合迁移、校验、生成等 one-shot 工作。
+`Runner` 返回固定名称 `runner` 的 Workload。函数返回表示任务真实完成；它适合迁移、校验、生成等 one-shot 工作。可取消的一次性任务必须监听传入的 `ctx`；`Runner.Shutdown` 是无副作用操作，收到关闭信号时只能依靠业务函数响应 run context 并返回。
 
 ## 3. 常驻 Workload
 
@@ -68,6 +68,13 @@ app.Main(
 
 任一 Run 返回都会触发整组 Shutdown。app 会等待所有 Shutdown 与所有 Run 返回，然后才关闭 Runtime/IOC Resource。
 
+### 停止合同
+
+1. 常驻 Workload：`Shutdown` 必须最终让 `Run` 返回。`Run` 可以直接监听自己的 run context，也可以像上例一样由 `Shutdown` 停止底层 Server；两条路径至少有一条必须真正结束运行单元。
+2. 可取消的一次性 `app.Runner`：业务函数应监听传入的 context。因为适配器的 `Shutdown` 不执行额外停止动作，函数忽略取消时，框架只能继续等待它自行返回。
+
+`Run(ctx, ...)` 与 `Shutdown(ctx, ...)` 的 context 含义不同：前者在应用开始关闭时被取消；后者携带 graceful 预算。`Shutdown` 应在预算内尝试优雅停止，预算到期后执行底层 force close，并确保 `Run` 最终返回。仅在 `ctx.Done()` 后直接从 `Shutdown` 返回、却把 `Run` 留在后台，不符合 Workload 合同。
+
 ## 4. 构建子命令树
 
 `NewCommand` 与 root 使用同一批 `NodeOption`：
@@ -84,7 +91,7 @@ app.Main(
                 app.NewCommand("status [service]",
                     app.WithDescription("Show service status"),
                     app.WithArgsValidator(requireOneArg),
-                    app.WithRuntimeMode(app.RuntimeModeDisabled),
+                    app.WithoutRuntime(),
                     app.WithFlagBinder(&statusFlags{}),
                     app.WithWorkloads(app.Runner(runStatus)),
                 ),
@@ -100,8 +107,8 @@ app.Main(
 - `CommandContext.Path()` 是 `ops admin status`；
 - `CommandContext.Args()` 是 `[]string{"payment"}`；
 - 只执行 status 节点的 Workload；
-- RuntimeMode 取路径上最近的显式值；
-- Enabled 时 BeforeRunHook 按 root→admin→status 顺序执行。
+- Runtime 需求取路径上最近的显式声明；
+- 需要 Runtime 时 BeforeRunHook 按 root→admin→status 顺序执行。
 
 分组节点可以只有 `WithCommands` 而没有 Workload，直接执行时显示该节点 help。叶子节点缺少 Workload 返回 `app.lifecycle.workload_required`。
 
@@ -124,7 +131,7 @@ app.Main(
 |---|---|
 | `WithDescription` / `WithLongDescription` / `WithExample` / `WithAliases` | 当前节点局部 |
 | `WithArgsValidator` | 当前节点局部 |
-| `WithRuntimeMode` | 最近显式声明覆盖 |
+| `WithoutRuntime` / `RequireRuntime` | 最近显式声明覆盖；默认需要 Runtime |
 | `WithFlagBinder` | 当前节点局部，不继承 |
 | `WithWorkloads` | 当前节点局部，不继承 |
 | `WithBeforeRunHook` | root→leaf 追加 |
@@ -163,14 +170,28 @@ func (this *serveFlags) ValidateFlags() []error { return nil }
 
 因此 `Bind` 应是纯声明式的，不应依赖“每次执行都会调用”的副作用。
 
-## 7. RuntimeMode
+## 7. Runtime 依赖
 
-| 模式 | Runtime | BeforeRunHook | Workload/ShutdownHook 的 Runtime |
-|---|---|---|---|
-| `RuntimeModeEnabled` | Build | root→leaf 执行 | 非 nil |
-| `RuntimeModeDisabled` | 不 Build | 全部跳过 | nil |
+默认 root 需要 Runtime，子命令未声明时自动继承最近祖先。普通命令不需要声明任何 Runtime Option。
 
-root 默认 Enabled；子命令未声明时自动继承最近祖先。调用方只需要选择 Enabled 或 Disabled。纯本地诊断或格式化命令通常显式 Disabled。
+纯本地诊断、离线转换或修复 Runtime 启动条件的命令使用 `WithoutRuntime()`：不构建 Runtime、不执行 BeforeRunHook，Workload/ShutdownHook 收到 nil Runtime。在整个禁用子树中，只有少数命令重新依赖 config/log/ioc 时，才使用高级覆盖入口 `RequireRuntime()`：
+
+```go
+app.NewCommand("admin",
+    app.WithoutRuntime(),
+    app.WithCommands(
+        app.NewCommand("local-check",
+            app.WithWorkloads(app.Runner(runLocalCheck)),
+        ),
+        app.NewCommand("repair",
+            app.RequireRuntime(),
+            app.WithWorkloads(app.Runner(runRepair)),
+        ),
+    ),
+)
+```
+
+继承所需的未声明/需要/禁用三态完全位于框架内部；调用方只表达“这个节点不需要 Runtime”或“在禁用子树中重新需要 Runtime”。
 
 ## 8. Shutdown Policy 与命令 Budget
 
@@ -230,7 +251,7 @@ app.WithShutdownHook("legacy.lease", func(
 
 ```go
 app.NewCommand("doctor",
-    app.WithRuntimeMode(app.RuntimeModeDisabled),
+    app.WithoutRuntime(),
     app.WithoutInheritedShutdownHooks(),
     app.WithWorkloads(app.Runner(runDoctor)),
 )
@@ -269,7 +290,7 @@ app.Main(
 | `workload_required` | 选中叶子没有 Workload | 使用 `WithWorkloads` 或 `Runner` |
 | 子命令没执行 root Workload | Workload 是节点局部能力 | 在该子命令声明自己的 Workload |
 | root Binder 未校验子命令 | Binder 不继承 | 把共用规则提取为普通函数或给各节点声明 Binder |
-| Disabled 命令收到 nil Runtime | 这是模式合同 | 不访问 Runtime，或改用 Enabled |
+| `WithoutRuntime` 命令收到 nil Runtime | 这是声明合同 | 不访问 Runtime，或在该节点使用 `RequireRuntime()` |
 | Runtime Close 一直等待 | Workload/Closer 尚未真实结束 | 实现 context 感知的 graceful→force→wait |
 | 配置预算未生效 | 代码显式 Policy/Budget 优先 | 检查字段级优先级和启动快照来源 |
 

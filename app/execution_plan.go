@@ -4,8 +4,8 @@ import "errors"
 
 // executionPlan 是选中命令从 root 到叶子完成字段级归并后的不可变执行快照。
 type executionPlan struct {
-	// RuntimeMode 是最近节点显式声明的有效 Runtime 模式。
-	RuntimeMode RuntimeMode
+	// RuntimeRequirement 是最近节点显式声明后得到的有效 Runtime 需求。
+	RuntimeRequirement runtimeRequirement
 	// FlagBinder 是选中节点局部绑定器；Flag 声明不继承。
 	FlagBinder FlagBinder
 	// BeforeHooks 是按 root 到叶子顺序追加的准备 Hook。
@@ -23,12 +23,12 @@ type executionPlan struct {
 // buildExecutionPlan 按字段语义归并 root 到选中节点的声明。
 // 阶段角色：命令树构建期冻结回调所需计划，执行期不再读取可变节点状态。
 func buildExecutionPlan(path []commandConfiguration) executionPlan {
-	plan := executionPlan{RuntimeMode: RuntimeModeEnabled}
+	plan := executionPlan{RuntimeRequirement: runtimeRequirementRequired}
 	hookNames := make(map[string]struct{})
 	for _, node := range path {
-		// RuntimeMode、预算采用最近显式声明覆盖；Hook 和 Before 采用路径顺序累加。
-		if node.RuntimeMode != runtimeModeUnspecified {
-			plan.RuntimeMode = node.RuntimeMode
+		// Runtime 需求、预算采用最近显式声明覆盖；Hook 和 Before 采用路径顺序累加。
+		if node.RuntimeRequirement != runtimeRequirementUnspecified {
+			plan.RuntimeRequirement = node.RuntimeRequirement
 		}
 		plan.BeforeHooks = append(plan.BeforeHooks, node.BeforeHooks...)
 		if node.DisableInheritedShutdownHooks {

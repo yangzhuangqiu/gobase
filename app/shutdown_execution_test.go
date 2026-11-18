@@ -71,7 +71,7 @@ func TestUseCaseHostCancellationRunsShutdownBeforeRunnerConverges(t *testing.T) 
 //
 // 测试方法：
 // 1. 应用注册一个会记录调用的 Shutdown Hook；
-// 2. 执行 RuntimeModeDisabled 且清空祖先 Shutdown Hooks 的子命令；
+// 2. 执行 WithoutRuntime 且清空祖先 Shutdown Hooks 的子命令；
 // 3. 断言 Runner 执行而 Hook 未执行。
 func TestUseCaseCommandCanDisableInheritedShutdownHooks(t *testing.T) {
 	hookCalled := false
@@ -82,7 +82,7 @@ func TestUseCaseCommandCanDisableInheritedShutdownHooks(t *testing.T) {
 			return nil
 		}),
 		WithCommands(NewCommand("doctor",
-			WithRuntimeMode(RuntimeModeDisabled),
+			WithoutRuntime(),
 			WithoutInheritedShutdownHooks(),
 			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 				runnerCalled = true

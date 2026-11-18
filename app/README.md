@@ -35,7 +35,7 @@ err := app.Run(
         app.NewCommand("admin",
             app.WithCommands(
                 app.NewCommand("status [service]",
-                    app.WithRuntimeMode(app.RuntimeModeDisabled),
+                    app.WithoutRuntime(),
                     app.WithWorkloads(app.Runner(status)),
                 ),
             ),
@@ -84,7 +84,7 @@ App 级入口：
 root/子命令共享的 `NodeOption`：
 
 - `WithDescription`、`WithLongDescription`、`WithExample`、`WithAliases`
-- `WithArgsValidator`、`WithRuntimeMode`
+- `WithArgsValidator`、`WithoutRuntime`、`RequireRuntime`
 - `WithFlagBinder`、`WithWorkloads`
 - `WithBeforeRunHook`、`WithShutdownHook`
 - `WithCommands`
@@ -99,7 +99,7 @@ root/子命令共享的 `NodeOption`：
 | 能力 | 规则 |
 |---|---|
 | 命令元数据、参数校验 | 当前节点局部值 |
-| `RuntimeMode` | 最近的显式声明覆盖；子命令默认继承，root 默认启用 |
+| Runtime 需求 | `WithoutRuntime` / `RequireRuntime` 最近显式声明覆盖；子命令默认继承，root 默认需要 Runtime |
 | `FlagBinder` | 只属于当前节点，不继承 |
 | `Workloads` | 只执行选中节点的集合，不继承 |
 | `BeforeRunHook` | root 到叶子按声明顺序追加 |
@@ -132,8 +132,8 @@ Signals 必须在 Runtime Build 前安装，因此只接受 `WithShutdownPolicy`
 ```text
 解析 flags
   -> 当前节点 FlagBinder Complete/Validate
-  -> Runtime Build（Enabled 时）
-  -> root→leaf BeforeRunHooks（Enabled 时）
+  -> Runtime Build（需要 Runtime 时）
+  -> root→leaf BeforeRunHooks（需要 Runtime 时）
   -> 选中节点 Workloads Run
   -> 取消 run context
   -> Workloads Shutdown + 高级 Shutdown Hooks
@@ -145,12 +145,12 @@ Signals 必须在 Runtime Build 前安装，因此只接受 `WithShutdownPolicy`
 
 命令树和 Flag 声明只构建一次；顺序复用同一 App 时，每次只替换本次 `executionSession`。`FlagBinder.Bind` 每个节点只调用一次，Complete/Validate 仅在该节点被选中时按执行次数调用。session 不存放在 `context.Value`。
 
-`RuntimeModeDisabled` 不构建 Runtime，也不执行 BeforeRunHooks；Workload 和 Shutdown Hook 收到 nil Runtime。可通过 `WithoutInheritedShutdownHooks` 清空祖先高级 Hook，本节点新声明的 Hook 仍会执行。
+默认 root 需要 Runtime，子命令自动继承最近祖先。`WithoutRuntime()` 用于纯本地命令：不构建 Runtime，也不执行 BeforeRunHooks，Workload 和 Shutdown Hook 收到 nil Runtime。`RequireRuntime()` 仅用于在禁用 Runtime 的子树中恢复默认能力。可通过 `WithoutInheritedShutdownHooks` 清空祖先高级 Hook，本节点新声明的 Hook 仍会执行。
 
 ## 错误语义
 
 - 选中的叶子命令没有 Workload：`app.lifecycle.workload_required`。
-- Option 输入、归并冲突和不支持的 RuntimeMode：`app.internal`，消息包含 `op/result/stage/reason`。
+- Option 输入和归并冲突：`app.internal`，消息包含 `op/result/stage/reason`。
 - 各阶段错误保留原始错误链，并追加稳定 stage。
 - Workload、宿主 cause、Shutdown Hook 与 Runtime Close 错误会在安全收敛后聚合返回。
 
@@ -162,6 +162,7 @@ Signals 必须在 Runtime Build 前安装，因此只接受 `WithShutdownPolicy`
 4. Shutdown Hook 仅处理遗留全局动作或跨系统补偿。
 5. 子命令用 `NewCommand` + Option 构建；分组节点可以没有 Workload，执行时展示 help。
 6. Binder 的 `Bind` 只做声明和字段绑定，不依赖每次执行副作用。
+7. 默认不声明 Runtime 选项；纯本地命令使用 `WithoutRuntime()`，仅在禁用子树的例外节点使用 `RequireRuntime()`。
 
 ## File Map
 

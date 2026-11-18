@@ -24,7 +24,7 @@ type executionShutdownPolicy struct {
 }
 
 // executionPolicy 返回只包含内建默认值与显式声明的基础执行策略。
-// 阶段角色：RuntimeModeDisabled 的最终策略，也是配置解析失败时关闭已构建 Runtime 的安全回退。
+// 阶段角色：WithoutRuntime 命令的最终策略，也是配置解析失败时关闭已构建 Runtime 的安全回退。
 func (this shutdownConfiguration) executionPolicy(budget shutdownBudgetDeclaration) executionShutdownPolicy {
 	policy := executionShutdownPolicy{
 		WorkloadGracefulTimeout: this.WorkloadGracefulTimeout,

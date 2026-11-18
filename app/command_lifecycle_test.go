@@ -86,13 +86,13 @@ func TestUseCaseRuntimeClosesWhenBeforeHookFails(t *testing.T) {
 	}
 }
 
-// TestUseCaseDisabledRuntimeCommand 验证诊断子命令可跳过 app-runtime 构建。
+// TestUseCaseWithoutRuntimeCommand 验证诊断子命令可声明不构建 app-runtime。
 //
 // 测试方法：
 // 1. 配置一个可观察 Runtime 蓝图；
-// 2. 执行 RuntimeModeDisabled 子命令；
+// 2. 执行 WithoutRuntime 子命令；
 // 3. 断言 Before Hook 被跳过、Shutdown Hook 收到 nil Runtime，且 runner 成功。
-func TestUseCaseDisabledRuntimeCommand(t *testing.T) {
+func TestUseCaseWithoutRuntimeCommand(t *testing.T) {
 	trace := make([]string, 0, 1)
 	runtimeApplication := appruntime.New(commandRuntimeTraceOptions(&trace)...)
 	called := false
@@ -100,36 +100,74 @@ func TestUseCaseDisabledRuntimeCommand(t *testing.T) {
 	application := New(
 		WithRuntime(runtimeApplication),
 		WithBeforeRunHook(func(context.Context, Runtime, CommandContext) error {
-			return errors.New("disabled command must skip before hooks")
+			return errors.New("without-runtime command must skip before hooks")
 		}),
 		WithShutdownHook("diagnostic", func(_ context.Context, runtime Runtime, command CommandContext) error {
 			shutdownCalled = true
 			if runtime != nil || command.Name() != "doctor" {
-				return errors.New("unexpected disabled shutdown context")
+				return errors.New("unexpected without-runtime shutdown context")
 			}
 			return nil
 		}),
 		WithCommands(NewCommand("doctor",
-			WithRuntimeMode(RuntimeModeDisabled),
+			WithoutRuntime(),
 			WithWorkloads(Runner(func(_ context.Context, runtime Runtime, command CommandContext) error {
 				called = true
 				if runtime != nil || command.Name() != "doctor" {
-					return errors.New("unexpected disabled runtime context")
+					return errors.New("unexpected without-runtime context")
 				}
 				return nil
 			})),
 		)),
 	)
 	if err := application.ExecuteContext(context.Background(), []string{"doctor"}); err != nil {
-		t.Fatalf("execute disabled runtime command failed: %v", err)
+		t.Fatalf("execute without-runtime command failed: %v", err)
 	}
 	if !called {
 		t.Fatalf("doctor runner was not called")
 	}
 	if !shutdownCalled {
-		t.Fatalf("disabled runtime command must still run inherited shutdown hooks")
+		t.Fatalf("without-runtime command must still run inherited shutdown hooks")
 	}
 	if len(trace) != 0 {
-		t.Fatalf("disabled command must not build runtime, trace=%v", trace)
+		t.Fatalf("without-runtime command must not build runtime, trace=%v", trace)
+	}
+}
+
+// TestUseCaseRequireRuntimeRestoresDisabledSubtree 验证高级覆盖入口可在禁用子树中恢复 Runtime。
+//
+// 测试方法：父命令声明 WithoutRuntime，叶子声明 RequireRuntime 并执行；断言 Runtime 完成
+// Build/Close、继承的 Before Hook 被调用，且 Workload 收到非 nil Runtime。
+func TestUseCaseRequireRuntimeRestoresDisabledSubtree(t *testing.T) {
+	trace := make([]string, 0, 4)
+	runtimeApplication := appruntime.New(commandRuntimeTraceOptions(&trace)...)
+	application := New(
+		WithRuntime(runtimeApplication),
+		WithBeforeRunHook(func(_ context.Context, runtime Runtime, _ CommandContext) error {
+			if runtime == nil {
+				return errors.New("required runtime is nil in before hook")
+			}
+			trace = append(trace, "before")
+			return nil
+		}),
+		WithCommands(NewCommand("admin",
+			WithoutRuntime(),
+			WithCommands(NewCommand("repair",
+				RequireRuntime(),
+				WithWorkloads(Runner(func(_ context.Context, runtime Runtime, command CommandContext) error {
+					if runtime == nil || command.Name() != "repair" {
+						return errors.New("unexpected required-runtime context")
+					}
+					trace = append(trace, "run")
+					return nil
+				})),
+			)),
+		)),
+	)
+	if err := application.ExecuteContext(context.Background(), []string{"admin", "repair"}); err != nil {
+		t.Fatalf("execute required-runtime override failed: %v", err)
+	}
+	if !slices.Equal(trace, []string{"init", "before", "run", "close"}) {
+		t.Fatalf("unexpected required-runtime lifecycle: %v", trace)
 	}
 }

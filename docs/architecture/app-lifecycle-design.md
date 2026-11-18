@@ -100,7 +100,7 @@ IOC Close timeout 是传给 Closer 的协作式预算，不是“超时后后台
 - Shutdown Hook 默认 root→leaf 追加。
 - `WithoutInheritedShutdownHooks()` 清空到当前节点为止的祖先 Hook；当前节点随后声明的 Hook 仍执行。
 - Workload graceful 和 Runtime close 两个预算分别按最近命令声明覆盖。
-- `RuntimeModeDisabled` 时不构建 Runtime，Hook/Workload 收到 nil Runtime。
+- `WithoutRuntime()` 时不构建 Runtime，Hook/Workload 收到 nil Runtime；`RequireRuntime()` 可在子树中恢复。
 
 这使 root、一级和多级子命令使用同一条生命周期路径，不存在独立的子命令 Runner 关闭协议。
 
@@ -134,7 +134,7 @@ WithShutdownBudget on selected path
   > built-in defaults
 ```
 
-配置键为 `app.shutdown.workloadGracePeriod` 和 `app.shutdown.runtimeCloseGracePeriod`。配置仅在 Runtime Build 后读取一次并冻结；RuntimeModeDisabled 没有 ConfigManager，因此只使用代码显式值和内建默认值。
+配置键为 `app.shutdown.workloadGracePeriod` 和 `app.shutdown.runtimeCloseGracePeriod`。配置仅在 Runtime Build 后读取一次并冻结；`WithoutRuntime()` 命令没有 ConfigManager，因此只使用代码显式值和内建默认值。
 
 ## 8. Shutdown Hook 强契约
 
@@ -147,7 +147,7 @@ Hook 必须遵守：
 1. ctx 到期后自行 force close；
 2. 返回时不再访问 Runtime；
 3. 不调用 Runtime Close；
-4. RuntimeModeDisabled 下能处理 nil Runtime；
+4. `WithoutRuntime()` 命令下能处理 nil Runtime；
 5. name 稳定、非空，并在有效继承路径内唯一。
 
 常规 Server 不应使用 Hook。以 HTTP Server 为例：`Run` 调用 `Serve`，`Shutdown` 先调用 `Shutdown(ctx)`，超时时调用 `Close()`，并在返回前等待 `Serve` 退出。

@@ -105,7 +105,7 @@ func TestUseCasePackageRunSupportsCommandOnlyApplication(t *testing.T) {
 		WithName("orderctl"),
 		WithCommands(NewCommand("status [service]",
 			WithDescription("Show service status"),
-			WithRuntimeMode(RuntimeModeDisabled),
+			WithoutRuntime(),
 			WithArgsValidator(func(args []string) error {
 				if len(args) != 1 {
 					return errors.New("service argument is required")
@@ -151,7 +151,7 @@ func TestUseCaseCommandOnlyRootShowsHelp(t *testing.T) {
 		WithOutput(&output),
 		WithCommands(NewCommand("status",
 			WithDescription("Show service status"),
-			WithRuntimeMode(RuntimeModeDisabled),
+			WithoutRuntime(),
 			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
 				return nil
 			})),

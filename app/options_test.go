@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -28,13 +27,22 @@ func TestOptionsHelpers(t *testing.T) {
 	}
 }
 
-// TestWithRuntimeModeRejectsUnspecifiedValue 验证内部继承状态不会泄漏成用户可选模式。
+// TestRuntimeRequirementOptionsKeepTriStateInternal 验证公共语义 Option 能禁用并在子树中恢复 Runtime。
 //
-// 测试方法：显式传入 RuntimeMode 零值构建应用，断言声明阶段记录 unsupported_mode；
-// Enabled/Disabled 仍由其他命令执行测试覆盖其正常语义。
-func TestWithRuntimeModeRejectsUnspecifiedValue(t *testing.T) {
-	application := New(WithRuntimeMode(RuntimeMode(0)))
-	if application.inputErr == nil || !strings.Contains(application.inputErr.Error(), "reason=unsupported_mode") {
-		t.Fatalf("expected unspecified runtime mode to be rejected, got=%v", application.inputErr)
+// 测试方法：root 使用 WithoutRuntime，子命令使用 RequireRuntime；冻结两层计划并断言
+// root 为 disabled、子命令恢复 required，调用方无需接触内部继承状态。
+func TestRuntimeRequirementOptionsKeepTriStateInternal(t *testing.T) {
+	application := New(
+		WithoutRuntime(),
+		WithCommands(NewCommand("repair", RequireRuntime())),
+	)
+	rootPlan := buildExecutionPlan([]commandConfiguration{application.rootCommand})
+	child := application.rootCommand.Commands[0].configuration
+	childPlan := buildExecutionPlan([]commandConfiguration{application.rootCommand, child})
+	if rootPlan.RuntimeRequirement != runtimeRequirementDisabled {
+		t.Fatalf("expected root without runtime, got=%d", rootPlan.RuntimeRequirement)
+	}
+	if childPlan.RuntimeRequirement != runtimeRequirementRequired {
+		t.Fatalf("expected child to require runtime, got=%d", childPlan.RuntimeRequirement)
 	}
 }
