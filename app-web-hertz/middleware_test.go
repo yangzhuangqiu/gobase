@@ -24,7 +24,7 @@ func TestPrepareStandardMiddlewareKeepsFixedOrder(t *testing.T) {
 	// 第一阶段：注入可记录事件的 typed policy，构造全部启用的标准 Middleware 链。
 	order := make([]string, 0, 6)
 	config, err := resolveMiddlewareConfig(MiddlewareConfig{
-		Recovery:  RecoveryConfig{Enabled: true},
+		Recovery:  RecoveryConfig{},
 		RequestID: RequestIDConfig{Enabled: true},
 		CORS:      CORSConfig{Enabled: true},
 		Gzip:      GzipConfig{Enabled: true, MinLength: 1},
@@ -72,12 +72,12 @@ func TestPrepareStandardMiddlewareKeepsFixedOrder(t *testing.T) {
 	}
 }
 
-// TestRecoveryProducesFinal500AndPreservesRequestID 验证内层 Filter panic 由标准 Recovery 收敛，外层 Request ID 仍回写响应。
-// 测试方法：启用 Request ID/Recovery，末端 panic，执行链后断言 JSON 500、稳定 code 和关联 Header。
+// TestRecoveryProducesFinal500AndPreservesRequestID 验证默认 Recovery 收敛内层 Filter panic，外层 Request ID 仍回写响应。
+// 测试方法：仅启用 Request ID、保持 Recovery 零配置，末端 panic，断言 JSON 500、稳定 code 和关联 Header。
 func TestRecoveryProducesFinal500AndPreservesRequestID(t *testing.T) {
 	// 第一阶段：构造外层 Request ID 与内层 Recovery，并固定生成值以便关联断言。
 	config, err := resolveMiddlewareConfig(MiddlewareConfig{
-		Recovery:  RecoveryConfig{Enabled: true},
+		Recovery:  RecoveryConfig{},
 		RequestID: RequestIDConfig{Enabled: true},
 	})
 	if err != nil {
@@ -103,6 +103,19 @@ func TestRecoveryProducesFinal500AndPreservesRequestID(t *testing.T) {
 	}
 	if !RequestPanicked(request) {
 		t.Fatal("expected public panic completion marker after standard Recovery")
+	}
+}
+
+// TestRecoveryCanBeExplicitlyDisabled 验证应用只有主动声明 disabled 才会移除默认 panic 隔离边界。
+// 测试方法：解析 disabled=true 的 Recovery 配置并构造标准链，断言不会生成任何 Recovery Handler。
+func TestRecoveryCanBeExplicitlyDisabled(t *testing.T) {
+	config, err := resolveMiddlewareConfig(MiddlewareConfig{Recovery: RecoveryConfig{Disabled: true}})
+	if err != nil {
+		t.Fatalf("resolve disabled recovery: %v", err)
+	}
+	plan, err := prepareStandardMiddleware(config, defaultOptions(), testServerLoggers().middleware)
+	if err != nil || len(plan.beforeObservation) != 0 || len(plan.afterObservation) != 0 {
+		t.Fatalf("expected explicit disable to remove recovery: before=%d after=%d err=%v", len(plan.beforeObservation), len(plan.afterObservation), err)
 	}
 }
 

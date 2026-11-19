@@ -1,6 +1,8 @@
 package webhertz
 
 import (
+	"strings"
+
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/config"
 	baselog "github.com/yangzhuangqiu/gobase/log"
@@ -20,6 +22,8 @@ type buildOptions struct {
 	logger baselog.Logger
 	// hertzOptions 在 typed Config 之后应用，允许显式覆盖 provider 默认值。
 	hertzOptions []config.Option
+	// handlerCompletion 非 nil 时显式覆盖 typed Config 中的 Handler 完成合同。
+	handlerCompletion *HandlerCompletion
 	// middleware 按声明顺序在所有路由前注册。
 	middleware []app.HandlerFunc
 	// routes 按声明顺序执行并共享同一个 Hertz Router。
@@ -28,6 +32,26 @@ type buildOptions struct {
 	noRoute []app.HandlerFunc
 	// noMethod 按声明顺序组成 Method 不匹配处理链，并强制开启 405 路由扫描。
 	noMethod []app.HandlerFunc
+}
+
+// WithHandlerCompletion 显式覆盖 Handler 完成合同。
+//
+// 典型调用场景：composition root 需要以代码声明优先于 ConfigManager 启动快照时使用；普通应用直接配置 shutdown.handlerCompletion。
+//
+// 参数:
+// - completion: 只能是 bestEffort 或 required；其他值在构造阶段 fail-fast。
+func WithHandlerCompletion(completion HandlerCompletion) Option {
+	return func(target *buildOptions) error {
+		value := HandlerCompletion(strings.TrimSpace(string(completion)))
+		if !isSupportedHandlerCompletion(value) {
+			return errorForDeclarationInvalid(messagef(
+				"op=web_hertz.option result=failed stage=declare_handler_completion reason=value_unsupported value=%q",
+				value,
+			))
+		}
+		target.handlerCompletion = &value
+		return nil
+	}
 }
 
 // WithLogger 注入当前 Server 实例使用的结构化诊断 Logger。

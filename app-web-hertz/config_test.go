@@ -27,6 +27,9 @@ func TestLoadConfigUsesDefaultsWhenDefaultConfigScopeMissing(t *testing.T) {
 	if !reflect.DeepEqual(actual, DefaultConfig()) {
 		t.Fatalf("expected default config fallback: actual=%+v expected=%+v", actual, DefaultConfig())
 	}
+	if actual.Server.Shutdown.HandlerCompletion != webhertz.HandlerCompletionBestEffort {
+		t.Fatalf("expected bestEffort default, got=%q", actual.Server.Shutdown.HandlerCompletion)
+	}
 }
 
 // TestLoadConfigRejectsMissingCustomConfigScope 验证显式自定义路径不会因默认回退掩盖部署拼写错误。
@@ -66,8 +69,8 @@ func (this *countingManager) Subscribe(subscriber baseconfig.Subscriber) (baseco
 	return this.Manager.Subscribe(subscriber)
 }
 
-// TestLoadConfigPreservesFlatConfigScopeAndDecodesRouterConfig 验证旧扁平 Server 配置继续可用，并能从同一 config scope 解码新增 Router 配置。
-// 测试方法：构造包含旧 address 字段和嵌套 router 显式 false/true 的 Snapshot，调用 loadConfig 后断言默认回填与三态值。
+// TestLoadConfigPreservesFlatConfigScopeAndDecodesRouterConfig 验证旧扁平 Server 配置继续可用，并能从同一 config scope 解码关闭合同与 Router 配置。
+// 测试方法：构造包含旧 address、bestEffort 和嵌套 router 显式 false/true 的 Snapshot，调用 loadConfig 后断言合同、默认回填与三态值。
 func TestLoadConfigPreservesFlatConfigScopeAndDecodesRouterConfig(t *testing.T) {
 	// 第一阶段：构造同时包含旧扁平 Server 字段与新增 Middleware 的单一配置快照。
 	manager := newTestManager(t, map[string]any{
@@ -75,6 +78,7 @@ func TestLoadConfigPreservesFlatConfigScopeAndDecodesRouterConfig(t *testing.T) 
 			"hertz": map[string]any{
 				"address":        "127.0.0.1:18080",
 				"maxHeaderBytes": 2048,
+				"shutdown":       map[string]any{"handlerCompletion": "bestEffort"},
 				"router": map[string]any{
 					"redirectTrailingSlash":  false,
 					"handleMethodNotAllowed": true,
@@ -101,6 +105,9 @@ func TestLoadConfigPreservesFlatConfigScopeAndDecodesRouterConfig(t *testing.T) 
 	if resolved.Server.Address != "127.0.0.1:18080" || resolved.Server.MaxHeaderBytes != 2048 {
 		t.Fatalf("unexpected flat server config: %+v", resolved)
 	}
+	if resolved.Server.Shutdown.HandlerCompletion != webhertz.HandlerCompletionBestEffort {
+		t.Fatalf("unexpected handler completion: %q", resolved.Server.Shutdown.HandlerCompletion)
+	}
 	if resolved.Server.Router.RedirectTrailingSlash == nil || *resolved.Server.Router.RedirectTrailingSlash {
 		t.Fatalf("expected explicit redirectTrailingSlash=false: %+v", resolved.Server.Router)
 	}
@@ -119,12 +126,27 @@ func TestLoadConfigPreservesFlatConfigScopeAndDecodesRouterConfig(t *testing.T) 
 	if !resolved.Middleware.CORS.Enabled || !resolved.Middleware.CORS.AllowCredentials || !reflect.DeepEqual(resolved.Middleware.CORS.AllowOrigins, []string{"https://example.com"}) {
 		t.Fatalf("unexpected CORS config: %+v", resolved.Middleware.CORS)
 	}
+	if resolved.Middleware.Recovery.Disabled || resolved.Middleware.Recovery.Response != RecoveryResponseJSON {
+		t.Fatalf("expected omitted recovery to keep safe default: %+v", resolved.Middleware.Recovery)
+	}
 }
 
-// TestResolveConfiguredConfigUsesDisabledDefaultsAndDetachesSlices 验证旧入口等价配置不会隐式安装能力，且默认集合不跨实例共享。
-// 测试方法：解析两个零值 Config，断言全部 enabled=false、默认策略完整；修改第一份 slice 后确认第二份不变。
-func TestResolveConfiguredConfigUsesDisabledDefaultsAndDetachesSlices(t *testing.T) {
-	// 第一阶段：分别解析两个零值配置，验证默认值完整且标准能力均保持关闭。
+// TestResolveConfiguredConfigRejectsInvalidHandlerCompletion 验证应用配置层保留 web-hertz 关闭合同错误链。
+// 测试方法：注入未知 handlerCompletion，断言 app config_invalid 与底层 web-hertz config.invalid 同时可分支。
+func TestResolveConfiguredConfigRejectsInvalidHandlerCompletion(t *testing.T) {
+	_, err := resolveConfiguredConfig(Config{Server: webhertz.Config{
+		Shutdown: webhertz.ShutdownConfig{HandlerCompletion: "bounded"},
+	}})
+	if !errcode.IsCode[ErrorCode](err, ErrCodeConfigInvalid) ||
+		!errcode.IsCode[webhertz.ErrorCode](err, webhertz.ErrCodeConfigInvalid) {
+		t.Fatalf("expected layered handler completion error, got=%v", err)
+	}
+}
+
+// TestResolveConfiguredConfigUsesSafeDefaultsAndDetachesSlices 验证零配置会安装 Recovery 安全基线，且默认集合不跨实例共享。
+// 测试方法：解析两个零值 Config，断言 Recovery 默认启用、其他能力关闭；修改第一份 slice 后确认第二份不变。
+func TestResolveConfiguredConfigUsesSafeDefaultsAndDetachesSlices(t *testing.T) {
+	// 第一阶段：分别解析两个零值配置，验证 Recovery 默认启用且其他标准能力保持关闭。
 	first, err := resolveConfiguredConfig(Config{})
 	if err != nil {
 		t.Fatalf("resolve first default config: %v", err)
@@ -133,8 +155,8 @@ func TestResolveConfiguredConfigUsesDisabledDefaultsAndDetachesSlices(t *testing
 	if err != nil {
 		t.Fatalf("resolve second default config: %v", err)
 	}
-	if first.Middleware.Recovery.Enabled || first.Middleware.RequestID.Enabled || first.Middleware.AccessLog.Enabled || first.Middleware.CORS.Enabled || first.Middleware.Gzip.Enabled {
-		t.Fatalf("expected all middleware disabled: %+v", first.Middleware)
+	if first.Middleware.Recovery.Disabled || first.Middleware.RequestID.Enabled || first.Middleware.AccessLog.Enabled || first.Middleware.CORS.Enabled || first.Middleware.Gzip.Enabled {
+		t.Fatalf("expected recovery enabled and optional middleware disabled: %+v", first.Middleware)
 	}
 	if first.Middleware.Recovery.Response != RecoveryResponseJSON || first.Middleware.RequestID.Header != defaultRequestIDHeader || first.Middleware.CORS.MaxAge != defaultCORSMaxAge || first.Middleware.Gzip.MinLength != defaultGzipMinLength {
 		t.Fatalf("unexpected middleware defaults: %+v", first.Middleware)
@@ -142,10 +164,10 @@ func TestResolveConfiguredConfigUsesDisabledDefaultsAndDetachesSlices(t *testing
 	if !reflect.DeepEqual(first, DefaultConfig()) {
 		t.Fatalf("expected zero input to resolve to DefaultConfig: %+v", first)
 	}
-	// 第二阶段：禁用配置不得生成 Handler，且默认集合必须按实例复制，避免跨 Server 污染。
+	// 第二阶段：默认配置只生成 Recovery Handler，且默认集合必须按实例复制，避免跨 Server 污染。
 	plan, err := prepareStandardMiddleware(first.Middleware, defaultOptions(), testServerLoggers().middleware)
-	if err != nil || len(plan.beforeObservation) != 0 || len(plan.afterObservation) != 0 {
-		t.Fatalf("expected disabled middleware to build no handlers: before=%d after=%d err=%v", len(plan.beforeObservation), len(plan.afterObservation), err)
+	if err != nil || len(plan.beforeObservation) != 0 || len(plan.afterObservation) != 1 {
+		t.Fatalf("expected only default recovery handler: before=%d after=%d err=%v", len(plan.beforeObservation), len(plan.afterObservation), err)
 	}
 	first.Middleware.CORS.AllowMethods[0] = "BROKEN"
 	first.Middleware.Gzip.ExcludedContentTypes[0] = "broken/type"
@@ -197,7 +219,7 @@ func TestGoValueAndSnapshotConfigResolveIdentically(t *testing.T) {
 	goValue := Config{
 		Server: webhertz.Config{Address: "127.0.0.1:19090"},
 		Middleware: MiddlewareConfig{
-			Recovery:  RecoveryConfig{Enabled: true, Response: RecoveryResponseText},
+			Recovery:  RecoveryConfig{Disabled: true, Response: RecoveryResponseText},
 			RequestID: RequestIDConfig{Enabled: true, Header: "X-Correlation-ID"},
 		},
 	}
@@ -209,7 +231,7 @@ func TestGoValueAndSnapshotConfigResolveIdentically(t *testing.T) {
 	manager := newTestManager(t, map[string]any{"web": map[string]any{"hertz": map[string]any{
 		"address": "127.0.0.1:19090",
 		"middleware": map[string]any{
-			"recovery":  map[string]any{"enabled": true, "response": "text"},
+			"recovery":  map[string]any{"disabled": true, "response": "text"},
 			"requestId": map[string]any{"enabled": true, "header": "X-Correlation-ID"},
 		},
 	}}})

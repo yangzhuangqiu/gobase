@@ -23,9 +23,7 @@ import (
 func TestManagedServerLogsAssemblySummaryOnce(t *testing.T) {
 	// 第一阶段：构建只启用 Recovery 的空应用 Server，使组装摘要字段保持可预测。
 	manager := newTestManager(t, map[string]any{
-		"web": map[string]any{"hertz": map[string]any{
-			"middleware": map[string]any{"recovery": map[string]any{"enabled": true}},
-		}},
+		"web": map[string]any{"hertz": map[string]any{}},
 	})
 	defer func() { _ = manager.Close() }()
 	container := ioc.New()
@@ -114,11 +112,14 @@ func TestContainerCloseStopsManagedRunningServer(t *testing.T) {
 }
 
 // TestManagedServerRejectsLifecycleBeforeInit 验证托管代理不会在 IOC Init 前发生 nil 委托 panic。
-// 测试方法：直接调用未初始化 bean 的 Run/Shutdown，断言稳定状态错误；Close 作为回滚入口保持幂等成功。
+// 测试方法：直接调用未初始化 bean 的 Run/WaitStarted/Shutdown，断言稳定状态错误；Close 作为回滚入口保持幂等成功。
 func TestManagedServerRejectsLifecycleBeforeInit(t *testing.T) {
 	bean := &managedServer{}
 	if err := bean.Run(context.Background()); !errcode.IsCode[ErrorCode](err, ErrCodeServerStateInvalid) {
 		t.Fatalf("expected run state error, got=%v", err)
+	}
+	if err := bean.WaitStarted(context.Background()); !errcode.IsCode[ErrorCode](err, ErrCodeServerStateInvalid) {
+		t.Fatalf("expected wait-ready state error, got=%v", err)
 	}
 	if err := bean.Shutdown(context.Background()); !errcode.IsCode[ErrorCode](err, ErrCodeServerStateInvalid) {
 		t.Fatalf("expected shutdown state error, got=%v", err)

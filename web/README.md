@@ -1,6 +1,6 @@
 # web
 
-`web` 是 Web Server 的框架无关运行门面，只定义应用宿主可以稳定依赖的 `Server` 生命周期契约。Gin、Hertz 等具体实现由独立模块提供，并各自拥有完整配置和原生编程模型。
+`web` 是 Web Server 的框架无关运行门面，定义应用宿主稳定依赖的 `Server` 生命周期契约，以及高级组合层按需断言的 `StartupServer` 启动结果窄合同。Gin、Hertz 等具体实现由独立模块提供，并各自拥有完整配置和原生编程模型。
 
 ## 设计范围与目标
 
@@ -8,7 +8,8 @@
 
 1. 定义阻塞运行、context 取消和优雅停止的稳定合同。
 2. 统一单实例运行、并发停止和幂等释放语义。
-3. 为具体 Web 框架实现提供最小依赖方向。
+3. 以独立可选接口表达首次启动成功/失败，不增加普通 Server 的使用负担。
+4. 为具体 Web 框架实现提供最小依赖方向。
 
 ### Out of Scope
 
@@ -23,6 +24,7 @@
 | 对象 | 职责 |
 |---|---|
 | `Server` | 在应用运行阶段阻塞服务，并在取消或显式优雅停止时收敛资源 |
+| `StartupServer` | 为服务注册等高级组合层广播并缓存首次启动结果 |
 
 ## 公共入口与契约
 
@@ -47,6 +49,20 @@ if err := server.Shutdown(shutdownCtx); err != nil {
 
 `Server` 是单运行周期对象。首次 `Run` 返回或 `Shutdown` 被触发后不得再次运行；需要重启时应由具体实现重新构建一个 Server。
 
+需要协调启动成功后的动作时，调用方可以断言独立窄合同：
+
+```go
+startupServer, ok := server.(web.StartupServer)
+if !ok {
+	return errors.New("server startup result is required")
+}
+if err := startupServer.WaitStarted(ctx); err != nil {
+	return err
+}
+```
+
+`WaitStarted` 只报告首次启动结果，不是 readiness 或持续健康检查，也不承诺提供可注册或可公开访问的地址。
+
 ## 配置模型与默认行为
 
 根模块没有配置结构和默认值。地址、超时、请求体限制、运行模式及其他配置全部属于具体实现模块，例如当前的 `web-hertz.Config` 或未来的 `web-gin.Config`。
@@ -68,6 +84,7 @@ if err := server.Shutdown(shutdownCtx); err != nil {
 4. `Shutdown` 可与 `Run` 并发，底层停止和资源释放触发必须幂等。
 5. 未运行或已经完成停止时调用 `Shutdown` 返回 nil；未运行时调用也会终结该对象，后续 `Run` 返回错误。
 6. Server 不安装操作系统信号处理器；应用宿主是信号转换和退出预算的唯一事实源。
+7. `StartupServer` 的单个等待者取消只结束自身等待；首次启动成功或失败结果由实现缓存并广播。
 
 ## 最佳实践
 
@@ -79,12 +96,13 @@ if err := server.Shutdown(shutdownCtx); err != nil {
 ## Open Gaps / Future Improvements
 
 1. `web-hertz` 已实现该合同；未来其他框架 provider 应复用同一生命周期语义和合同测试思路。
-2. 尚未定义服务状态快照或监听地址查询能力；没有明确跨实现需求前不扩展根接口。
+2. 尚未定义 readiness、持续状态快照或监听地址查询能力；一次性启动结果已由独立窄接口表达，不扩展根 `Server`。
 
 ## File Map
 
 1. `server.go`：Server 运行与优雅停止契约。
-2. `doc.go`：包级边界说明。
+2. `startup_server.go`：高级组合层可选的首次启动结果合同。
+3. `doc.go`：包级边界说明。
 
 ## 相关文档
 

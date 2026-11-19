@@ -12,23 +12,23 @@ type ErrorCode = errcode.StringCode
 
 const (
 	// ErrCodeConfigInvalid 表示 Snapshot 解码后的标准配置语义非法。
-	ErrCodeConfigInvalid ErrorCode = "app_web_hertz.config_invalid"
+	ErrCodeConfigInvalid ErrorCode = "app_web_hertz.config.invalid"
 	// ErrCodeConfigLoadFailed 表示配置快照、自定义 config scope 解码或 provider 配置校验失败。
-	ErrCodeConfigLoadFailed ErrorCode = "app_web_hertz.config_load_failed"
+	ErrCodeConfigLoadFailed ErrorCode = "app_web_hertz.config.load_failed"
 	// ErrCodeDeclarationInvalid 表示依赖、应用组件或 Option 声明非法。
-	ErrCodeDeclarationInvalid ErrorCode = "app_web_hertz.declaration_invalid"
+	ErrCodeDeclarationInvalid ErrorCode = "app_web_hertz.declaration.invalid"
 	// ErrCodeRouteRegistrationFailed 表示 Controller 手工路由注册失败。
-	ErrCodeRouteRegistrationFailed ErrorCode = "app_web_hertz.route_registration_failed"
+	ErrCodeRouteRegistrationFailed ErrorCode = "app_web_hertz.route.register_failed"
 	// ErrCodeMiddlewareExecutionFailed 表示内建请求 Middleware 的运行阶段失败。
-	ErrCodeMiddlewareExecutionFailed ErrorCode = "app_web_hertz.middleware_execution_failed"
+	ErrCodeMiddlewareExecutionFailed ErrorCode = "app_web_hertz.middleware.execution_failed"
 	// ErrCodeServerBuildFailed 表示 web-hertz Server 构建失败。
-	ErrCodeServerBuildFailed ErrorCode = "app_web_hertz.server_build_failed"
+	ErrCodeServerBuildFailed ErrorCode = "app_web_hertz.server.build_failed"
 	// ErrCodeModuleRegisterFailed 表示 IOC Module 无法注册托管 Server bean。
-	ErrCodeModuleRegisterFailed ErrorCode = "app_web_hertz.module_register_failed"
+	ErrCodeModuleRegisterFailed ErrorCode = "app_web_hertz.module.register_failed"
 	// ErrCodeServerStateInvalid 表示托管 Server 在 IOC Init 完成前被调用。
-	ErrCodeServerStateInvalid ErrorCode = "app_web_hertz.server_state_invalid"
+	ErrCodeServerStateInvalid ErrorCode = "app_web_hertz.server.state_invalid"
 	// ErrCodeServerResolveFailed 表示 App Workload 无法从 Runtime IOC 解析唯一 web.Server。
-	ErrCodeServerResolveFailed ErrorCode = "app_web_hertz.server_resolve_failed"
+	ErrCodeServerResolveFailed ErrorCode = "app_web_hertz.server.resolve_failed"
 )
 
 // errorForConfigInvalid 构造配置解析和组合校验错误。

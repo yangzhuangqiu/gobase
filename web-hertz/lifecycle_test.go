@@ -76,7 +76,7 @@ func (this *shutdownFailureTransporter) ListenAndServe(_ network.OnData) error {
 }
 
 // TestLifecycleRejectsNilContexts 验证 nil context 不改变 Server 运行周期。
-// 测试方法：依次调用 Run(nil)、Shutdown(nil)，断言各自错误码；再用有效 Shutdown 证明仍在 new 状态。
+// 测试方法：依次调用 Run/WaitStarted/Shutdown(nil)，断言各自错误码；再用有效 Shutdown 证明仍在 new 状态。
 func TestLifecycleRejectsNilContexts(t *testing.T) {
 	instance, err := New(Config{})
 	if err != nil {
@@ -88,8 +88,96 @@ func TestLifecycleRejectsNilContexts(t *testing.T) {
 	if err := instance.Shutdown(nil); !errcode.IsCode[ErrorCode](err, ErrCodeContextInvalid) {
 		t.Fatalf("expected shutdown context error, got=%v", err)
 	}
+	if err := instance.WaitStarted(nil); !errcode.IsCode[ErrorCode](err, ErrCodeContextInvalid) {
+		t.Fatalf("expected startup context error, got=%v", err)
+	}
 	if err := instance.Shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown new server: %v", err)
+	}
+}
+
+// TestWaitStartedBroadcastsStableStartupSuccess 验证多个等待者共享同一个首次启动成功结果。
+// 测试方法：在 Run 前启动两个 WaitStarted 调用，真实 listener 可用后断言两者均成功；停止后再次等待仍返回缓存成功。
+func TestWaitStartedBroadcastsStableStartupSuccess(t *testing.T) {
+	instance := newStandardTestServer(t)
+	startupResults := make(chan error, 2)
+	for index := 0; index < 2; index++ {
+		go func() { startupResults <- instance.WaitStarted(context.Background()) }()
+	}
+	runResult := make(chan error, 1)
+	go func() { runResult <- instance.Run(context.Background()) }()
+	for index := 0; index < 2; index++ {
+		if err := waitForError(t, startupResults); err != nil {
+			t.Fatalf("startup waiter %d: %v", index, err)
+		}
+	}
+	if err := instance.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown started server: %v", err)
+	}
+	if err := waitForError(t, runResult); err != nil {
+		t.Fatalf("run started server: %v", err)
+	}
+	if err := instance.WaitStarted(context.Background()); err != nil {
+		t.Fatalf("expected cached startup success after stop: %v", err)
+	}
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := instance.WaitStarted(canceledCtx); err != nil {
+		t.Fatalf("expected cached startup success to outrank canceled caller: %v", err)
+	}
+}
+
+// TestWaitStartedCallerTimeoutDoesNotPoisonStartup 验证单个启动等待预算不会改变共享启动结果。
+// 测试方法：在 Run 前用已超时 context 等待并断言 wait-interrupted，随后正常 Run 并再次等待启动成功。
+func TestWaitStartedCallerTimeoutDoesNotPoisonStartup(t *testing.T) {
+	instance := newStandardTestServer(t)
+	waitCtx, cancelWait := context.WithCancel(context.Background())
+	cancelWait()
+	err := instance.WaitStarted(waitCtx)
+	if !errcode.IsCode[ErrorCode](err, ErrCodeStartupFailed) ||
+		!errcode.IsCode[ErrorCode](err, ErrCodeStartupWaitInterrupted) ||
+		!errors.Is(err, ErrStartupWaitInterrupted) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected isolated startup wait interruption: %v", err)
+	}
+	runResult := make(chan error, 1)
+	go func() { runResult <- instance.Run(context.Background()) }()
+	if err = instance.WaitStarted(context.Background()); err != nil {
+		t.Fatalf("shared startup result was poisoned: %v", err)
+	}
+	if err = instance.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown server: %v", err)
+	}
+	if err = waitForError(t, runResult); err != nil {
+		t.Fatalf("run result: %v", err)
+	}
+}
+
+// TestWaitStartedPreservesStartupFailure 验证真实监听失败会发布可缓存、可分支的 startup result。
+// 测试方法：占用目标端口后运行 Server，断言 WaitStarted 命中 startup/run 双层错误码，且 Run 保留运行失败。
+func TestWaitStartedPreservesStartupFailure(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve startup failure address: %v", err)
+	}
+	defer occupied.Close()
+	instance, err := New(
+		Config{Address: occupied.Addr().String()},
+		WithHertzOptions(server.WithTransport(standard.NewTransporter)),
+	)
+	if err != nil {
+		t.Fatalf("new startup failure server: %v", err)
+	}
+	runResult := make(chan error, 1)
+	go func() { runResult <- instance.Run(context.Background()) }()
+	startupErr := instance.WaitStarted(context.Background())
+	if !errcode.IsCode[ErrorCode](startupErr, ErrCodeStartupFailed) || !errcode.IsCode[ErrorCode](startupErr, ErrCodeRunFailed) {
+		t.Fatalf("expected layered startup failure: %v", startupErr)
+	}
+	if cachedErr := instance.WaitStarted(context.Background()); cachedErr != startupErr {
+		t.Fatalf("expected stable cached startup result: first=%v cached=%v", startupErr, cachedErr)
+	}
+	if runErr := waitForError(t, runResult); !errcode.IsCode[ErrorCode](runErr, ErrCodeRunFailed) {
+		t.Fatalf("expected run failure: %v", runErr)
 	}
 }
 
@@ -108,6 +196,9 @@ func TestRunWithCanceledContextConsumesCycleWithoutListening(t *testing.T) {
 	if err := instance.Run(context.Background()); !errcode.IsCode[ErrorCode](err, ErrCodeStateInvalid) {
 		t.Fatalf("expected consumed run cycle, got=%v", err)
 	}
+	if err := instance.WaitStarted(context.Background()); !errcode.IsCode[ErrorCode](err, ErrCodeStartupFailed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled startup result, got=%v", err)
+	}
 }
 
 // TestShutdownBeforeRunConsumesCycle 验证 new 状态 Shutdown 是终结性幂等操作。
@@ -125,6 +216,9 @@ func TestShutdownBeforeRunConsumesCycle(t *testing.T) {
 	}
 	if err := instance.Run(context.Background()); !errcode.IsCode[ErrorCode](err, ErrCodeStateInvalid) {
 		t.Fatalf("expected state error after shutdown, got=%v", err)
+	}
+	if err := instance.WaitStarted(context.Background()); !errcode.IsCode[ErrorCode](err, ErrCodeStartupFailed) {
+		t.Fatalf("expected shutdown-before-ready result, got=%v", err)
 	}
 }
 
@@ -230,6 +324,129 @@ func TestShutdownCallerDeadlineDoesNotPoisonSharedStop(t *testing.T) {
 	}
 	if err := waitForError(t, requestResult); err != nil {
 		t.Fatalf("request result: %v", err)
+	}
+}
+
+// TestRequiredHandlerCompletionWaitsBeyondHertzExitBudget 验证显式 required 合同不把 Hertz transport 返回误判为 Handler 完成。
+// 测试方法：让真实 Handler 阻塞超过 ExitWaitTime，断言 Engine 已退出但 Shutdown/Run 仍等待；释放请求后再全部收敛。
+func TestRequiredHandlerCompletionWaitsBeyondHertzExitBudget(t *testing.T) {
+	const exitWaitTime = 30 * time.Millisecond
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	handlerReturned := make(chan struct{})
+	instance := newStandardTestServerWithConfigAndOptions(
+		t,
+		Config{
+			ExitWaitTime: exitWaitTime,
+			Shutdown:     ShutdownConfig{HandlerCompletion: HandlerCompletionRequired},
+		},
+		[]Option{WithRoutes(func(router *route.RouterGroup) error {
+			router.GET("/block", func(_ context.Context, ctx *app.RequestContext) {
+				close(requestStarted)
+				<-releaseRequest
+				ctx.String(consts.StatusOK, "ok")
+				close(handlerReturned)
+			})
+			return nil
+		})},
+	)
+	if instance.requestGate == nil {
+		t.Fatal("expected required contract to install request gate")
+	}
+
+	// 第一阶段：启动真实请求并进入阻塞 Handler，再触发共享关闭事务。
+	runResult := make(chan error, 1)
+	go func() { runResult <- instance.Run(context.Background()) }()
+	waitForRunning(t, instance)
+	requestResult := make(chan error, 1)
+	go func() { requestResult <- getAndDiscard("http://" + instance.address + "/block") }()
+	waitForSignal(t, requestStarted, "required request start")
+	shutdownResult := make(chan error, 1)
+	go func() { shutdownResult <- instance.Shutdown(context.Background()) }()
+
+	// 第二阶段：等待超过 Hertz budget，证明 transport/Run 入口退出不再突破 Handler 屏障。
+	waitForSignal(t, instance.engineDone, "required Hertz Run return")
+	time.Sleep(3 * exitWaitTime)
+	select {
+	case <-handlerReturned:
+		t.Fatal("blocked handler returned unexpectedly")
+	default:
+	}
+	select {
+	case err := <-shutdownResult:
+		t.Fatalf("required shutdown returned before handler: %v", err)
+	default:
+	}
+	select {
+	case err := <-runResult:
+		t.Fatalf("required run returned before handler: %v", err)
+	default:
+	}
+
+	// 第三阶段：最后一个 Handler 返回后，request、Shutdown 和 Run 才允许依次收敛。
+	close(releaseRequest)
+	waitForSignal(t, handlerReturned, "required handler return")
+	if err := waitForError(t, requestResult); err != nil {
+		t.Fatalf("required request result: %v", err)
+	}
+	if err := waitForError(t, shutdownResult); err != nil {
+		t.Fatalf("required shutdown result: %v", err)
+	}
+	if err := waitForError(t, runResult); err != nil {
+		t.Fatalf("required run result: %v", err)
+	}
+}
+
+// TestBestEffortHandlerCompletionReturnsAfterHertzExitBudget 验证 bestEffort 保留 Hertz 有界尽力关闭合同且不安装 gate。
+// 测试方法：让真实 Handler 阻塞超过 ExitWaitTime，断言 Shutdown/Run 可先返回，再释放 Handler 完成测试清理。
+func TestBestEffortHandlerCompletionReturnsAfterHertzExitBudget(t *testing.T) {
+	const exitWaitTime = 30 * time.Millisecond
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	handlerReturned := make(chan struct{})
+	instance := newStandardTestServerWithConfigAndOptions(
+		t,
+		Config{
+			ExitWaitTime: exitWaitTime,
+		},
+		[]Option{WithRoutes(func(router *route.RouterGroup) error {
+			router.GET("/block", func(_ context.Context, ctx *app.RequestContext) {
+				close(requestStarted)
+				<-releaseRequest
+				ctx.String(consts.StatusOK, "ok")
+				close(handlerReturned)
+			})
+			return nil
+		})},
+	)
+	if instance.requestGate != nil {
+		t.Fatal("expected bestEffort default to omit request gate")
+	}
+
+	// 第一阶段：保持 Handler 阻塞并触发有界 Hertz Shutdown。
+	runResult := make(chan error, 1)
+	go func() { runResult <- instance.Run(context.Background()) }()
+	waitForRunning(t, instance)
+	requestResult := make(chan error, 1)
+	go func() { requestResult <- getAndDiscard("http://" + instance.address + "/block") }()
+	waitForSignal(t, requestStarted, "best-effort request start")
+	if err := instance.Shutdown(context.Background()); err != nil {
+		t.Fatalf("best-effort shutdown result: %v", err)
+	}
+	if err := waitForError(t, runResult); err != nil {
+		t.Fatalf("best-effort run result: %v", err)
+	}
+	select {
+	case <-handlerReturned:
+		t.Fatal("best-effort handler should still be blocked when Run returns")
+	default:
+	}
+
+	// 第二阶段：显式释放仍在执行的 Handler，避免测试泄漏 goroutine 和连接。
+	close(releaseRequest)
+	waitForSignal(t, handlerReturned, "best-effort handler return")
+	if err := waitForError(t, requestResult); err != nil {
+		t.Fatalf("best-effort request result: %v", err)
 	}
 }
 
@@ -344,6 +561,12 @@ func newStandardTestServer(t *testing.T, routes ...RouteFunc) *Server {
 
 // newStandardTestServerWithOptions 为调用方扩展声明补齐确定性的本地 listener 与标准 transport。
 func newStandardTestServerWithOptions(t *testing.T, options []Option) *Server {
+	return newStandardTestServerWithConfigAndOptions(t, Config{ExitWaitTime: time.Second}, options)
+}
+
+// newStandardTestServerWithConfigAndOptions 使用指定配置补齐确定性的本地 listener 与标准 transport。
+// 阶段角色：关闭合同集成测试入口，确保 typed Config 与真实 Hertz transport 同时生效。
+func newStandardTestServerWithConfigAndOptions(t *testing.T, input Config, options []Option) *Server {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -355,11 +578,22 @@ func newStandardTestServerWithOptions(t *testing.T, options []Option) *Server {
 		server.WithTransport(standard.NewTransporter),
 	)
 	allOptions := append([]Option{native}, options...)
-	instance, err := New(Config{ExitWaitTime: time.Second}, allOptions...)
+	instance, err := New(input, allOptions...)
 	if err != nil {
 		t.Fatalf("new standard server: %v", err)
 	}
 	return instance
+}
+
+// getAndDiscard 发起真实 GET 并完整消费响应，返回请求或关闭失败。
+// 阶段角色：生命周期集成测试客户端入口，确保 keep-alive 请求完成态可观测。
+func getAndDiscard(url string) error {
+	response, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(io.Discard, response.Body)
+	return errors.Join(copyErr, response.Body.Close())
 }
 
 // waitForRunning 等待 Hertz 发布真实 running 状态，超时即终止测试。

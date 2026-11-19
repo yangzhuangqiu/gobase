@@ -40,9 +40,10 @@ application --运行期依赖-------> web.Server
 
 | 对象 | 职责 |
 |---|---|
-| `Config` | Hertz 启动期 typed 配置；字段、默认值和校验全部由本模块拥有 |
+| `Config` | Hertz 启动期 typed 配置；字段、关闭合同、默认值和校验全部由本模块拥有 |
+| `HandlerCompletion` | Handler 完成合同：`bestEffort` 有界尽力关闭，`required` 等待全部已放行 Handler 返回 |
 | `Option` | 声明 Hertz 原生高级 Option、全局 Middleware 与 RouteFunc |
-| `Server` | 持有 `*server.Hertz`、生命周期状态、运行结果和幂等 Shutdown 协调状态 |
+| `Server` | 持有 `*server.Hertz`、首次启动结果、运行结果和幂等 Shutdown 协调状态；实现 `web.StartupServer` |
 | `RouteFunc` | 在构造阶段接收 Hertz 根路径 `*route.RouterGroup`，以函数形式注册原生路由 |
 | `RouterConfig` | 使用三态布尔值定义路由修正、405 和路由打印行为 |
 | `HTTPRequestObservation` | 不持有池化对象的请求完成态值快照 |
@@ -78,14 +79,17 @@ return server.Run(ctx)
 func New(config Config, options ...Option) (*Server, error)
 func DefaultConfig() Config
 func ResolveConfig(input Config) (Config, error)
+func WithHandlerCompletion(completion HandlerCompletion) Option
 func WithNoRoute(handlers ...app.HandlerFunc) Option
 func WithNoMethod(handlers ...app.HandlerFunc) Option
 func WithRequestObservers(observers ...RequestObserver) Option
+const ErrCodeStartupWaitInterrupted ErrorCode
 const ErrCodeShutdownWaitInterrupted ErrorCode
+var ErrStartupWaitInterrupted error
 var ErrShutdownWaitInterrupted error
 ```
 
-`New` 只解析配置、创建 Hertz Engine 并注册 Middleware/Routes，不建立监听器、不启动 goroutine。返回的具体 `*Server` 实现 `web.Server`；调用方需要统一生命周期时依赖根接口，需要 Hertz 专属构造能力时使用本模块 Option。
+`New` 只解析配置、创建 Hertz Engine 并注册 Middleware/Routes，不建立监听器、不启动 goroutine。返回的具体 `*Server` 实现 `web.StartupServer`；普通调用方只依赖 `web.Server`，服务注册等需要启动屏障的高级组合层再依赖 `web.StartupServer`。
 
 本模块只在 Hertz 的构造与生命周期边界做适配，不重复封装 `GET/POST/Group/Use` 等原生路由 API。扩展能力应通过 Hertz `config.Option`、`app.HandlerFunc` 和 `*route.RouterGroup` 表达，使 Hertz 官方文档和生态组件可以直接使用。
 
@@ -101,6 +105,7 @@ typed 配置只吸收稳定、高频且直接映射 Hertz Server/Router 的字�
 | `maxRequestBodySize` | byte | `4194304` | 请求体上限；输入小于 0 时失败 |
 | `maxHeaderBytes` | byte | `1048576` | 请求头上限；输入小于 0 时失败 |
 | `exitWaitTime` | duration | `5s` | Hertz 单次优雅退出最大等待时间；输入零值使用默认值，负值非法 |
+| `shutdown.handlerCompletion` | enum | `bestEffort` | `bestEffort|required`；决定 Hertz transport 停止后是否继续等待 Handler |
 | `router.redirectTrailingSlash` | optional bool | `true` | nil 使用默认；false 显式关闭尾斜杠重定向 |
 | `router.redirectFixedPath` | optional bool | `false` | nil 使用默认；true 开启大小写和冗余路径修正 |
 | `router.handleMethodNotAllowed` | optional bool | `false` | nil 使用默认；true 开启 405 路由扫描 |
@@ -113,8 +118,11 @@ typed 配置只吸收稳定、高频且直接映射 Hertz Server/Router 的字�
 配置优先级：
 
 ```text
-DefaultConfig < Config 显式字段 < WithHertzOptions 声明顺序
+DefaultConfig < Config 显式字段 < WithHandlerCompletion
 ```
+
+Hertz 原生字段仍按 `DefaultConfig < Config 显式字段 < WithHertzOptions 声明顺序` 归并；
+`WithHandlerCompletion` 只覆盖关闭合同，不改变任何 Hertz Option。
 
 `WithHertzOptions` 是高级 escape hatch，仅接受构造期 `config.Option`。唯一优先级例外是
 `WithNoMethod`：为保证自定义 405 Handler 必达，它会在全部原生 Option 后最终启用
@@ -192,6 +200,15 @@ new -> starting -> running -> stopping -> stopped
 6. 优雅停止导致的预期监听退出结果归一化为 nil；真实监听、OnRun 或 transport 错误保留 cause。
 7. Run 返回后状态固定为 `stopped`，不得再次启动。
 
+### WaitStarted
+
+1. `WaitStarted(ctx)` 等待首次 Run 被 Hertz `Engine.IsRunning()` 确认为 running，或返回启动成功前的稳定失败；官方 standard/netpoll transport 此时还会确认 listener 已存在。
+2. 首次成功/失败结果只发布一次并广播给全部等待者；后续调用直接读取缓存结果。
+3. 单个等待者 context 结束时返回 `web_hertz.startup.failed`，错误链同时包含 `web_hertz.startup.wait_interrupted`、`ErrStartupWaitInterrupted` 和 caller context cause；不会停止 Server 或污染共享启动结果。
+4. Shutdown-before-Run、已取消 context 的 Run、监听失败或启动成功前停止都会发布启动失败。
+5. 启动成功是本运行周期的历史结果；Server 后续停止不会把该结果改成失败。该合同不是 readiness 或持续健康检查，也不提供 Endpoint。
+6. 自定义 transport 必须遵守 Hertz 的 `IsRunning` 语义；若它不能证明可接收请求，调用方不得把 WaitStarted 直接当作服务注册条件。
+
 ### Shutdown
 
 1. nil context 返回输入错误，不触发停止。
@@ -200,8 +217,10 @@ new -> starting -> running -> stopping -> stopped
 4. 每次调用的 ctx 只约束当前调用者等待；一个短 deadline 不得截断其他调用者共享的停止事务。
 5. caller context 先结束时仍返回 `web_hertz.shutdown.failed` 并保留 context cause；可用错误码 `web_hertz.shutdown.wait_interrupted` 或 `errors.Is(err, webhertz.ErrShutdownWaitInterrupted)` 分支，且不会污染底层稳定停止结果。
 6. 底层停止预算使用应用全部原生 Option 后的最终 `ExitWaitTimeout`；Hertz Shutdown hook、连接排空和 transport 停止均受该预算约束。
-7. 已完成停止时重复调用返回首次稳定停止结果，不重复注销或释放资源。
-8. 公共 Shutdown 不调用 Hertz `Engine.Close()`；当前没有绕过优雅停止的强制关闭入口。
+7. `bestEffort` 不安装请求 gate，transport 预算到期后允许 Run 返回；调用方接受 Handler 可能仍在执行。
+8. 显式 `required` 安装绝对最外层 request gate：停止时先关闭准入，漏流量返回 `503 + Connection: close`；即使 Hertz 已超过预算并返回，仍等待全部已放行 Handler 后才发布停止结果。
+9. 已完成停止时重复调用返回首次稳定停止结果，不重复注销或释放资源。
+10. 公共 Shutdown 不调用 Hertz `Engine.Close()`；当前没有绕过优雅停止的强制关闭入口。
 
 ## 错误与诊断日志
 
@@ -213,6 +232,8 @@ new -> starting -> running -> stopping -> stopped
 | Option/RouteFunc 声明非法 | `declare` / `register_routes` |
 | 重复或并发运行 | `transition_state` |
 | Hertz 初始化或监听失败 | `engine_run` |
+| 启动成功前失败 | `startup` / `engine_run` |
+| 当前 WaitStarted 调用等待取消/超时 | `wait`；错误链包含 `web_hertz.startup.wait_interrupted` 和 `ErrStartupWaitInterrupted` |
 | 优雅停止失败 | `engine_shutdown` |
 | 当前 Shutdown 调用等待取消/超时 | `wait`；错误链包含 `web_hertz.shutdown.wait_interrupted` 和 `ErrShutdownWaitInterrupted` |
 
@@ -231,14 +252,14 @@ op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 
 ## 验证
 
-配置、构造事务、根 RouterGroup 隔离、真实监听和并发停止合同由 `*_test.go` 覆盖；任务型验证方法见使用指南，设计原因见架构文档。
+配置、构造事务、根 RouterGroup 隔离、真实监听、启动结果广播和并发停止合同由 `*_test.go` 覆盖；任务型验证方法见使用指南，设计原因见架构文档。
 
 ## Open Gaps / Future Improvements
 
 1. Hertz 只有在 Engine 标记为 running 后才允许 `Shutdown`；如果未来高级扩展在初始化阶段永久阻塞，适配层无法强制终止第三方 goroutine，只能由调用者 context 限制自身等待。
 2. pprof 可通过接收 RouterGroup 的 RouteFunc 注册；配置化启用与独立诊断端口由应用装配层继续设计，不暴露 Engine。
 3. 服务注册需要独立设计所有权、注册时机、失败回滚和注销语义；当前不支持。
-4. 尚不提供 Ready/Address/Status 查询；没有跨 provider 需求前不扩展根 `web.Server`。
+4. 已提供可选 `web.StartupServer` 启动屏障；readiness、Address/Endpoint/持续 Status 仍未抽象，等待真实跨 provider 需求。
 5. Controller、Filter、IOC 聚合和配置绑定属于 `app-web-hertz`；进程级 `hlog.FullLogger` 安装属于独立 composition root 集成层。
 
 ## File Map
@@ -246,14 +267,15 @@ op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 1. `doc.go`：package 边界摘要。
 2. `config.go`：Config、默认值、解析与 Hertz Option 映射。
 3. `server.go`：Hertz 构造与 Registry 能力拒绝。
-4. `lifecycle.go`：单运行周期状态机、Run/Shutdown 协调和错误归一化。
-5. `route.go`：RouteFunc 合同、顺序注册事务与 panic 阶段包装。
-6. `no_route.go`、`no_method.go`：404/405 窄 Handler 声明。
-7. `options.go`：Hertz Option、实例 Logger、Middleware、Routes 与构造计划。
-8. `diagnostic_log.go`：实例 Logger 与 standalone hlog 降级出口。
-9. `errors.go`：可分支错误码和阶段包装。
-10. `request_observation.go`、`request_observer*.go`：完成态 VO、Observer 合同、Option 和私有 Middleware。
-11. `*_test.go`：配置、404/405、请求完成事件、构造和生命周期合同测试；原生 Middleware 顺序归入构造测试。
+4. `handler_completion.go`、`request_gate.go`：关闭合同、required 请求准入和 Handler 完成屏障。
+5. `lifecycle.go`：单运行周期状态机、WaitStarted 启动结果、Run/Shutdown 协调和错误归一化。
+6. `route.go`：RouteFunc 合同、顺序注册事务与 panic 阶段包装。
+7. `no_route.go`、`no_method.go`：404/405 窄 Handler 声明。
+8. `options.go`：Hertz Option、实例 Logger、Middleware、Routes 与构造计划。
+9. `diagnostic_log.go`：实例 Logger 与 standalone hlog 降级出口。
+10. `errors.go`：可分支错误码和阶段包装。
+11. `request_observation.go`、`request_observer*.go`：完成态 VO、Observer 合同、Option 和私有 Middleware。
+12. `*_test.go`：配置、404/405、请求完成事件、构造和生命周期合同测试；原生 Middleware 顺序归入构造测试。
 
 ## 相关文档
 

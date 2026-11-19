@@ -22,7 +22,7 @@ type buildOptions struct {
 	serverOptions []webhertz.Option
 	// routePathStyle 决定 Controller 方法后缀到 URL 的自动映射风格。
 	routePathStyle RoutePathStyle
-	// recoveryHandler 替换配置启用后的内建 panic 响应和诊断策略。
+	// recoveryHandler 替换配置未禁用时的内建 panic 响应和诊断策略。
 	recoveryHandler RecoveryHandler
 	// requestIDGenerator 替换配置启用后的默认随机标识生成器。
 	requestIDGenerator RequestIDGenerator
@@ -84,7 +84,7 @@ func WithRoutePathStyle(style RoutePathStyle) Option {
 	}
 }
 
-// WithRecoveryHandler 替换配置启用后的内建 Recovery 处理策略。
+// WithRecoveryHandler 替换配置未禁用时的内建 Recovery 处理策略。
 //
 // 参数:
 // - handler: 必填；负责受控日志和最终响应，nil 在读取配置前 fail-fast。

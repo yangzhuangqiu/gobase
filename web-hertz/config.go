@@ -21,6 +21,8 @@ const (
 	defaultMaxHeaderBytes = 1 << 20
 	// defaultExitWaitTime 是单次 Hertz 优雅停止的最大等待时间。
 	defaultExitWaitTime = 5 * time.Second
+	// defaultHandlerCompletion 默认沿用 Hertz 有界尽力关闭，避免普通请求承担 gate 热路径成本。
+	defaultHandlerCompletion = HandlerCompletionBestEffort
 	// defaultRedirectTrailingSlash 表示默认修正仅缺少或多余尾斜杠的路径。
 	defaultRedirectTrailingSlash = true
 	// defaultRedirectFixedPath 表示默认不执行大小写和冗余路径修正。
@@ -67,6 +69,8 @@ type Config struct {
 	MaxHeaderBytes int `yaml:"maxHeaderBytes"`
 	// ExitWaitTime 是 Hertz 单次优雅停止预算；零值使用 5s，负值非法。
 	ExitWaitTime time.Duration `yaml:"exitWaitTime"`
+	// Shutdown 描述 Handler 完成条件；默认 bestEffort。
+	Shutdown ShutdownConfig `yaml:"shutdown"`
 	// Router 描述路由匹配、405 和路由打印行为；字段 nil 时使用模块默认值。
 	Router RouterConfig `yaml:"router"`
 }
@@ -83,6 +87,9 @@ func DefaultConfig() Config {
 		MaxRequestBodySize: defaultMaxRequestBodySize,
 		MaxHeaderBytes:     defaultMaxHeaderBytes,
 		ExitWaitTime:       defaultExitWaitTime,
+		Shutdown: ShutdownConfig{
+			HandlerCompletion: defaultHandlerCompletion,
+		},
 		Router: RouterConfig{
 			RedirectTrailingSlash:  optionalBool(defaultRedirectTrailingSlash),
 			RedirectFixedPath:      optionalBool(defaultRedirectFixedPath),
@@ -116,6 +123,10 @@ func ResolveConfig(input Config) (Config, error) {
 	if input.ExitWaitTime < 0 {
 		return Config{}, errorForConfigInvalid("op=web_hertz.resolve_config result=failed stage=validate reason=exit_wait_time_negative")
 	}
+	handlerCompletion, err := resolveHandlerCompletion(input.Shutdown.HandlerCompletion)
+	if err != nil {
+		return Config{}, err
+	}
 
 	result := DefaultConfig()
 	if address := strings.TrimSpace(input.Address); address != "" {
@@ -136,8 +147,25 @@ func ResolveConfig(input Config) (Config, error) {
 	if input.ExitWaitTime > 0 {
 		result.ExitWaitTime = input.ExitWaitTime
 	}
+	result.Shutdown.HandlerCompletion = handlerCompletion
 	result.Router = resolveRouterConfig(input.Router)
 	return result, nil
+}
+
+// resolveHandlerCompletion 解析关闭合同并拒绝拼写错误，避免静默退回不同的资源安全语义。
+// 阶段角色：Config 默认值合并前冻结 bestEffort|required 二选一结果。
+func resolveHandlerCompletion(input HandlerCompletion) (HandlerCompletion, error) {
+	value := HandlerCompletion(strings.TrimSpace(string(input)))
+	if value == "" {
+		return defaultHandlerCompletion, nil
+	}
+	if isSupportedHandlerCompletion(value) {
+		return value, nil
+	}
+	return "", errorForConfigInvalid(messagef(
+		"op=web_hertz.resolve_config result=failed stage=validate reason=handler_completion_unsupported value=%q",
+		value,
+	))
 }
 
 // resolveRouterConfig 把三态输入解析为与调用方指针隔离的完整路由配置。

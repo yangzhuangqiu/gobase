@@ -54,7 +54,7 @@ func (this lifecycleState) String() string {
 // - ctx: 必填；取消时触发共享优雅停止事务。
 //
 // 返回:
-// - nil: 服务正常停止，包含 context 取消或显式 Shutdown；
+// - nil: 服务按 handlerCompletion 合同停止，包含 context 取消或显式 Shutdown；
 // - error: nil context、重复运行、Hertz 运行或停止失败。
 func (this *Server) Run(ctx context.Context) error {
 	if ctx == nil {
@@ -67,7 +67,7 @@ func (this *Server) Run(ctx context.Context) error {
 
 	// 第一阶段：Hertz Run 独立执行，当前调用者负责等待完整运行周期。
 	go this.executeEngineRun()
-	go this.observeRunning()
+	go this.observeStartup()
 
 	// 第二阶段：context 取消只触发一次共享停止，Run 仍等待 Engine 真正返回。
 	select {
@@ -92,6 +92,44 @@ func (this *Server) Run(ctx context.Context) error {
 	return result
 }
 
+// WaitStarted 等待首次 Run 被 Hertz 确认为 running 或发布稳定启动失败。
+//
+// 参数:
+// - ctx: 必填；只约束当前调用者等待，不触发或取消 Server 生命周期。
+//
+// 返回:
+// - nil: 本运行周期已经成功启动；
+// - error: 当前等待被取消，或 Server 在启动成功前失败/被终结。
+func (this *Server) WaitStarted(ctx context.Context) error {
+	if ctx == nil {
+		return errorForContextInvalid("op=web_hertz.wait_started result=failed stage=validate_context reason=context_required")
+	}
+	this.mu.Lock()
+	startupDone := this.startupDone
+	this.mu.Unlock()
+	// 已缓存的共享结果优先于 caller context，保证后续查询不因 select 随机性改变语义。
+	select {
+	case <-startupDone:
+		return this.resolveStartupResult()
+	default:
+	}
+	select {
+	case <-startupDone:
+		return this.resolveStartupResult()
+	case <-ctx.Done():
+		// 两个信号并发到达时再次检查共享结果，使启动成功/失败提交拥有确定优先级。
+		select {
+		case <-startupDone:
+			return this.resolveStartupResult()
+		default:
+		}
+		return errorForStartupFailed(
+			"op=web_hertz.wait_started result=failed stage=wait reason=context_done",
+			errors.Join(ErrStartupWaitInterrupted, ctx.Err()),
+		)
+	}
+}
+
 // Shutdown 触发共享优雅停止并等待当前调用者的 context 或稳定停止结果。
 //
 // 参数:
@@ -109,6 +147,7 @@ func (this *Server) Shutdown(ctx context.Context) error {
 	this.mu.Lock()
 	if this.state == lifecycleStateNew {
 		this.state = lifecycleStateStopped
+		this.completeStartupLocked(errorForStartupFailed("op=web_hertz.startup result=failed stage=transition_state reason=shutdown_before_ready"))
 		this.completeShutdownLocked(nil)
 		this.mu.Unlock()
 		logInfo(this.logger, ctx, "Hertz server stopped before run",
@@ -154,6 +193,10 @@ func (this *Server) beginRun(ctx context.Context) (bool, error) {
 	}
 	if ctx.Err() != nil {
 		this.state = lifecycleStateStopped
+		this.completeStartupLocked(errorForStartupFailed(
+			"op=web_hertz.startup result=failed stage=transition_state reason=run_context_done",
+			ctx.Err(),
+		))
 		this.completeShutdownLocked(nil)
 		return false, nil
 	}
@@ -168,13 +211,16 @@ func (this *Server) executeEngineRun() {
 
 	this.mu.Lock()
 	this.engineErr = err
-	this.state = lifecycleStateStopped
+	// Engine 返回只表示监听/transport 已停止；required 合同仍需等待 Handler 屏障。
+	this.state = lifecycleStateStopping
 	close(this.engineDone)
 	completeNaturally := !this.shutdownStarted
 	this.mu.Unlock()
 	if completeNaturally {
-		// 自然退出同样等待观测阶段结束，确保稳定结果后不再访问 hlog。
-		<-this.runningObservationDone
+		// 自然退出同样关闭准入并等待 Handler，避免异常监听退出绕过资源安全合同。
+		this.beginHandlerDrain()
+		<-this.startupObservationDone
+		this.waitHandlerDrain()
 		this.completeShutdown(nil)
 	}
 }
@@ -195,25 +241,32 @@ func (this *Server) callEngineRun() (err error) {
 	return this.engine.Run()
 }
 
-// observeRunning 等待 Hertz 对外确认运行状态并发布一次 running 日志。
-// 阶段角色：不参与停止决策，只提高状态诊断与启动可观测性。
-func (this *Server) observeRunning() {
-	defer close(this.runningObservationDone)
+// observeStartup 等待 Hertz 对外确认运行状态，并发布一次可广播的 startup result。
+// 阶段角色：把内部 IsRunning 轮询收敛为启动成功/失败二选一的稳定完成点。
+func (this *Server) observeStartup() {
+	defer close(this.startupObservationDone)
 	ticker := time.NewTicker(engineStatePollInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-this.engineDone:
+			this.completeStartup(this.startupFailureFromEngine())
 			return
 		case <-ticker.C:
 			if !this.engine.IsRunning() {
 				continue
 			}
 			this.mu.Lock()
-			if this.state == lifecycleStateStarting {
+			ready := this.state == lifecycleStateStarting
+			if ready {
 				this.state = lifecycleStateRunning
+				this.completeStartupLocked(nil)
 			}
 			this.mu.Unlock()
+			if !ready {
+				this.completeStartup(errorForStartupFailed("op=web_hertz.startup result=failed stage=observe reason=shutdown_before_ready"))
+				return
+			}
 			logInfo(this.logger, context.Background(), "Hertz server running",
 				baselog.F("op", "web_hertz.run"),
 				baselog.F("result", "running"),
@@ -244,6 +297,9 @@ func (this *Server) requestShutdownLocked() bool {
 	if this.state != lifecycleStateStarting && this.state != lifecycleStateRunning {
 		return false
 	}
+	if this.state == lifecycleStateStarting {
+		this.completeStartupLocked(errorForStartupFailed("op=web_hertz.startup result=failed stage=transition_state reason=shutdown_before_ready"))
+	}
 	this.shutdownStarted = true
 	this.state = lifecycleStateStopping
 	return true
@@ -256,12 +312,15 @@ func (this *Server) requestShutdownLocked() bool {
 // 2. Engine running 后使用 Background，让配置的 ExitWaitTime 独立约束共享停止；
 // 3. 等待 Run goroutine 返回并记录最终日志后，再发布稳定停止结果。
 func (this *Server) driveShutdown() {
+	// 第一阶段：required 合同先原子关闭准入；bestEffort 不安装 gate，保持 Hertz 原生热路径与关闭语义。
+	this.beginHandlerDrain()
 	ticker := time.NewTicker(engineStatePollInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-this.engineDone:
-			<-this.runningObservationDone
+			<-this.startupObservationDone
+			this.waitHandlerDrain()
 			this.completeShutdown(nil)
 			return
 		case <-ticker.C:
@@ -275,7 +334,9 @@ func (this *Server) driveShutdown() {
 				err = nil
 			}
 			<-this.engineDone
-			<-this.runningObservationDone
+			<-this.startupObservationDone
+			// Hertz ExitWaitTime 只约束 transport；required 合同继续等待全部已放行 Handler 返回。
+			this.waitHandlerDrain()
 			// 最终日志必须先于 shutdownDone 发布，允许上层在稳定结果后安全恢复全局 hlog。
 			if err != nil {
 				logError(this.logger, context.Background(), "Hertz engine shutdown failed",
@@ -297,6 +358,56 @@ func (this *Server) driveShutdown() {
 	}
 }
 
+// beginHandlerDrain 在 required 合同下关闭请求准入；bestEffort 保持空操作。
+// 阶段角色：共享 Shutdown driver 与 Engine 自然退出路径共用的一次性准入边界。
+func (this *Server) beginHandlerDrain() {
+	if this.requestGate == nil {
+		return
+	}
+	this.requestGate.beginDrain()
+}
+
+// waitHandlerDrain 在 required 合同下等待全部已放行 Handler 返回；bestEffort 保持空操作。
+// 阶段角色：Server 发布 shutdownDone 前的最终 Handler 完成合同。
+func (this *Server) waitHandlerDrain() {
+	if this.requestGate == nil {
+		return
+	}
+	this.requestGate.waitDrained()
+}
+
+// startupFailureFromEngine 把启动成功前的 Engine 结果转换为稳定 startup error，并保留下层 Run cause。
+func (this *Server) startupFailureFromEngine() error {
+	this.mu.Lock()
+	engineErr := this.engineErr
+	this.mu.Unlock()
+	if engineErr == nil {
+		return errorForStartupFailed("op=web_hertz.startup result=failed stage=engine_run reason=stopped_before_ready")
+	}
+	return errorForStartupFailed(
+		"op=web_hertz.startup result=failed stage=engine_run reason=engine_error",
+		normalizeEngineRunError(engineErr),
+	)
+}
+
+// completeStartup 原子发布一次首次启动结果。
+func (this *Server) completeStartup(err error) {
+	this.mu.Lock()
+	this.completeStartupLocked(err)
+	this.mu.Unlock()
+}
+
+// completeStartupLocked 在锁内关闭 startupDone 并缓存首次结果。
+// 前置条件：调用方持有 mu。
+func (this *Server) completeStartupLocked(err error) {
+	if this.startupCompleted {
+		return
+	}
+	this.startupErr = err
+	this.startupCompleted = true
+	close(this.startupDone)
+}
+
 // completeShutdown 原子发布一次共享停止结果。
 func (this *Server) completeShutdown(err error) {
 	this.mu.Lock()
@@ -312,6 +423,7 @@ func (this *Server) completeShutdownLocked(err error) {
 	}
 	this.shutdownErr = err
 	this.shutdownCompleted = true
+	this.state = lifecycleStateStopped
 	close(this.shutdownDone)
 }
 
@@ -330,11 +442,23 @@ func (this *Server) resolveRunResult() error {
 	if engineErr == nil {
 		return nil
 	}
-	// callEngineRun 已为 panic 建立运行边界，普通 Hertz error 才在此补充 code。
+	return normalizeEngineRunError(engineErr)
+}
+
+// normalizeEngineRunError 保留已经编码的运行期 panic，否则为普通 Engine error 补充稳定 Run code。
+func normalizeEngineRunError(engineErr error) error {
 	if errcode.IsCode[ErrorCode](engineErr, ErrCodeRunFailed) {
 		return engineErr
 	}
 	return errorForRunFailed("op=web_hertz.run result=failed stage=engine_run reason=engine_error", engineErr)
+}
+
+// resolveStartupResult 返回全部稳定等待者共享的首次启动结果。
+func (this *Server) resolveStartupResult() error {
+	this.mu.Lock()
+	err := this.startupErr
+	this.mu.Unlock()
+	return err
 }
 
 // resolveShutdownResult 返回共享停止事务的稳定结果。

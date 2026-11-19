@@ -25,6 +25,10 @@ const (
 	ErrCodeStateInvalid ErrorCode = "web_hertz.state.invalid"
 	// ErrCodeRunFailed 表示 Hertz 初始化、监听或运行阶段失败。
 	ErrCodeRunFailed ErrorCode = "web_hertz.run.failed"
+	// ErrCodeStartupFailed 表示 Server 在首次启动成功前失败或被终结。
+	ErrCodeStartupFailed ErrorCode = "web_hertz.startup.failed"
+	// ErrCodeStartupWaitInterrupted 表示当前 WaitStarted 调用者停止等待，但共享启动结果未被污染。
+	ErrCodeStartupWaitInterrupted ErrorCode = "web_hertz.startup.wait_interrupted"
 	// ErrCodeShutdownFailed 表示停止事务或当前调用者等待阶段失败。
 	ErrCodeShutdownFailed ErrorCode = "web_hertz.shutdown.failed"
 	// ErrCodeShutdownWaitInterrupted 表示当前 Shutdown 调用者停止等待，但共享停止事务仍继续执行。
@@ -32,6 +36,8 @@ const (
 )
 
 var (
+	// ErrStartupWaitInterrupted 标记 WaitStarted 仅因当前调用者 context 结束而提前返回。
+	ErrStartupWaitInterrupted = errcode.New[ErrorCode](ErrCodeStartupWaitInterrupted, "web-hertz startup wait interrupted")
 	// ErrShutdownWaitInterrupted 标记 Shutdown 仅因当前调用者 context 结束而提前返回。
 	// 典型场景：调用方使用 errors.Is 分支，避免把 caller timeout 误判为底层共享停止结果。
 	ErrShutdownWaitInterrupted = errcode.New[ErrorCode](ErrCodeShutdownWaitInterrupted, "web-hertz shutdown wait interrupted")
@@ -70,6 +76,11 @@ func errorForStateInvalid(message string, cause ...error) error {
 // errorForRunFailed 构造 Hertz 运行失败错误。
 func errorForRunFailed(message string, cause ...error) error {
 	return buildError(ErrCodeRunFailed, message, cause...)
+}
+
+// errorForStartupFailed 构造首次启动成功前的稳定结果或当前等待失败。
+func errorForStartupFailed(message string, cause ...error) error {
+	return buildError(ErrCodeStartupFailed, message, cause...)
 }
 
 // errorForShutdownFailed 构造停止或等待失败错误。

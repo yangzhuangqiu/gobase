@@ -18,12 +18,12 @@ const (
 //
 // 语义:
 // 1. Server 在 YAML 中内联，兼容既有 web.hertz.address/readTimeout 等扁平字段；
-// 2. Middleware 各能力默认关闭，只有 enabled=true 才进入请求链；
+// 2. Recovery 是默认启用的安全基线，其余 Middleware 只有 enabled=true 才进入请求链；
 // 3. 配置只在 IOC Init 阶段解析一次，不支持运行期热更新。
 type Config struct {
 	// Server 保留 web-hertz 的启动配置合同；YAML 解码时内联到当前 config scope。
 	Server webhertz.Config `yaml:",inline"`
-	// Middleware 描述标准请求链装配；默认全部关闭且不持有外部资源。
+	// Middleware 描述标准请求链装配；Recovery 默认启用，其余能力默认关闭且不持有外部资源。
 	Middleware MiddlewareConfig `yaml:"middleware"`
 }
 
@@ -43,12 +43,12 @@ type MiddlewareConfig struct {
 	Gzip GzipConfig `yaml:"gzip"`
 }
 
-// DefaultConfig 返回 Server 完整默认值与全部关闭的标准 Middleware 配置。
+// DefaultConfig 返回 Server 完整默认值与默认安全的标准 Middleware 配置。
 //
 // 返回:
 // - Config: 每次调用均与其他配置快照隔离。
 func DefaultConfig() Config {
-	// Server 与各能力策略均返回独立快照；enabled 保持 false，策略默认值只为未来显式启用做准备。
+	// Server 与各能力策略均返回独立快照；Recovery 默认启用，其余 enabled 保持 false。
 	return Config{
 		Server: webhertz.DefaultConfig(),
 		Middleware: MiddlewareConfig{

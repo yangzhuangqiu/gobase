@@ -1,6 +1,6 @@
 # 服务注册能力提案（TODO Feature）
 
-> 状态：**待开发，尚未实现**。
+> 状态：**待开发；`web.StartupServer` 启动结果合同已实现，其余注册能力尚未实现**。
 >
 > 本文记录 gobase 后续服务注册 feature 的目标模型、模块边界、生命周期和验收条件。
 > 文中的包名、接口和配置仅为设计候选，不是当前公共 API，也不能作为现有运行保证。
@@ -24,9 +24,9 @@
 2. `web-hertz` 使用 `Hertz.Run()` 而不是 `Spin()`；当前会拒绝 Hertz Registry Option，
    防止出现“停止时注销、启动时未注册”的不对称生命周期；
 3. `app-web-hertz.Workload()` 已建立 `Run -> Shutdown -> 等待 Run -> Resource Close` 顺序；
-4. `web.Server` 暂不提供 Ready、Endpoint 或 Status 合同。
+4. 可选 `web.StartupServer` 已提供首次启动结果；readiness、Endpoint、持续 Status 和服务注册合同尚未提供。
 
-因此，待开发能力不能只是放开 `server.WithRegistry`，而要显式设计 readiness、实例身份、
+因此，待开发能力不能只是放开 `server.WithRegistry`，而要复用现有 startup result，并显式设计实例身份、
 注册失败回滚、摘流量、Web 排空和客户端所有权。
 
 ## 2. 决策摘要
@@ -35,7 +35,7 @@
 
 1. 候选 `service-registry` 模块定义厂商无关的 `Registrar`、`Registration` 和 `Instance`；
 2. 候选 `service-registry-nacos` 模块创建并拥有 Nacos Naming Client，实现服务注册合同；
-3. `app-web-hertz` 通过可选窄接口组合 Web readiness 与注册生命周期，业务仍只声明一个
+3. `app-web-hertz` 通过可选窄接口组合 Web startup result 与注册生命周期，业务仍只声明一个
    Web Workload；
 4. `app` 保持现有 Workload、Resource、Shutdown Policy 和信号语义，不感知 Nacos；
 5. `config-nacos` 继续只负责配置中心，不承担 Naming Service，也不共享不同所有权的 SDK Client。
@@ -47,7 +47,7 @@
 ### 3.1 In Scope
 
 1. 启动快照中的服务身份、注册地址和 provider 配置；
-2. Server Ready 后注册，注册失败时停止 Server 并回滚；
+2. Server 启动成功后注册，注册失败时停止 Server 并回滚；
 3. 收到关闭请求后先注销/禁用实例，再排空 Web 请求；
 4. Nacos 临时实例、group、cluster、weight 和 metadata；
 5. Naming Client 的 IOC Resource 所有权与关闭；
@@ -68,9 +68,9 @@
 
 | 模块 | 候选职责 | 明确不负责 |
 |---|---|---|
-| `app` | 进程信号、Workload 监督、Shutdown Policy、Resource Close | Nacos、服务身份、Web readiness |
+| `app` | 进程信号、Workload 监督、Shutdown Policy、Resource Close | Nacos、服务身份、Web startup/readiness |
 | `web` | 保持最小 `Server` 生命周期合同；按需增加独立窄接口 | 厂商注册协议、配置加载 |
-| `web-hertz` | 发布真实 Ready/Endpoint；维持 Hertz 单周期运行状态机 | 创建 Naming Client、监听 OS 信号 |
+| `web-hertz` | 已发布 `WaitStarted` 启动结果；后续按需提供 Endpoint；维持 Hertz 单周期运行状态机 | 创建 Naming Client、监听 OS 信号 |
 | `app-web-hertz` | 把 Server、Registrar 和 Registration 组合成一个 Workload 生命周期 | 持有厂商凭据、实现 Nacos SDK |
 | `service-registry` | `Registrar`、`Registration`、`Instance` 等稳定语义 | Nacos SDK、IOC、Web provider |
 | `service-registry-nacos` | 配置解析、Naming Client、Nacos 注册/注销 adapter | 配置中心 Source、Web Server、信号监听 |
@@ -116,22 +116,26 @@ type Registration interface {
 | `Metadata` | 可选；必须复制并限制敏感信息、大小和 key/value 合法性 |
 | `Ephemeral` | 可选；Nacos 首版建议默认临时实例 |
 
-Web readiness 不扩张现有 `web.Server`，优先增加独立可选合同：
+Web startup result 已通过不扩张现有 `web.Server` 的独立可选合同实现：
 
 ```go
-type ReadyServer interface {
+type StartupServer interface {
     Server
-    Ready() <-chan struct{}
-    Endpoint() Endpoint
+    WaitStarted(ctx context.Context) error
 }
 ```
 
-语义要求：
+已实现语义：
 
-1. `Ready` 只在监听真实可用后关闭一次；启动失败时必须同时存在可终止等待的结果通道；
-2. `Endpoint` 表达实际监听 endpoint，但不能擅自把 `0.0.0.0`、`::` 转换成生产注册地址；
-3. Application 显式 `AdvertiseAddress` 优先于监听地址推导；
-4. readiness 是服务注册的具体跨 provider 需求，但仍不应把 Nacos 类型加入根 `web.Server`。
+1. `WaitStarted` 在 Hertz 确认 running 后返回 nil；官方 transport 同时确认 listener 已存在，启动成功前失败返回稳定 startup result；
+2. 多个等待者共享缓存结果，单个 caller context 结束不取消 Server、不污染共享结果；
+3. 启动成功是历史启动屏障，不表达 readiness 或持续健康。
+
+仍待设计的 Endpoint 语义：
+
+1. Endpoint 必须使用独立窄接口，不能擅自把 `0.0.0.0`、`::` 转换成生产注册地址；
+2. Application 显式 `AdvertiseAddress` 优先于监听地址推导；
+3. startup result/endpoint 是服务注册的具体跨 provider 需求，但不得把 Nacos 类型加入根 `web.Server`。
 
 ## 6. 启动与关闭流程
 
@@ -143,19 +147,19 @@ Runtime Build
   -> IOC 构造 Hertz Server
   -> app 启动 app-web-hertz Workload
   -> Hertz 开始监听
-  -> Ready 发布真实监听成功
+  -> WaitStarted 返回启动成功
   -> Registrar.Register
   -> 发布 registration result=registered
   -> Workload 持续等待 Server 运行结果
 ```
 
-注册只能发生在 Ready 之后。不得使用固定 `sleep` 代替 readiness，也不得在 IOC `Init` 中注册
+注册只能发生在 WaitStarted 成功之后。不得使用固定 `sleep` 代替启动结果合同，也不得在 IOC `Init` 中注册
 尚未运行的 Server。
 
 ### 6.2 注册失败
 
 ```text
-Ready
+WaitStarted success
   -> Register failed
   -> 记录结构化错误
   -> 请求 Hertz Shutdown
@@ -175,7 +179,7 @@ OS signal / 任一 Workload 返回
   -> app-web-hertz Workload.Shutdown
   -> Registration.Deregister（先摘流量）
   -> 可选等待注册中心/客户端缓存传播
-  -> Server.Shutdown（停止接收并排空存量请求）
+  -> Server.Shutdown（停止接收；按 handlerCompletion 合同处理存量请求）
   -> 等待 Server.Run 完全返回
   -> IOC 逆序关闭 Naming Client 等 Resource
 ```
@@ -187,6 +191,7 @@ OS signal / 任一 Workload 返回
 3. `WorkloadGracefulTimeout` 约束注销与 Server graceful 阶段，首版不新增普通用户必须理解的 timeout；
 4. 即使 graceful context 超时，Workload 仍必须让 `Run` 真实结束，才能释放其借用的 Resource；
 5. 重复 Shutdown、context 取消和 Server 自然退出不能导致重复注销破坏最终结果。
+6. 默认 `bestEffort` 只保证有界尽力关闭；需要等全部已放行 Handler 后再允许 Resource Close 时，显式选择 `required`。
 
 注册中心传播等待是高级能力。首版可默认 `0`，只有验证 Nacos 客户端缓存或网关行为确实需要时，
 再提供有上限的 `DrainDelay`；它必须计入同一 graceful budget。
@@ -248,7 +253,7 @@ serviceRegistration:
 |---|---|---|
 | `load_config` | `scope_not_found`、`config_invalid` | Runtime Build 失败 |
 | `create_client` | `nacos_client_create_failed` | IOC Build 回滚 |
-| `wait_ready` | `server_start_failed`、`context_done` | 不注册，收敛 Workload |
+| `wait_started` | `server_start_failed`、`context_done` | 不注册，收敛 Workload |
 | `register` | `register_failed` | 停止 Server，返回失败 |
 | `deregister` | `deregister_failed`、`context_done` | 继续停止 Server并聚合错误 |
 | `close_client` | `client_close_failed` | Runtime Close 返回聚合错误 |
@@ -301,18 +306,19 @@ Prometheus 或修改 `app` 核心。
 - [ ] 覆盖配置校验、注册、幂等注销、context、SDK 错误和 Close 测试；
 - [ ] 不接入 Web，不修改 app 信号模型。
 
-### Phase 2：Web readiness 与组合生命周期
+### Phase 2：Web startup 与组合生命周期
 
-- [ ] 为 `web-hertz` 增加独立 Ready/Endpoint 窄合同，不修改根 `web.Server`；
+- [x] 为 `web-hertz` 增加独立 `web.StartupServer.WaitStarted` 窄合同，不修改根 `web.Server`；
+- [ ] 按真实注册需求增加独立 Endpoint 窄合同；
 - [ ] 让 `app-web-hertz.Workload()` 可选借用 Registrar；
-- [ ] 实现 Ready 后注册、注册失败回滚、先注销再排空；
+- [ ] 实现启动成功后注册、注册失败回滚、先注销再排空；
 - [ ] 保持未声明 Registrar 时零行为变化；
 - [ ] 删除 `web-hertz` 对 Registry 的能力拒绝只能发生在新合同完整替代后，不能提前放开。
 
 ### Phase 3：证据与文档
 
 - [ ] fake Registrar 验证严格阶段顺序；
-- [ ] 真实 listener 验证 Ready 之前没有注册；
+- [ ] 真实 listener 验证启动成功之前没有注册；
 - [ ] 注册失败验证 Server 和 Runtime 完整回滚；
 - [ ] OS 信号集成测试验证注销、排空、Run 收敛和 Resource Close；
 - [ ] 超时测试验证不会提前销毁 Naming Client；
@@ -324,7 +330,7 @@ Prometheus 或修改 `app` 核心。
 该 feature 只有同时满足以下条件才能视为完成：
 
 1. 未启用注册时，现有 Web 构造、运行、关闭和配置行为完全不变；
-2. 显式启用后，实例只在 Server Ready 后可见；
+2. 显式启用后，实例只在 Server 启动成功后可见；
 3. 注册失败不会留下仍在运行但不可发现的 Web Server；
 4. 关闭时可以用测试证明 `Deregister < Server Shutdown < Run returned < Client Close`；
 5. Shutdown context 超时不会导致 Naming Client 在 Workload 仍使用时被提前关闭；

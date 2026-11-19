@@ -18,9 +18,9 @@ type serverWorkload struct{}
 
 var _ baseapp.Workload = (*serverWorkload)(nil)
 
-// Workload 返回 app-web-hertz 推荐的声明式生命周期适配器。
+// Workload 返回当前 Runtime 唯一 Hertz Server 的声明式生命周期适配器。
 //
-// 典型调用场景：与 NewModule 一起传给 app.WithWorkloads，使 app 显式执行 Run→Shutdown→等待 Run→Resource Close。
+// 典型调用场景：与唯一 NewModule 一起传给 app.WithWorkloads，使 app 显式执行 Run→Shutdown→等待 Run→Resource Close。
 func Workload() baseapp.Workload {
 	return &serverWorkload{}
 }

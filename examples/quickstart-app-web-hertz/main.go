@@ -171,7 +171,7 @@ func defaultConfig() map[string]any {
 					"handleMethodNotAllowed": true,
 				},
 				"middleware": map[string]any{
-					"recovery":  map[string]any{"enabled": true, "response": "json"},
+					"recovery":  map[string]any{"response": "json"},
 					"requestId": map[string]any{"enabled": true, "header": "X-Request-ID"},
 				},
 			},

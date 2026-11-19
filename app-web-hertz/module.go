@@ -12,7 +12,7 @@ const (
 	serverBeanName = "WebHertzServer"
 )
 
-// Module 定义 app-web-hertz 在 IOC Build 前声明托管 Server bean 的合同。
+// Module 定义 app-web-hertz 在 IOC Build 前声明当前 Runtime 唯一托管 Server bean 的合同。
 //
 // 典型调用场景:
 // 1. 直接调用 Register 向普通 IOC Container 安装自动装配能力；
@@ -36,13 +36,13 @@ type module struct {
 	options []Option
 }
 
-// NewModule 创建自动聚合应用组件并发布 web.Server 的 IOC Module。
+// NewModule 创建自动聚合应用组件并发布当前 Runtime 唯一 web.Server 的 IOC Module。
 //
 // 参数:
 // - options: 控制 config scope、路径风格、标准 typed policy 和 web-hertz 原生扩展，不承载 IOC 应用组件。
 //
 // 返回:
-// - Module: 可注册一次或在不同 Container 中重放的无资源声明对象。
+// - Module: 可注册一次或在不同 Container 中重放的无资源声明对象；同一 Runtime 只允许安装一个实例。
 func NewModule(options ...Option) Module {
 	return &module{options: append([]Option{}, options...)}
 }
@@ -57,7 +57,7 @@ func (this *module) Name() string {
 // 流程:
 // 1. 在修改 Registry 前解析全部 Option，保证声明错误无部分注册；
 // 2. 创建尚未读取配置、尚未持有 provider 的 Server bean；
-// 3. 同一实例声明为 web.Server，供 Build 后唯一解析和运行。
+// 3. 同一实例声明为 web.Server/StartupServer，供 Build 后唯一解析、等待启动结果和运行。
 func (this *module) Register(registry ioc.Registry) error {
 	// 第一阶段：全部纯声明在 Registry 修改前 fail-fast。
 	if this == nil {
@@ -73,7 +73,12 @@ func (this *module) Register(registry ioc.Registry) error {
 
 	// 第二阶段：只发布依赖图节点，配置读取和 provider 构造延迟到 IOC Init。
 	bean := &managedServer{configScope: resolvedOptions.configScope, options: resolvedOptions}
-	if err := registry.Register(bean, ioc.WithName(serverBeanName), ioc.WithDeclare[baseweb.Server]()); err != nil {
+	if err := registry.Register(
+		bean,
+		ioc.WithName(serverBeanName),
+		ioc.WithDeclare[baseweb.Server](),
+		ioc.WithDeclare[baseweb.StartupServer](),
+	); err != nil {
 		return errorForModuleRegisterFailed(
 			"op=app_web_hertz.module.register result=failed stage=register_server reason=ioc_register_failed",
 			err,

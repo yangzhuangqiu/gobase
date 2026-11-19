@@ -22,10 +22,10 @@ const (
 	RecoveryResponseEmpty RecoveryResponseStrategy = "empty"
 )
 
-// RecoveryConfig 描述 panic 恢复能力；默认关闭。
+// RecoveryConfig 描述 panic 恢复基线；默认启用，仅允许应用显式关闭。
 type RecoveryConfig struct {
-	// Enabled 决定是否安装 Recovery；默认 false，旧 New 行为不变。
-	Enabled bool `yaml:"enabled"`
+	// Disabled 显式关闭 Recovery；默认 false，使未声明配置的服务仍具备 panic 隔离能力。
+	Disabled bool `yaml:"disabled"`
 	// Response 选择内建 500 响应；空值默认 json，自定义 Handler 声明后由 Handler 接管。
 	Response RecoveryResponseStrategy `yaml:"response"`
 }

@@ -21,7 +21,7 @@
 3. 不自动调用阻塞型 `Run`，不安装进程信号处理器。
 4. 不创建或关闭配置 Manager、日志 Provider、Controller 或 Filter。
 5. 不管理 Hertz 全局 hlog，也不创建或关闭日志 Provider；全部自有日志只借用 IOC `LoggerFactory`。
-6. 不默认启用 Recovery、Request ID、Access Log、CORS、Gzip 或 pprof；可选基础组件必须逐项显式开启。
+6. 不默认启用 Request ID、Access Log、CORS、Gzip 或 pprof；Recovery 作为安全基线默认启用，可显式关闭。
 7. 不创建 Prometheus Registry、OTel Provider、Exporter、诊断 Server 或配置订阅。
 8. 不提供脱离 IOC 的 Controller/Filter 显式构造入口；原生 Hertz 场景直接使用 `web-hertz`。
 
@@ -62,7 +62,7 @@ app.Main(
 )
 ```
 
-默认 `web.hertz` config scope 缺失时，`NewModule()` 直接使用 `DefaultConfig()`，因此最小应用不需要配置文件。自定义配置路径使用 `WithConfigScope("services.api")`；该路径缺失时仍 fail-fast，避免部署拼写错误被默认值掩盖。`app` 拥有信号、Workload 收敛和 Runtime Close；`Workload()` 显式桥接唯一 Server 的 Run/Shutdown，因此无需额外 Shutdown Hook。多 Server 应声明多个具有唯一名称的 Workload。
+默认 `web.hertz` config scope 缺失时，`NewModule()` 直接使用 `DefaultConfig()`，因此最小应用不需要配置文件。自定义配置路径使用 `WithConfigScope("services.api")`；该路径缺失时仍 fail-fast，避免部署拼写错误被默认值掩盖。`app` 拥有信号、Workload 收敛和 Runtime Close；`Workload()` 显式桥接唯一 Server 的 Run/Shutdown，因此无需额外 Shutdown Hook。本模块的公共边界是“每个 Runtime 一个业务 Hertz Server”；多 Server 应拆分 Runtime，或使用独立的专用 Workload/Resource，而不是重复安装本 Module。
 
 ## 公共入口与合同
 
@@ -136,6 +136,8 @@ web:
     maxRequestBodySize: 4194304
     maxHeaderBytes: 1048576
     exitWaitTime: 5s
+    shutdown:
+      handlerCompletion: bestEffort
     router:
       redirectTrailingSlash: true
       redirectFixedPath: false
@@ -143,7 +145,7 @@ web:
       disablePrintRoute: false
     middleware:
       recovery:
-        enabled: true
+        disabled: false
         response: json
       requestId:
         enabled: true
@@ -176,8 +178,8 @@ web:
 
 Router 布尔值采用 optional bool：未配置时使用 `web-hertz` 固化默认值，显式 `false` 不会被默认回填覆盖。
 
-Recovery、Request ID、Access Log、CORS 和 Gzip 是本模块的可选基础组件，默认全部
-关闭。其中 Access Log 直接借用 IOC 根 `LoggerFactory`，不依赖 Prometheus、OTel
+Recovery 是默认启用的 panic 隔离安全基线，只有 `disabled: true` 才关闭；Request ID、
+Access Log、CORS 和 Gzip 默认关闭。其中 Access Log 直接借用 IOC 根 `LoggerFactory`，不依赖 Prometheus、OTel
 或 `app-observe-webhertz`。它仍可作为运行诊断信号，并在 OTel Bundle 存在时通过
 完成事件中的 Trace ID 与 Span 关联。
 
@@ -197,21 +199,21 @@ advanced outer Middleware
 -> Routes / NoRoute / NoMethod
 ```
 
-所有 feature 默认关闭。Instrumentation Bundle 只通过 IOC 对象存在性启用，不进入 YAML；Bundle 的 Hertz Option 与 Middleware 在 provider 构造前一起校验。typed policy 只替换启用后的策略，不隐式启用能力；需要改变固定顺序时，应关闭对应配置并通过 `WithServerOptions(webhertz.WithMiddleware(...))` 完整显式声明。
+除 Recovery 安全基线外，所有 feature 默认关闭。Instrumentation Bundle 只通过 IOC 对象存在性启用，不进入 YAML；Bundle 的 Hertz Option 与 Middleware 在 provider 构造前一起校验。typed policy 只替换对应策略，不隐式启用其他能力；需要改变固定顺序时，应显式关闭对应配置并通过 `WithServerOptions(webhertz.WithMiddleware(...))` 完整声明。
 
 ## 错误语义
 
 | ErrorCode | 语义 |
 |---|---|
-| `app_web_hertz.config_invalid` | Server/Middleware 字段或安全组合非法 |
-| `app_web_hertz.config_load_failed` | Manager、Snapshot、config scope 解码或 provider 配置非法 |
-| `app_web_hertz.declaration_invalid` | Option、Controller、Filter、Module 或 Registry 声明非法 |
-| `app_web_hertz.route_registration_failed` | Controller 手工路由注册失败，并保留 Registrar cause |
-| `app_web_hertz.middleware_execution_failed` | Request ID、Gzip 等内建 Middleware 运行失败；通过结构化日志观测 |
-| `app_web_hertz.server_build_failed` | Controller 计划或 `web-hertz` 构造失败 |
-| `app_web_hertz.module_register_failed` | 托管 Server bean 无法注册到 IOC |
-| `app_web_hertz.server_state_invalid` | 托管代理在 IOC Init 完成前被调用 |
-| `app_web_hertz.server_resolve_failed` | App Workload 无法从 Runtime 解析唯一 `web.Server` |
+| `app_web_hertz.config.invalid` | Server/Middleware 字段或安全组合非法 |
+| `app_web_hertz.config.load_failed` | Manager、Snapshot、config scope 解码或 provider 配置非法 |
+| `app_web_hertz.declaration.invalid` | Option、Controller、Filter、Module 或 Registry 声明非法 |
+| `app_web_hertz.route.register_failed` | Controller 手工路由注册失败，并保留 Registrar cause |
+| `app_web_hertz.middleware.execution_failed` | Request ID、Gzip 等内建 Middleware 运行失败；通过结构化日志观测 |
+| `app_web_hertz.server.build_failed` | Controller 计划或 `web-hertz` 构造失败 |
+| `app_web_hertz.module.register_failed` | 托管 Server bean 无法注册到 IOC；同一 Runtime 重复 Module 也在此失败 |
+| `app_web_hertz.server.state_invalid` | 托管代理在 IOC Init 完成前被调用 |
+| `app_web_hertz.server.resolve_failed` | App Workload 无法从 Runtime 解析唯一 `web.Server` |
 
 IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web-hertz、config、IOC 和 web-hertz cause 均保留在错误链中。
 
@@ -220,16 +222,17 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 1. IOC 依赖图保证 Controller/Filter/fallback handler 先初始化，托管 Server 后初始化。
 2. Instrumentation Bundle 由 IOC 先初始化，Server bean 再一次性冻结其原生 Option、Middleware 和可选 Trace ID 元数据桥接。
 3. Server bean 的 `Init` 只读取一次完整 Config，冻结标准链和路由计划后构造底层单周期 Server。
-4. Build 后由 `Workload()` Resolve `web.Server` 并声明 `Run/Shutdown`；Module 不启动隐藏 goroutine。
-5. app 先等待 Workload Run 收敛，Container Close 再逆序释放 Server Resource 与 adapter/Provider owner。
-6. `config.Manager` 为 borrowed 依赖，Server bean 不关闭它。
-7. Controller/Filter 不得反向依赖 `web.Server`，否则 IOC 会报告循环依赖。
+4. Build 后由 `Workload()` Resolve 唯一 `web.Server` 并声明 `Run/Shutdown`；Module 不启动隐藏 goroutine。
+5. 同一 bean 同时发布 `web.StartupServer`；高级组合层可调用 `WaitStarted(ctx)` 等待首次启动成功或稳定失败。
+6. app 先等待 Workload Run 收敛，Container Close 再逆序释放 Server Resource 与 adapter/Provider owner；默认 `bestEffort` 保持有界尽力关闭，需要在 Hertz `exitWaitTime` 后继续等待 Handler 时显式选择 `required`。
+7. `config.Manager` 为 borrowed 依赖，Server bean 不关闭它。
+8. Controller/Filter 不得反向依赖 `web.Server`，否则 IOC 会报告循环依赖。
 
 ## 最佳实践
 
 1. 使用 Controller/Filter 应用模型时通过 `NewModule` 进入 IOC；不使用 IOC 时直接使用 `web-hertz` 原生组装。
 2. 使用 `DefineController`、`DefineFilter`、`DefineNoRouteHandler` 和 `DefineNoMethodHandler`，不要在 composition root 重复 `WithDeclare`；分组 Filter 同样使用 `DefineFilter`。
-3. 单 Server 应用使用 `appwebhertz.Workload()`；多 Server 为每个适配器声明唯一 Workload 名称。
+3. 当前 Runtime 使用唯一 `NewModule()` + `appwebhertz.Workload()`；第二个业务 Server 使用独立 Runtime 或专用适配模块。
 4. Hertz 应用使用 `apphlogzap.Wrap(applogzap.New(...))` 装饰应用 Logging，在 Container Build 前安装 hlog，在 Container Close 后恢复，日志 Provider 最后关闭。
 5. 自动方法名只承载稳定静态 URL；动态和兼容性敏感路由使用 `RegisterRoutes`。
 6. Request ID 默认不信任入站值；只有代理链已经验证来源时才开启 `trustIncoming`。
@@ -237,11 +240,10 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 
 ## Open Gaps / Future Improvements
 
-1. `Workload()` 当前只支持按类型唯一解析的单 Server；多 Server 仍需由适配层提供具名解析规则。
+1. 单 Runtime 单业务 Server 是当前明确边界，不提供具名多 Server 解析；独立诊断 Server 应由专用 Workload/Resource 承载。
 2. 应用组件仍需显式 Definition，不做包扫描。
 3. 启动配置不热更新，地址或 timeout 变化需要重建 Runtime。
-4. 当前按类型只适合发布一个 `web.Server`；多 Server 应先定义具名运行策略。
-5. Access Log 通过请求完成事件接入；通用 Observer 与原子 Bundle 只由本模块聚合，Prometheus/OTel 后端适配由独立模块负责。本模块只从根 `LoggerFactory` 派生实例 Logger，不创建 Registry、Provider 或 Exporter。
+4. Access Log 通过请求完成事件接入；通用 Observer 与原子 Bundle 只由本模块聚合，Prometheus/OTel 后端适配由独立模块负责。本模块只从根 `LoggerFactory` 派生实例 Logger，不创建 Registry、Provider 或 Exporter。
 
 ## File Map
 
@@ -258,7 +260,8 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 11. `managed_server.go`、`managed_server_test.go`：IOC 注入、Init、Run/Shutdown、Close 适配及托管生命周期测试。
 12. `workload.go`：唯一 Server 的 Workload Run/Shutdown 适配。
 13. `errors.go`：稳定错误码和 cause 包装。
-14. `*_test.go`：配置、Middleware、Observation、日志、原子 Bundle、路由、IOC 依赖图和真实生命周期测试。
+14. `app_lifecycle_integration_test.go`：真实 App + Hertz 请求排空、Workload 收敛和 IOC 资源关闭顺序。
+15. 其余 `*_test.go`：配置、Middleware、Observation、日志、原子 Bundle、路由、IOC 依赖图和生命周期合同测试。
 
 ## 相关文档
 

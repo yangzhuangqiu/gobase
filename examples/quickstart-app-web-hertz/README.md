@@ -90,7 +90,7 @@ Invoke-WebRequest -Method Delete http://127.0.0.1:18081/api/hello
 4. `Workload` 解析同一个 `web.Server`，分别委托 `Run` 与 `Shutdown`，不复制 Hertz 生命周期状态机。
 5. app 负责信号、Workload 收敛和 Runtime Close，因此单 Server 场景不需要自定义 Shutdown Hook。
 6. `hlog-zap/app` 在 IOC Build 前安装 hlog，在 IOC/Server 关闭后恢复 hlog，再关闭 Zap Provider。
-7. 多 Server、Metrics、pprof 或 Trace 属于应用 composition root 的高级能力，不进入该最小示例。
+7. 本 Module 明确限定单 Runtime 单业务 Server；Metrics 诊断端口使用专用 Workload，pprof 或 Trace 属于 composition root 的高级能力。
 
 ## File Map
 

@@ -12,7 +12,7 @@
 | 原生路由 | 保留 Hertz RouterGroup 完整能力 | `RouteRegistrar` | 可选 | `RegisterRoutes` | 框架无关路由 DSL |
 | 全局 Filter | 提供稳定 Middleware 顺序 | `Filter` 接口声明 | 无默认 Filter | `DoFilter` | 分组策略 |
 | 分组 Filter | 同一 GroupPath 的 Controller 共享策略 | `GroupedFilter` 接口声明 | 无默认 Filter | `GroupPath` + `DoFilter` | 全局策略 |
-| 标准 Middleware | Recovery、Request ID、Access Log、CORS、Gzip | `web.hertz.middleware` | 全部关闭 | Config + typed policy | 任意动态执行顺序 |
+| 标准 Middleware | Recovery、Request ID、Access Log、CORS、Gzip | `web.hertz.middleware` | Recovery 默认启用，其余关闭 | Config + typed policy | 任意动态执行顺序 |
 | 完成态 Metrics | 有限基数请求指标 | IOC `webhertz.RequestObserver` | 未注入即关闭 | Observer bean | 在 Config 中创建 Registry |
 | 原生扩展 | 透传 Hertz/server/provider 能力 | `WithServerOptions` | 无额外 Option | `web-hertz.Option` | Registry 等 provider 明确拒绝能力 |
 
@@ -43,6 +43,8 @@ web:
     maxRequestBodySize: 4194304
     maxHeaderBytes: 1048576
     exitWaitTime: 5s
+    shutdown:
+      handlerCompletion: bestEffort
     router:
       redirectTrailingSlash: true
       redirectFixedPath: false
@@ -50,7 +52,7 @@ web:
       disablePrintRoute: false
     middleware:
       recovery:
-        enabled: true
+        disabled: false
         response: json
       requestId:
         enabled: true
@@ -73,7 +75,7 @@ web:
         minLength: 1024
 ```
 
-Server 字段仍处于原有扁平 `web.hertz` config scope；Router 和标准能力分别位于 `router`、`middleware` 子段。Router 布尔值支持未配置、显式 true 和显式 false 三态。
+Server 字段仍处于原有扁平 `web.hertz` config scope；关闭合同、Router 和标准能力分别位于 `shutdown`、`router`、`middleware` 子段。`handlerCompletion` 默认 `bestEffort`，可显式选择 `required`；Router 布尔值支持未配置、显式 true 和显式 false 三态。
 
 普通 IOC Container 需要显式注册 borrowed Manager、组件 Definitions 和 Module：
 
@@ -148,7 +150,21 @@ app.Main(
 )
 ```
 
-Runtime 已注册 borrowed `config.Manager`；未声明 `web.hertz` 时 Server 使用完整内建默认值。`appwebhertz.Workload()` 解析唯一 `web.Server`：app 并发执行 `Run`，关闭时调用 `Shutdown`，并继续等待 `Run` 真正返回，之后才关闭 IOC Runtime。多 Server 可声明多个具有唯一名称的 Workload 适配器。
+Runtime 已注册 borrowed `config.Manager`；未声明 `web.hertz` 时 Server 使用完整内建默认值。`appwebhertz.Workload()` 解析唯一 `web.Server`：app 并发执行 `Run`，关闭时调用 `Shutdown`，并继续等待 `Run` 真正返回，之后才关闭 IOC Runtime。本模块明确限定每个 Runtime 一个业务 Hertz Server；第二个 Server 应使用独立 Runtime 或专用 Workload/Resource。
+
+同一托管 bean 还发布 `web.StartupServer`，服务注册等高级组合层可以等待首次启动结果：
+
+```go
+startupServer, err := ioc.ResolveAs[web.StartupServer](container)
+if err != nil {
+	return err
+}
+if err := startupServer.WaitStarted(startupCtx); err != nil {
+	return err
+}
+```
+
+`WaitStarted` 表示当前单周期 Server 已被 Hertz 确认为 running；本模块默认使用的官方 transport 同时确认 listener 已存在。它广播并缓存首次成功或失败，单个等待者超时不会取消 Server，也不会污染其他等待者。启动成功后即使 Server 随后停止，历史启动结果仍保持成功；它不是 readiness 或持续健康检查。若通过高级 Option 替换自定义 transport，调用方必须确认其 `IsRunning` 具备同等语义。
 
 ### 2.3 Option 归并
 
@@ -157,11 +173,11 @@ Runtime 已注册 borrowed `config.Manager`；未声明 `web.hertz` 时 Server �
 | `WithConfigScope` | `web.hertz` | 后声明覆盖前声明 | 空白回退默认 | IOC Init |
 | `WithRoutePathStyle` | Kebab | 后者覆盖前者 | 不支持的枚举 fail-fast | 构造计划 |
 | `WithServerOptions` | 无 | 每次追加 | 任一 nil fail-fast | provider 构造 |
-| `WithRecoveryHandler` | 内建安全响应 | 后者覆盖 | nil fail-fast | Recovery 启用后 |
+| `WithRecoveryHandler` | 内建安全响应 | 后者覆盖 | nil fail-fast | Recovery 未禁用时 |
 | `WithRequestIDGenerator` | crypto/rand 128-bit | 后者覆盖 | nil fail-fast；运行期空值/错误返回 500 | Request ID 启用后 |
 | `WithCORSOriginValidator` | 无 | 后者覆盖并扩展静态列表 | nil 或启用后无任何 Origin 策略 fail-fast | CORS 构造/请求期 |
 | `WithGzipPredicate` | 基础协议规则 | 后者覆盖 | nil fail-fast | 最终响应完成后 |
-| nil `Option` | 不适用 | 不适用 | `declaration_invalid` | Registry 修改前 |
+| nil `Option` | 不适用 | 不适用 | `app_web_hertz.declaration.invalid` | Registry 修改前 |
 
 ## 3. Controller
 
@@ -265,7 +281,7 @@ WithServerOptions 中的 advanced outer Middleware
 
 ### Recovery
 
-- 默认关闭；启用后捕获 CORS、Gzip、Filter 和 Handler panic。
+- 默认启用并捕获 CORS、Gzip、Filter 和 Handler panic；只有 `disabled: true` 才关闭。
 - 内建 `response` 支持 `json`（默认）、`text`、`empty`，均不向客户端暴露 panic 内容。
 - 自定义行为使用 `WithRecoveryHandler`；Handler 自行负责最终响应。
 
@@ -362,12 +378,14 @@ web.Server Run 返回
 4. Shutdown context 语义完全由 `web-hertz` 保留；等待中断仍可匹配 `webhertz.ErrShutdownWaitInterrupted`。
 5. 地址和 timeout 只在 Init 读取一次，配置刷新不会修改正在运行的 Server。
 6. app Workload 先完成主动停止；Container Close 是幂等资源兜底。IOC timeout 只发出协作式取消，并等待 Server Closer 返回后再关闭依赖。
+7. 默认 `bestEffort` 在 Hertz `exitWaitTime` 到期后允许 Run 返回，以避免普通请求承担 gate 成本；需要保证 Controller/Filter 依赖不被提前关闭时，显式选择 `required`。
 
-### 7.1 独立诊断端口与统一监督
+### 7.1 单业务 Server 边界与独立诊断端口
 
-`Workload()` 当前解析唯一业务 Server。需要业务 Server 与诊断 Server 等多个工作负载时，
-composition root 可分别声明多个具有稳定唯一名称的 Workload；app 在任一成员意外退出后
-关闭全组，并等待全部 Run/Shutdown 结果收敛。
+`NewModule()` 和 `Workload()` 共同表达当前 Runtime 的唯一业务 Server。该边界避免 config scope、
+Controller 集合和按类型 IOC 解析在多实例下产生隐式选择。需要 Metrics 等独立诊断端口时，
+composition root 应使用专用且具有唯一名称的 Workload；不要重复注册 `app-web-hertz` Module。
+app 在任一 Workload 意外退出后关闭全组，并等待全部 Run/Shutdown 结果收敛。
 
 Metrics Handler、私有 ServeMux、listener 获取顺序和诊断端口安全策略见
 [Web 可观测性使用指南](web-observability.md#独立诊断-server)。当前只有一个真实
@@ -377,12 +395,15 @@ Metrics Handler、私有 ServeMux、listener 获取顺序和诊断端口安全�
 
 | 错误码 | 常见原因 | 处理 |
 |---|---|---|
-| `app_web_hertz.config_invalid` | Middleware 字段、CORS 安全组合或 provider Config 非法 | 检查对应 stage/reason 和底层 web-hertz cause |
-| `app_web_hertz.config_load_failed` | Manager/Snapshot 不可用、自定义 config scope 缺失、配置非法 | 检查 config scope 和底层 config/web-hertz cause；默认 `web.hertz` 缺失会使用内建值 |
-| `app_web_hertz.declaration_invalid` | nil Option/Observer、非法 Controller/Filter/路径风格或 Access Log 缺少 LoggerFactory | 修正启动声明 |
-| `app_web_hertz.server_build_failed` | provider 构造或路由注册失败 | 检查 web-hertz code 和 Controller cause |
-| `app_web_hertz.module_register_failed` | Server bean 名称或类型重复 | 每个 Container 只注册一次 Module |
-| `app_web_hertz.server_state_invalid` | 绕过 IOC，在 Init 前调用代理 | 只在 Build 成功后 Resolve Server |
+| `app_web_hertz.config.invalid` | Middleware 字段、CORS 安全组合或 provider Config 非法 | 检查对应 stage/reason 和底层 web-hertz cause |
+| `app_web_hertz.config.load_failed` | Manager/Snapshot 不可用、自定义 config scope 缺失、配置非法 | 检查 config scope 和底层 config/web-hertz cause；默认 `web.hertz` 缺失会使用内建值 |
+| `app_web_hertz.declaration.invalid` | nil Option/Observer、非法 Controller/Filter/路径风格或 Access Log 缺少 LoggerFactory | 修正启动声明 |
+| `app_web_hertz.route.register_failed` | Controller 原生路由注册返回错误 | 检查 Registrar cause |
+| `app_web_hertz.middleware.execution_failed` | Request ID 或 Gzip 等请求阶段能力失败 | 结合结构化日志的 op/reason 排查 |
+| `app_web_hertz.server.build_failed` | provider 构造或路由注册失败 | 检查 web-hertz code 和 Controller cause |
+| `app_web_hertz.module.register_failed` | Server bean 名称或类型重复 | 每个 Runtime 只注册一次 Module |
+| `app_web_hertz.server.state_invalid` | 绕过 IOC，在 Init 前调用代理 | 只在 Build 成功后 Resolve Server |
+| `app_web_hertz.server.resolve_failed` | Workload 无法解析唯一 Server | 检查 Module 是否缺失或重复 |
 | `ioc.build.dependency_not_found` | 未注册 `config.Manager` | 用 borrowed 语义声明 Manager |
 | `ioc.build.circular_dependency` | Controller/Filter 反向依赖 Server | 移除反向依赖，改依赖领域服务 |
 
@@ -391,7 +412,7 @@ Metrics Handler、私有 ServeMux、listener 获取顺序和诊断端口安全�
 1. 自动 Controller 同时断言派生 URL 和 HTTP method；动态路由直接测试 `RegisterRoutes`。
 2. Filter 同时测试 Order 和原生 `request.Next` 链。
 3. Module 测试使用真实 Container，断言 Manager borrowed、切片顺序和 `web.Server` 可解析。
-4. 生命周期测试使用预绑定 listener，确保 Container Close 能收敛 Server。
+4. 生命周期测试使用预绑定 listener，让真实请求超过 Hertz `ExitWaitTime`，显式选择 `required` 后确保先完成请求和 Workload、再关闭 IOC 依赖；同时验证 `WaitStarted` 的成功、失败与 caller timeout 广播语义。
 5. 错误断言同时检查 app-web-hertz、IOC、config 或 web-hertz 分层错误码。
 6. CORS 至少覆盖允许/拒绝 Origin 与通配符凭据冲突；Gzip 覆盖 q=0、媒体类型和解压原文。
 7. Observation 覆盖模板路由、未知路由基数、Recovery 最终状态、Request ID、skip path 和 Observer 并发。

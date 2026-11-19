@@ -90,7 +90,7 @@ func defaultConfig() map[string]any {
 			"hertz": map[string]any{
 				"address": loadBusinessAddress(),
 				"middleware": map[string]any{
-					"recovery":  map[string]any{"enabled": true, "response": "json"},
+					"recovery":  map[string]any{"response": "json"},
 					"requestId": map[string]any{"enabled": true, "header": "X-Request-ID"},
 					"accessLog": map[string]any{
 						"enabled":       true,

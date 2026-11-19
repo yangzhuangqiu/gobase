@@ -31,6 +31,9 @@ func TestResolveConfigAppliesExplicitValues(t *testing.T) {
 		MaxRequestBodySize: 1024,
 		MaxHeaderBytes:     2048,
 		ExitWaitTime:       3 * time.Second,
+		Shutdown: ShutdownConfig{
+			HandlerCompletion: HandlerCompletionRequired,
+		},
 		Router: RouterConfig{
 			RedirectTrailingSlash:  optionalBool(false),
 			RedirectFixedPath:      optionalBool(true),
@@ -48,6 +51,31 @@ func TestResolveConfigAppliesExplicitValues(t *testing.T) {
 	}
 	if resolved.Router.RedirectFixedPath == input.Router.RedirectFixedPath {
 		t.Fatal("expected resolved router config to detach caller pointers")
+	}
+}
+
+// TestResolveConfigValidatesHandlerCompletion 验证 Handler 完成合同默认 bestEffort 且只接受两个稳定值。
+// 测试方法：分别解析零值、required 和拼写错误，断言默认值、显式值及可分支配置错误。
+func TestResolveConfigValidatesHandlerCompletion(t *testing.T) {
+	defaultConfig, err := ResolveConfig(Config{})
+	if err != nil {
+		t.Fatalf("resolve default config: %v", err)
+	}
+	if defaultConfig.Shutdown.HandlerCompletion != HandlerCompletionBestEffort {
+		t.Fatalf("expected bestEffort default, got=%q", defaultConfig.Shutdown.HandlerCompletion)
+	}
+
+	required, err := ResolveConfig(Config{Shutdown: ShutdownConfig{HandlerCompletion: HandlerCompletionRequired}})
+	if err != nil {
+		t.Fatalf("resolve required config: %v", err)
+	}
+	if required.Shutdown.HandlerCompletion != HandlerCompletionRequired {
+		t.Fatalf("expected required, got=%q", required.Shutdown.HandlerCompletion)
+	}
+
+	_, err = ResolveConfig(Config{Shutdown: ShutdownConfig{HandlerCompletion: "best-effort"}})
+	if !errcode.IsCode[ErrorCode](err, ErrCodeConfigInvalid) {
+		t.Fatalf("expected unsupported handler completion error, got=%v", err)
 	}
 }
 

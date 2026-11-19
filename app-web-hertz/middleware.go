@@ -25,7 +25,7 @@ func prepareStandardMiddleware(config MiddlewareConfig, options *buildOptions, l
 	if config.RequestID.Enabled {
 		plan.beforeObservation = append(plan.beforeObservation, newRequestIDMiddleware(config.RequestID, options.requestIDGenerator, logger))
 	}
-	if config.Recovery.Enabled {
+	if !config.Recovery.Disabled {
 		plan.afterObservation = append(plan.afterObservation, newRecoveryMiddleware(config.Recovery, options.recoveryHandler, logger))
 	}
 	// 第二阶段：协议响应能力固定在应用 Filter 外层；CORS 构造可能因 typed 策略缺失而失败。

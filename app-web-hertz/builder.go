@@ -1,9 +1,6 @@
 package appwebhertz
 
-import (
-	baseweb "github.com/yangzhuangqiu/gobase/web"
-	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
-)
+import webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 
 // buildServer 执行配置校验和 web-hertz Server 构造事务。
 //
@@ -15,7 +12,7 @@ func buildServer(
 	input Config,
 	components serverComponents,
 	options *buildOptions,
-) (baseweb.Server, error) {
+) (*webhertz.Server, error) {
 	// 第一阶段：同时固定 provider 和标准 Middleware 配置，避免构造一半后发现非法组合。
 	resolvedConfig, err := resolveConfiguredConfig(input)
 	if err != nil {
@@ -37,7 +34,7 @@ func buildResolvedServer(
 	input Config,
 	components serverComponents,
 	options *buildOptions,
-) (baseweb.Server, error) {
+) (*webhertz.Server, error) {
 	// 第二阶段：先冻结完整组件集合，任何 typed nil 或非法声明都不进入 provider。
 	filterPlan, err := prepareFilters(components.filters)
 	if err != nil {

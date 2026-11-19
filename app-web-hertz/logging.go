@@ -54,7 +54,7 @@ func logAssemblySuccess(ctx context.Context, logger baselog.Logger, configScope 
 		baselog.F("global_filter_count", globalFilters), baselog.F("grouped_filter_count", groupedFilters), baselog.F("logical_group_count", logicalGroups),
 		baselog.F("no_route_handler_count", len(components.noRouteHandlers)), baselog.F("no_method_handler_count", len(components.noMethodHandlers)),
 		baselog.F("request_observer_count", len(components.requestObservers)), baselog.F("instrumentation_bundle_count", len(components.instrumentationBundles)),
-		baselog.F("recovery_enabled", input.Middleware.Recovery.Enabled), baselog.F("request_id_enabled", input.Middleware.RequestID.Enabled),
+		baselog.F("recovery_enabled", !input.Middleware.Recovery.Disabled), baselog.F("request_id_enabled", input.Middleware.RequestID.Enabled),
 		baselog.F("access_log_enabled", input.Middleware.AccessLog.Enabled), baselog.F("cors_enabled", input.Middleware.CORS.Enabled),
 		baselog.F("gzip_enabled", input.Middleware.Gzip.Enabled), baselog.F("duration_ms", time.Since(startedAt).Milliseconds()),
 	)

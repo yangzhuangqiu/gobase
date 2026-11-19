@@ -125,6 +125,31 @@ func TestNewRejectsNilDeclarations(t *testing.T) {
 	}
 }
 
+// TestWithHandlerCompletionOverridesConfigAndRejectsInvalid 验证显式关闭合同 Option 高于 typed Config。
+// 测试方法：分别用 required/bestEffort 覆盖相反配置并检查 gate，再断言未知值在 Engine 构造前失败。
+func TestWithHandlerCompletionOverridesConfigAndRejectsInvalid(t *testing.T) {
+	required, err := New(
+		Config{Shutdown: ShutdownConfig{HandlerCompletion: HandlerCompletionBestEffort}},
+		WithHandlerCompletion(HandlerCompletionRequired),
+	)
+	if err != nil || required.requestGate == nil || required.handlerCompletion != HandlerCompletionRequired {
+		t.Fatalf("expected required option override: server=%+v err=%v", required, err)
+	}
+
+	bestEffort, err := New(
+		Config{Shutdown: ShutdownConfig{HandlerCompletion: HandlerCompletionRequired}},
+		WithHandlerCompletion(HandlerCompletionBestEffort),
+	)
+	if err != nil || bestEffort.requestGate != nil || bestEffort.handlerCompletion != HandlerCompletionBestEffort {
+		t.Fatalf("expected bestEffort option override: server=%+v err=%v", bestEffort, err)
+	}
+
+	_, err = New(Config{}, WithHandlerCompletion("bounded"))
+	if !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
+		t.Fatalf("expected invalid handler completion declaration, got=%v", err)
+	}
+}
+
 // TestNewRegistersRoutesInDeclarationOrder 验证 RouteFunc 顺序稳定且共享 Hertz 原生 Router。
 // 测试方法：两个 RouteFunc 依次记录阶段并注册不同路由，断言构造回调顺序未改变。
 func TestNewRegistersRoutesInDeclarationOrder(t *testing.T) {

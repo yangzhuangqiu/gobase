@@ -8,7 +8,7 @@
 
 ### 设计目标
 
-1. 封装一个 `*server.Hertz`，实现根 `web.Server`。
+1. 封装一个 `*server.Hertz`，实现根 `web.StartupServer`，同时保持普通 `web.Server` 合同最小。
 2. 使用 context 驱动运行和优雅停止，不接管进程信号。
 3. 独立拥有 Hertz typed Config、默认值和校验。
 4. 保留 Hertz 原生 Option、Middleware、NoRoute/NoMethod 和 Router 扩展能力。
@@ -58,12 +58,24 @@
 
 对外结果是 provider 可独立使用，依赖方向保持单向；代价是 IOC 应用需要额外装配模块。未选择把应用组织概念下沉到 provider，因为那会把稳定运行适配与易变化的应用约定耦合。
 
+### 2.6 启动结果是一次性屏障，不是持续健康状态
+
+约束是服务注册等组合层必须区分“Run goroutine 已创建”和“Hertz 已确认 running”，同时单个等待者的 deadline 不能决定共享 Server 命运。当前选择由可选 `web.StartupServer.WaitStarted(ctx)` 广播并缓存首次成功或失败；caller context 只限制当前等待。官方 standard/netpoll transport 的 `IsRunning` 同时确认 listener 已存在，自定义 transport 则必须自行遵守同等语义。
+
+对外结果是多个等待者取得同一稳定启动结果，启动失败可保留底层 Run cause；代价是启动成功后不会因后续停止反转。未选择暴露可关闭 channel、Engine 状态或 readiness/持续 Health，因为它们会泄漏所有权、混淆启动屏障与业务健康，并提前绑定 Endpoint 模型。
+
+### 2.7 Handler 完成是显式关闭合同
+
+约束是 Hertz `ExitWaitTime` 到期后可能让 transport 和 Run 入口返回，而阻塞 Handler goroutine 仍在执行；上层若据此关闭 Controller、DB 等依赖，会破坏 Workload 先于 Resource 收敛的顺序。当前提供 `shutdown.handlerCompletion` 二选一合同：默认 `bestEffort` 不安装 gate，保留 Hertz 有界尽力关闭行为；显式 `required` 安装绝对最外层 request gate，先原子关闭准入，再等待所有已放行 Handler 返回。
+
+对外结果是用户选择资源安全或有界退出，而不是配置内部计数器。`ExitWaitTime` 在两种合同中都只约束 Hertz hook、连接和 transport；`required` 在其后仍可能无限等待有缺陷的 Handler，最终强制退出由进程宿主或 Kubernetes 负责。合同只覆盖同步 Handler 链，不覆盖 Handler 自行派生且未等待的 goroutine。
+
 ## 3. 依赖与所有权
 
 ```text
 application composition root
   ├─ calls/borrows ──> web-hertz ──owns──> Hertz Engine
-  │                           └─implements──> web.Server
+  │                           └─implements──> web.StartupServer / web.Server
   ├─ borrows ───────> log.Logger（可选实例诊断）
   ├─ owns/shared ───> hlog logger（可选框架内部日志）
   └─ owns ──────────> OS signal；按调用借出 context
@@ -77,7 +89,7 @@ application composition root
 |---|---|---|---|
 | `*server.Hertz`、生命周期状态和完成信号 | provider owned | `Server.Run/Shutdown` 收敛 | 候选 Engine 不发布，由 provider 丢弃 |
 | `Config`、web-hertz Option 声明 | caller owned，构造期 borrowed | 不需要释放 | 调用方可修正后重新构造 |
-| `Run/Shutdown` context | caller owned，单次调用 borrowed | 调用返回后不再持有 | nil 或已取消按生命周期合同处理 |
+| `Run/WaitStarted/Shutdown` context | caller owned，单次调用 borrowed | 调用返回后不再持有 | nil 或已取消按生命周期合同处理 |
 | Hertz hlog | process shared、上层 owned | 上层在 Server 完整停止后恢复/关闭后端 | provider 从不安装、恢复或关闭 |
 | 实例 log.Logger | caller owned，Server borrowed | Server 不关闭 | 构造失败后调用方仍持有 |
 | Listener、Transport 等原生 Option 携带资源 | 遵循对应 Hertz Option 合同 | Server 提交后由 Hertz 运行语义决定 | provider 不做通用回滚；调用方仍负责独立创建且未转移的资源 |
@@ -89,10 +101,11 @@ application composition root
 |---|---|
 | `Config` | 定义 provider 自有 typed 配置和零值规则 |
 | `RouterConfig` | 使用 optional bool 表达未配置、显式开启和显式关闭 |
-| `Option` | 分类聚合 Hertz Option、Middleware、NoRoute/NoMethod、RouteFunc |
+| `ShutdownConfig` / `HandlerCompletion` | 默认 `bestEffort`；显式 `required` 选择 Handler 完成屏障 |
+| `Option` | 分类聚合 HandlerCompletion 覆盖、Hertz Option、Middleware、NoRoute/NoMethod、RouteFunc |
 | `RouteFunc` | 在构造事务中使用生命周期隔离的根 `*route.RouterGroup` 注册路由 |
 | `HTTPRequestObservation` / `RequestObserver` | 完成态值快照、开始通知和同步消费合同 |
-| `Server` | 独占 Engine，协调单运行周期和共享停止结果 |
+| `Server` | 独占 Engine，协调单运行周期、首次启动结果和共享停止结果 |
 | `lifecycleState` | 表达 new/starting/running/stopping/stopped 内部阶段 |
 
 `Server` 不提供 `Engine()`。需要路由能力时使用 RouteFunc，需要构造能力时使用 Hertz Option；这两个入口覆盖后仍有真实扩展缺口时，才评估更窄的受控 Configurer。
@@ -158,7 +171,7 @@ provider 不读取配置来源，也不承担热更新。Server 构造后配置�
 
 ### Middleware
 
-`WithMiddleware` 接受 `app.HandlerFunc`，保持声明顺序。provider 不把 Handler 包装为 Filter，也不判断 recovery/access-log 等业务优先级。Middleware 的 before/after 嵌套语义完全遵循 Hertz。
+`WithMiddleware` 接受 `app.HandlerFunc`，保持声明顺序。provider 不把 Handler 包装为 Filter，也不判断 recovery/access-log 等业务优先级。Middleware 的 before/after 嵌套语义完全遵循 Hertz。`required` 的私有 request gate 是窄生命周期例外：它在全部用户 Middleware 之前安装，确保 recovery、observer、fallback 和业务 Handler 都处于同一个完成屏障内；draining 后的漏流量返回 `503 + Connection: close`。
 
 `WithRequestObservers` 是请求完成事件的窄例外：它在声明位置生成单个私有 Middleware，一次计时并复制 Method、模板 Route、无 query Path、最终 Status/Duration/Body 大小和有限 Outcome，再同步 fan-out。该合同是后端无关的通用扩展点，本身不等于可观测性适配模块；Access Log、Prometheus 或其他快速本地消费者可以分别复用。未知路由固定 `_unmatched`，非标准 Method 固定 `_other`。可选生命周期扩展只接收 Method；Metadata 扩展只能补充 Request ID、Trace ID 和 panic 标记，不能覆盖稳定维度。
 
@@ -202,7 +215,7 @@ stateDiagram-v2
 
 箭头表示内部生命周期状态转换，不表示 goroutine 所有权转移。nil context 不触发转换；在 starting/running/stopping/stopped 调用 `Run` 都返回 `state.invalid`。`stopped` 是终态，重复 Shutdown 只读取首次共享结果，不能迁回其他状态。
 
-Engine 返回时会先把内部状态置为 stopped；Run 与未被 caller context 提前结束的 Shutdown 仍会等待运行观测和共享停止结果发布后再返回。因此“Engine 已退出”和“稳定结果已发布”是两个完成点，不能只依赖状态值判断释放时机。Server 不支持 restart；重新运行必须重新构造。
+Engine 返回时只把内部状态推进到 stopping；显式 `required` 还会等待 Handler gate，最终共享结果提交时才进入 stopped。因此“Engine 已退出”“Handler 已排空”和“稳定结果已发布”是不同完成点，不能只依赖 Engine 结果判断释放时机。Server 不支持 restart；重新运行必须重新构造。
 
 ### Run
 
@@ -214,6 +227,15 @@ Engine 返回时会先把内部状态置为 stopped；Run 与未被 caller conte
 6. Engine 自然返回或失败时，没有共享停止事务也会发布完成结果；Engine error 只进入 Run 结果。
 7. 优雅停止且 Engine 返回 nil 时，Run 返回 nil；运行或停止真实失败不会被吞掉。
 
+### WaitStarted
+
+1. nil context 返回 `context.invalid`，不改变状态。
+2. 调用可以发生在 Run 前；等待者阻塞到首次启动成功或失败，也可以由自身 context 提前结束。
+3. startup observer 只在 Engine `IsRunning` 且生命周期仍为 starting 时发布成功；启动成功前 Engine 返回、Shutdown 或已取消 Run 发布失败。
+4. 启动结果在 mutex 下只提交一次，再关闭 `startupDone` 广播；任意后续调用读取同一缓存结果。
+5. 单个 caller context 先结束时返回 `startup.failed`，错误链包含 `ErrStartupWaitInterrupted` 与 caller cause，不写入共享启动结果。
+6. 启动成功后结果保持成功；该历史屏障不表达 readiness、持续健康或 Endpoint。
+
 ### Shutdown
 
 1. nil context 返回 `context.invalid`，不触发停止。
@@ -221,22 +243,24 @@ Engine 返回时会先把内部状态置为 stopped；Run 与未被 caller conte
 3. starting/running 只有首个调用者启动 shutdown driver。
 4. driver 等 Hertz `IsRunning` 后调用一次 `Engine.Shutdown(context.Background())`。
 5. Hertz 内部使用最终 `ExitWaitTimeout` 创建停止预算。
-6. 每个调用者只在自己的 context 与共享 `shutdownDone` 之间等待。
-7. 一个调用者取消或超时返回 `shutdown.failed`，错误链包含 `ErrShutdownWaitInterrupted` 和 caller context cause；后台停止和其他调用者继续等待稳定结果。
-8. driver 先输出最终停止日志，再发布 `shutdownDone`，使上层可以在稳定结果后安全恢复全局 hlog。
+6. `required` 在调用 Hertz 前关闭 gate 准入，并在 Engine 返回后继续等待全部已放行 Handler；`bestEffort` 没有 gate。
+7. 每个调用者只在自己的 context 与共享 `shutdownDone` 之间等待。
+8. 一个调用者取消或超时返回 `shutdown.failed`，错误链包含 `ErrShutdownWaitInterrupted` 和 caller context cause；后台停止和其他调用者继续等待稳定结果。
+9. driver 先输出最终停止日志，再发布 `shutdownDone`，使上层可以在稳定结果后安全恢复全局 hlog。
 
-## 9. Shutdown driver 与 context 边界
+## 9. Startup/Shutdown 与 context 边界
 
 本节说明 2.4 节设计决策的运行机制。provider 将两个预算分开：
 
 ```text
 caller context     -> 只限制该调用者等待
 final ExitWaitTime -> 限制 Hertz hook、连接排空和 transport Shutdown
+required gate      -> ExitWaitTime 后仍等待已放行 Handler；没有内部强制完成预算
 ```
 
 因此 caller timeout 不表示底层停止已取消。后续调用者可以使用新的 context 继续等待同一个结果。
 
-Hertz 只有在 Engine 标记 running 后才允许 Shutdown。driver 在 starting 阶段轮询 `IsRunning`；若 Engine 先失败，直接使用 Run 结果收敛。该内部状态不承诺端口已经可请求，也不是公共 readiness API。若未来第三方高级扩展在初始化阶段永久阻塞，provider 无法强制终止该 goroutine，这是 Hertz 入口能力边界。
+WaitStarted 使用相同的 caller 隔离原则：caller timeout 只产生 `startup.wait_interrupted`，不触发 Shutdown，也不提交共享启动失败。Hertz 只有在 Engine 标记 running 后才允许 Shutdown；startup observer 与 driver 在 starting 窗口轮询 `IsRunning`，前者发布公共启动结果，后者在停止意图出现后执行 Shutdown。若 Engine 先失败，两者都使用稳定 Run 结果收敛。若未来第三方高级扩展在初始化阶段永久阻塞，provider 无法强制终止该 goroutine，这是 Hertz 入口能力边界。
 
 ## 10. 错误、panic 与运行失败
 
@@ -272,6 +296,15 @@ Hertz v0.10.5 的未运行错误 sentinel 未导出。provider 对文本 `engine
 | 底层 Shutdown 失败 | `shutdown.failed`，cause 合并 Shutdown 与可能的 Engine error | 所有稳定观察者得到相同 `shutdown.failed` 和 Shutdown cause | Engine 返回后 stopped，共享结果只发布一次 | 清理底层故障后重建 |
 | 单个 Shutdown caller 取消/超时 | 实际 Run 调用继续等待稳定停止结果 | 当前 caller 返回 `shutdown.failed`，同时匹配 `ErrShutdownWaitInterrupted` 和自身 context cause | 共享停止继续，caller deadline 不写入共享结果 | 可用新 context 再次等待同一 Server |
 
+启动结果矩阵：
+
+| 触发/失败原因 | `WaitStarted` 共享结果 | 单个等待者提前结束 |
+|---|---|---|
+| Engine 进入 running | nil，永久缓存 | 不适用 |
+| 启动成功前 Engine error/panic | `startup.failed`，保留 `run.failed` cause | 不适用 |
+| Shutdown-before-Run、已取消 Run 或启动成功前停止 | `startup.failed`，reason 标识终结阶段 | 不适用 |
+| caller context 取消/超时 | 不提交共享结果 | 当前调用返回 `startup.failed`，同时匹配 `ErrStartupWaitInterrupted` 与 caller cause |
+
 ## 11. 并发与可验证不变量
 
 ### 对外不变量
@@ -280,8 +313,11 @@ Hertz v0.10.5 的未运行错误 sentinel 未导出。provider 对文本 `engine
 |---|---|---|
 | 只有首次 Run 能进入 Hertz，后续或并发 Run 返回 `state.invalid` | mutex 下原子执行 new -> starting | `TestConcurrentRunIsRejected` |
 | Run 前 Shutdown 或已取消的 Run 都终结单运行周期，且不建立监听 | mutex 下直接执行 new -> stopped 并发布完成结果 | `TestShutdownBeforeRunConsumesCycle`、`TestRunWithCanceledContextConsumesCycleWithoutListening` |
+| 多个 WaitStarted caller 共享稳定成功/失败，单个 caller timeout 不污染结果 | `startupDone` 一次关闭 + caller context 独立选择 | `TestWaitStartedBroadcastsStableStartupSuccess`、`TestWaitStartedPreservesStartupFailure`、`TestWaitStartedCallerTimeoutDoesNotPoisonStartup` |
 | 并发 Shutdown 只触发一次底层 Shutdown，并观察同一稳定结果 | `shutdownStarted` 选举唯一 driver，`shutdownDone` 广播结果 | `TestConcurrentShutdownSharesOneResult` |
 | 单个 caller timeout 只结束自己的等待，不污染共享停止，且可与底层同类 context cause 分支 | caller context 与 Background driver 分离，并在等待错误链加入 `ErrShutdownWaitInterrupted` | `TestShutdownCallerDeadlineDoesNotPoisonSharedStop`、`TestShutdownFailureIsSharedWithRun` |
+| 显式 required 在 Hertz ExitWaitTime 后仍不提前释放 Handler 依赖 | gate 状态和 in-flight 使用同一原子字线性化，Engine 返回后等待 drained | `TestRequiredHandlerCompletionWaitsBeyondHertzExitBudget`、`TestRequestGateLinearizesAdmissionAndDrain` |
+| 默认 bestEffort 不安装 gate，并允许有界尽力关闭 | 构造期按合同选择 Middleware 与等待路径 | `TestBestEffortHandlerCompletionReturnsAfterHertzExitBudget` |
 | 运行期 transport panic 通过 error 返回，不突破 `web.Server` 合同 | Engine Run goroutine 内部 recover 并保留 cause | `TestRunConvertsTransportPanicToError` |
 | RouteFunc 只能取得生命周期隔离的共享根 RouterGroup | 构造期创建 `Group("/")`，不传递 Engine | `TestNewPassesLifecycleIsolatedRootGroup` |
 | NoRoute/NoMethod 继承全局 Middleware，且 WithNoMethod 必达 | 先安装全局 Middleware，最终开启 405 后安装 fallback | `TestWithNoRouteAppendsHandlersAndInheritsMiddleware`、`TestWithNoMethodForcesReachable405AndInheritsMiddleware` |
@@ -292,11 +328,12 @@ Hertz v0.10.5 的未运行错误 sentinel 未导出。provider 对文本 `engine
 
 ### 内部同步机制
 
-1. 每个成功进入生命周期的 Server 至多创建一个 Engine Run goroutine 和一个 shutdown driver；running observer 只负责状态与日志观测。
-2. `engineDone`、`runningObservationDone` 和 `shutdownDone` 各关闭一次，所有生命周期状态和最终结果由同一 mutex 保护。
+1. 每个成功进入生命周期的 Server 至多创建一个 Engine Run goroutine 和一个 shutdown driver；startup observer 只负责首次启动结果、状态与日志观测。
+2. `engineDone`、`startupDone`、`startupObservationDone` 和 `shutdownDone` 各关闭一次，所有生命周期状态和最终结果由同一 mutex 保护。
 3. Run 在读取结果前等待 Engine 和共享停止两个完成点，避免 signal 已关闭但错误尚未发布的竞态。
-4. driver 在发布 `shutdownDone` 前等待 running observer 退出并完成最终日志；稳定结果发布后 provider 不再读取实例 Logger 或 hlog fallback，应用装配层才可恢复进程级 hlog。
+4. driver 在发布 `shutdownDone` 前等待 startup observer 退出并完成最终日志；稳定结果发布后 provider 不再读取实例 Logger 或 hlog fallback，应用装配层才可恢复进程级 hlog。
 5. stopped 是不可逆终态，不能迁回 new、starting 或 running。
+6. request gate 最高位表示 draining、低 63 位表示 in-flight；准入和关闭使用同一 CAS，最后一个 Handler 关闭 drained channel。
 
 ## 12. 诊断日志与请求完成事件
 
@@ -311,20 +348,20 @@ op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 
 稳定错误 code 和底层 cause 是调用方的主要失败观测入口；日志用于运行诊断，不替代错误分支。provider 不创建日志后端，也不安装全局 hlog。纯应用可在 composition root 使用 `hlog-zap.Install` 或 `InstallFromProvider`；app Runtime 使用 `hlog-zap/app` 管理 hlog Lease。Hertz 框架内部日志仍由 hlog 输出，不经过实例 Logger。
 
-provider 不自动安装 Access Log、Metrics、Tracing 或健康检查后端。请求完成事件 Observer 由调用方显式提供；provider 只复制值快照，不依赖 Logger、Prometheus 或 OTel。`app-web-hertz` 可把 Access Log 作为可选基础组件消费该事件；Prometheus/OTel 适配边界由独立的 [Web 可观测性提案](web-observability-proposal.md) 定义。当前也不提供 Ready、Address、Status 查询，外部探针只能基于应用显式注册的健康路由和进程编排结果判断。日志不得记录请求体、token、TLS 私钥或完整凭据。
+provider 不自动安装 Access Log、Metrics、Tracing 或健康检查后端。请求完成事件 Observer 由调用方显式提供；provider 只复制值快照，不依赖 Logger、Prometheus 或 OTel。`app-web-hertz` 可把 Access Log 作为可选基础组件消费该事件；Prometheus/OTel 适配边界由独立的 [Web 可观测性提案](web-observability-proposal.md) 定义。`WaitStarted` 只提供首次启动屏障；readiness、Address、Endpoint 与持续 Status 仍由未来独立合同或应用健康路由表达。日志不得记录请求体、token、TLS 私钥或完整凭据。
 
 ## 13. 容量与性能边界
 
-1. Option 分类、RouteFunc 执行和路由注册只发生在构造期，provider 自身成本随 Middleware 与 RouteFunc 数量线性增长；RouteFunc 内部工作量由调用方负责。请求路径不经过 provider 自定义反射或路由包装。
-2. starting 阶段通常有两个适配层 goroutine：Engine Run 与 running observer；observer 在确认 running 或 Engine 提前返回后退出，稳定运行期只保留 Engine Run goroutine。
+1. Option 分类、RouteFunc 执行和路由注册只发生在构造期，provider 自身成本随 Middleware 与 RouteFunc 数量线性增长；RouteFunc 内部工作量由调用方负责。请求路径不经过 provider 自定义反射或路由包装；默认 `bestEffort` 不安装 gate，显式 `required` 每个请求增加一次 CAS 准入和一次原子归还。
+2. starting 阶段通常有两个适配层 goroutine：Engine Run 与 startup observer；observer 在确认 running 或 Engine 提前返回后退出，稳定运行期只保留 Engine Run goroutine。
 3. 触发停止后至多增加一个 shutdown driver；若 observer 尚未退出，适配层瞬时最多存在 Engine Run、observer、driver 三个 goroutine。共享结果只会在 Hertz Run 已返回且 observer 已退出后发布；负责发布结果的 Engine Run goroutine 或 driver 随即返回，不承诺在 channel 关闭前已经退出。
 4. `IsRunning` 的 1ms 轮询只存在于 starting/stopping 生命周期窗口，不进入请求路径；若第三方初始化永久阻塞，该轮询和相关 goroutine 也无法自行收敛，这是 Hertz 入口能力边界。
 5. Server 构造成功后 Config、Middleware 和 RouteFunc 声明冻结；provider 不为运行期热更新保留额外副本或同步路径。
 
 ## 14. Open Gaps / Future Improvements
 
-1. 尚无 Ready/Address/Status 查询；后续服务注册 feature 已形成具体的 Ready/Endpoint 窄接口需求，
-   但仍不计划扩展根 `web.Server`，详见[服务注册能力提案](service-registration-proposal.md)。
+1. 已通过可选 `web.StartupServer` 提供启动结果；readiness、Address/Endpoint/持续 Status 尚无跨 provider 合同，
+   后续服务注册 feature 只在真实需要时增加独立窄接口，详见[服务注册能力提案](service-registration-proposal.md)。
 2. 尚无服务注册合同；注册、失败回滚、注销、所有权和摘流量顺序记录在
    [服务注册能力提案](service-registration-proposal.md)，当前仍保持未实现状态。
 3. 初始化阶段永久阻塞无法被 Hertz Shutdown 中断。
@@ -334,15 +371,16 @@ provider 不自动安装 Access Log、Metrics、Tracing 或健康检查后端。
 
 ## 15. File Map
 
-1. `web-hertz/config.go`：独立配置、默认值和 Hertz Option 映射。
-2. `web-hertz/options.go`、`diagnostic_log.go`：实例 Logger、standalone hlog fallback 与其他构造计划。
-3. `web-hertz/request_observation.go`、`request_observer*.go`：完成态 VO、窄接口、Option 与 Middleware。
-4. `web-hertz/route.go`：RouteFunc 公共合同。
-5. `web-hertz/no_route.go`、`web-hertz/no_method.go`：404/405 fallback 窄合同。
-6. `web-hertz/server.go`：Engine 构造、Registry 校验、fallback 与路由事务。
-7. `web-hertz/lifecycle.go`：状态机、共享停止和错误归一化。
-8. `web-hertz/errors.go`：稳定错误码及 cause 包装。
-9. `web-hertz/*_test.go`：配置、404/405、Observation、构造、真实监听、失败与并发合同测试。
+1. `web-hertz/config.go`、`handler_completion.go`：独立配置、关闭合同、默认值和 Hertz Option 映射。
+2. `web-hertz/request_gate.go`：required 请求准入和 Handler 完成屏障。
+3. `web-hertz/options.go`、`diagnostic_log.go`：实例 Logger、standalone hlog fallback 与其他构造计划。
+4. `web-hertz/request_observation.go`、`request_observer*.go`：完成态 VO、窄接口、Option 与 Middleware。
+5. `web-hertz/route.go`：RouteFunc 公共合同。
+6. `web-hertz/no_route.go`、`web-hertz/no_method.go`：404/405 fallback 窄合同。
+7. `web-hertz/server.go`：Engine 构造、Registry 校验、gate、fallback 与路由事务。
+8. `web-hertz/lifecycle.go`：状态机、首次启动结果、共享停止、Handler 排空和错误归一化。
+9. `web-hertz/errors.go`：稳定错误码及 cause 包装。
+10. `web-hertz/*_test.go`：配置、gate、404/405、Observation、构造、真实监听、失败与并发合同测试。
 10. `examples/quickstart-web-hertz/`：可运行教学示例。
 
 ## 16. 相关文档

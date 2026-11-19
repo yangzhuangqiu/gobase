@@ -35,13 +35,14 @@ type managedServer struct {
 	// options 是 Module 注册前已校验并冻结的应用装配声明。
 	options *buildOptions
 	// server 是 Init 成功后发布的底层单周期实现。
-	server baseweb.Server
+	server baseweb.StartupServer
 }
 
 var (
-	_ baseweb.Server  = (*managedServer)(nil)
-	_ ioc.Initializer = (*managedServer)(nil)
-	_ ioc.Closer      = (*managedServer)(nil)
+	_ baseweb.Server        = (*managedServer)(nil)
+	_ baseweb.StartupServer = (*managedServer)(nil)
+	_ ioc.Initializer       = (*managedServer)(nil)
+	_ ioc.Closer            = (*managedServer)(nil)
 )
 
 // Init 在 IOC 依赖完成注入和初始化后构造底层 Hertz Server。
@@ -96,6 +97,22 @@ func (this *managedServer) Run(ctx context.Context) error {
 		return errorForServerStateInvalid("op=app_web_hertz.server.run result=failed stage=precheck reason=server_not_initialized")
 	}
 	return this.server.Run(ctx)
+}
+
+// WaitStarted 等待底层 Hertz 首次确认 running 或稳定启动失败。
+// 阶段角色：供服务注册等高级组合层观察启动结果，不启动或停止 Server。
+//
+// 参数:
+// - ctx: 必填；只约束当前调用者等待。
+//
+// 返回:
+// - nil: 底层 Server 本运行周期已经成功启动；
+// - error: IOC 尚未完成 Init、当前等待被取消，或底层启动失败。
+func (this *managedServer) WaitStarted(ctx context.Context) error {
+	if this == nil || this.server == nil {
+		return errorForServerStateInvalid("op=app_web_hertz.server.wait_started result=failed stage=precheck reason=server_not_initialized")
+	}
+	return this.server.WaitStarted(ctx)
 }
 
 // Shutdown 请求 IOC Build 已构造的底层 Server 优雅停止。

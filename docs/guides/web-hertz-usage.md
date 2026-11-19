@@ -77,6 +77,7 @@ ResolveConfig
 | `MaxRequestBodySize` | `4194304` | 零值使用默认值，负值失败 |
 | `MaxHeaderBytes` | `1048576` | 零值使用默认值，负值失败 |
 | `ExitWaitTime` | `5s` | 零值使用默认值，负值失败 |
+| `Shutdown.HandlerCompletion` | `bestEffort` | `bestEffort|required`；其他值 fail-fast |
 | `Router.RedirectTrailingSlash` | `true` | nil 使用默认值；false 显式关闭 |
 | `Router.RedirectFixedPath` | `false` | nil 使用默认值；true 显式开启 |
 | `Router.HandleMethodNotAllowed` | `false` | nil 使用默认值；true 显式开启 |
@@ -85,8 +86,11 @@ ResolveConfig
 优先级：
 
 ```text
-DefaultConfig < Config 显式字段 < WithHertzOptions 声明顺序
+DefaultConfig < Config 显式字段 < WithHandlerCompletion
 ```
+
+Hertz 原生字段仍按 `DefaultConfig < Config 显式字段 < WithHertzOptions 声明顺序` 归并；
+关闭合同的显式 `WithHandlerCompletion` 高于 ConfigManager 绑定出的 typed Config。
 
 使用原生 Option 设置 typed Config 未覆盖的 Hertz 能力：
 
@@ -196,6 +200,25 @@ return server.Run(ctx)
 
 `Run` 阻塞到监听失败或完整停止。context 取消会触发共享 Hertz Shutdown；停止成功时返回 nil。不要调用 `Hertz.Spin()`，也不要再安装第二套 signal waiter。
 
+### 等待首次启动结果
+
+服务注册等高级组合层可在启动 `Run` 后等待真实监听结果：
+
+```go
+startupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+if err := server.WaitStarted(startupCtx); err != nil {
+	return err
+}
+```
+
+`WaitStarted` 广播并缓存本运行周期的首次成功或失败。单个 caller timeout 只结束自身等待，
+错误同时匹配 `ErrStartupWaitInterrupted` 和 caller context cause；它不会取消 Server，也不会污染
+共享结果。启动成功后即使 Server 随后停止，历史启动结果仍为成功，因此该方法不能替代 readiness 或持续健康检查。
+判定依据是 Hertz `Engine.IsRunning()`；官方 standard/netpoll transport 会同时确认 listener 已存在。
+自定义 transport 若不具备同等语义，不应把该结果直接用于服务注册。
+
 ### 显式 Shutdown
 
 应用宿主也可以从自己的关闭阶段调用：
@@ -216,6 +239,22 @@ if err := server.Shutdown(shutdownCtx); err != nil {
 3. 每个 Shutdown context 只限制当前调用者等待，不会取消共享停止事务。
 4. 在 `Run` 前调用 Shutdown 会终结该对象，后续 Run 返回状态错误。
 5. 需要重启时重新调用 `New`，不要复用已停止实例。
+
+Handler 完成合同在构造阶段冻结：
+
+```go
+// 默认 bestEffort：不安装 request gate，ExitWaitTime 到期后允许 Run 返回。
+server, err := webhertz.New(webhertz.Config{})
+
+// required：安装 request gate，即使 transport 超过 ExitWaitTime，仍等待已放行 Handler。
+server, err := webhertz.New(webhertz.Config{
+	Shutdown: webhertz.ShutdownConfig{
+		HandlerCompletion: webhertz.HandlerCompletionRequired,
+	},
+})
+```
+
+`required` 开始停止时先关闭请求准入；传播窗口中的漏流量返回 `503` 并关闭连接，已经放行的请求继续执行。该合同只等待同步 Handler 链；Handler 自行派生且未等待的 goroutine 应建模为独立 Workload。
 
 caller context 先结束时，错误码仍为 `web_hertz.shutdown.failed`，并同时保留 context cause 与 `ErrShutdownWaitInterrupted`：
 
@@ -266,10 +305,13 @@ server, err := webhertz.New(config, options...)
 | `web_hertz.declaration.invalid` | Option/Middleware/RouteFunc 声明非法 |
 | `web_hertz.registry.unsupported` | 使用了当前不支持的 Hertz Registry |
 | `web_hertz.route.register_failed` | RouteFunc 显式返回 error |
-| `web_hertz.context.invalid` | Run/Shutdown 收到 nil context |
+| `web_hertz.context.invalid` | Run/WaitStarted/Shutdown 收到 nil context |
 | `web_hertz.state.invalid` | 重复或并发 Run 等非法转换 |
 | `web_hertz.run.failed` | Hertz 初始化、监听或 transport 运行失败 |
+| `web_hertz.startup.failed` | 启动成功前失败，或当前 WaitStarted caller 停止等待 |
+| `web_hertz.startup.wait_interrupted` | 仅当前 WaitStarted caller context 结束；同时匹配 `ErrStartupWaitInterrupted` |
 | `web_hertz.shutdown.failed` | 底层停止失败或当前调用者等待取消/超时；后者额外匹配 `ErrShutdownWaitInterrupted` |
+| `web_hertz.shutdown.wait_interrupted` | 仅当前 Shutdown caller context 结束；同时匹配 `ErrShutdownWaitInterrupted` |
 
 使用 `errcode.IsCode` 做稳定分支，使用 `errors.Is/As` 检查底层 cause；不要解析错误文本：
 
@@ -283,16 +325,20 @@ if errcode.IsCode[webhertz.ErrorCode](err, webhertz.ErrCodeRunFailed) {
 
 1. 测试路由时优先使用预绑定 `127.0.0.1:0` listener，避免固定端口冲突。
 2. 显式选择 Hertz standard transport，避免自定义 listener 与 netpoll 能力不匹配。
-3. 从外部测试轮询健康端点或监听地址并设置 deadline，不依赖固定长 sleep；provider 没有公共 readiness 状态。
+3. 启动合同测试调用 `WaitStarted` 并设置 deadline；业务 readiness/健康语义仍通过应用健康路由验证，不依赖固定长 sleep。
 4. 生命周期测试必须给 goroutine/result channel 设置超时，失败时不能永久挂起。
-5. 覆盖 context 取消、端口冲突、并发 Shutdown 和短 deadline 不污染共享结果。
+5. 覆盖启动成功/失败广播、单个 WaitStarted caller timeout、context 取消、端口冲突、并发 Shutdown 和短 deadline 不污染共享结果。
+6. 关闭合同测试必须让真实 Handler 超过 `ExitWaitTime`：`required` 继续等待，`bestEffort` 允许先返回。
 
 ## 11. 常见问题
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 调用 `Run` 后不能继续执行当前 goroutine | Run 是阻塞工作负载入口 | 由应用 Runner 调用，或在受控 goroutine 中运行并收集 error |
+| WaitStarted 超时后 Server 仍在启动 | caller context 只限制当前等待 | 排查启动耗时，或用新 context 等待同一个共享结果 |
 | Shutdown 超时后服务仍在停止 | caller context 只限制当前等待 | 用新的 context 查询同一个共享停止结果 |
+| `required` 下长期无法退出 | 某个已放行 Handler 尚未返回 | 定位 in-flight Handler；其业务函数应协作完成，最终强制退出由进程宿主负责 |
+| `bestEffort` 下 Run 返回但 Handler 仍运行 | 默认合同接受有界尽力关闭 | 如需 IOC 依赖安全，显式改用 `required` |
 | 第二次 Run 返回状态错误 | Server 是单运行周期对象 | 重新构造 Server |
 | `WithRegistry` 构造失败 | 直接 Run 没有 Spin 注册 hook | 不在当前 provider 中配置 Registry，等待独立注册生命周期合同 |
 | Controller 无法直接传入 | provider 不定义 Controller | 使用 `app-web-hertz` 聚合 Controller/Filter |

@@ -30,7 +30,7 @@ $env:WEB_HERTZ_ADDRESS="127.0.0.1:28080"
 ./scripts/go.ps1 -C examples run ./quickstart-web-hertz
 ```
 
-按 `Ctrl+C` 后，信号 context 会被取消。`web-hertz` 触发一次共享 Hertz Shutdown，并等待连接排空或 `exitWaitTime` 到期。
+按 `Ctrl+C` 后，信号 context 会被取消。`web-hertz` 触发一次共享 Hertz Shutdown；默认 `bestEffort` 最多等待 `exitWaitTime`，需要 Handler 完成屏障时配置 `shutdown.handlerCompletion: required`。
 
 ## 代码阅读顺序
 

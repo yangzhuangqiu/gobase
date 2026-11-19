@@ -16,7 +16,7 @@ import (
 // Server 是持有 Hertz Engine 的单运行周期 Web Server。
 //
 // 语义:
-// 1. 实现 web.Server，并把 Hertz Run/Shutdown 差异收敛为稳定生命周期；
+// 1. 实现 web.StartupServer，并把 Hertz Run/WaitStarted/Shutdown 差异收敛为稳定生命周期；
 // 2. 独占底层 *server.Hertz，不暴露绕过状态机的启动和停止入口；
 // 3. 构造后配置、Middleware 和 Routes 均已冻结。
 type Server struct {
@@ -26,14 +26,24 @@ type Server struct {
 	engine *server.Hertz
 	// address 是应用全部原生 Option 后的实际监听地址，用于生命周期诊断。
 	address string
+	// handlerCompletion 是构造阶段冻结的 Handler 完成合同。
+	handlerCompletion HandlerCompletion
+	// requestGate 仅在 required 合同下存在，并作为全部用户 Handler 的最外层屏障。
+	requestGate *requestGate
 	// mu 串行保护生命周期状态、结果和 channel 关闭。
 	mu sync.Mutex
 	// state 表示当前单运行周期所处阶段。
 	state lifecycleState
 	// engineDone 在 Hertz Run goroutine 返回后关闭。
 	engineDone chan struct{}
-	// runningObservationDone 在运行状态观测 goroutine 退出后关闭，约束最终 hlog 访问边界。
-	runningObservationDone chan struct{}
+	// startupObservationDone 在启动结果观测 goroutine 退出后关闭，约束最终 hlog 访问边界。
+	startupObservationDone chan struct{}
+	// startupDone 在首次启动成功或稳定启动失败发布后关闭，供全部 WaitStarted 调用者广播观察。
+	startupDone chan struct{}
+	// startupCompleted 标记 startupDone 已关闭并允许读取 startupErr。
+	startupCompleted bool
+	// startupErr 保存首次启动结果；nil 表示已经成功启动。
+	startupErr error
 	// shutdownDone 在共享停止事务完成后关闭。
 	shutdownDone chan struct{}
 	// shutdownStarted 标记共享停止事务已被触发。
@@ -46,7 +56,10 @@ type Server struct {
 	shutdownErr error
 }
 
-var _ baseweb.Server = (*Server)(nil)
+var (
+	_ baseweb.Server        = (*Server)(nil)
+	_ baseweb.StartupServer = (*Server)(nil)
+)
 
 // New 解析配置并构造尚未监听的 Hertz Server。
 //
@@ -74,6 +87,10 @@ func New(input Config, options ...Option) (*Server, error) {
 			return nil, err
 		}
 	}
+	handlerCompletion := resolvedConfig.Shutdown.HandlerCompletion
+	if resolvedOptions.handlerCompletion != nil {
+		handlerCompletion = *resolvedOptions.handlerCompletion
+	}
 
 	// 第二阶段：typed Config 先应用，原生 Option 按声明顺序覆盖；NoMethod 可达性是窄例外。
 	nativeOptions := resolvedConfig.hertzOptions()
@@ -91,7 +108,12 @@ func New(input Config, options ...Option) (*Server, error) {
 		return nil, err
 	}
 
-	// 第三阶段：先冻结全局 Middleware，再安装 fallback，最后执行显式路由事务。
+	// 第三阶段：required 合同先安装绝对最外层 gate，再冻结用户 Middleware、fallback 和显式路由事务。
+	var gate *requestGate
+	if handlerCompletion == HandlerCompletionRequired {
+		gate = newRequestGate()
+		engine.Use(gate.middleware())
+	}
 	if len(resolvedOptions.middleware) > 0 {
 		engine.Use(resolvedOptions.middleware...)
 	}
@@ -111,9 +133,12 @@ func New(input Config, options ...Option) (*Server, error) {
 		logger:                 resolvedOptions.logger,
 		engine:                 engine,
 		address:                finalOptions.Addr,
+		handlerCompletion:      handlerCompletion,
+		requestGate:            gate,
 		state:                  lifecycleStateNew,
 		engineDone:             make(chan struct{}),
-		runningObservationDone: make(chan struct{}),
+		startupObservationDone: make(chan struct{}),
+		startupDone:            make(chan struct{}),
 		shutdownDone:           make(chan struct{}),
 	}
 	logDebug(resolvedOptions.logger, context.Background(), "Hertz server assembled",
@@ -121,6 +146,8 @@ func New(input Config, options ...Option) (*Server, error) {
 		baselog.F("result", "ok"),
 		baselog.F("stage", "complete"),
 		baselog.F("address", finalOptions.Addr),
+		baselog.F("handler_completion", handlerCompletion),
+		baselog.F("request_gate_enabled", gate != nil),
 		baselog.F("hertz_option_count", len(resolvedOptions.hertzOptions)),
 		baselog.F("middleware_count", len(resolvedOptions.middleware)),
 		baselog.F("route_registrar_count", len(resolvedOptions.routes)),

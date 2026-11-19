@@ -19,7 +19,7 @@
 5. 保留 app-web-hertz、config、IOC 和 web-hertz 的可分支错误链。
 6. 以不含 OTel 类型的原子 Bundle 接受成对 Hertz 插桩，并保持 Provider/Exporter 所有权在外部。
 
-非目标：包扫描、隐式接口发现、自动 Run、通用 workload SPI、默认启用 Middleware、hlog 生命周期、启动配置热更新、当前版本的服务注册、观测后端资源创建和信号处理。后续服务注册作为独立 TODO feature 设计，不改变本文描述的现状，详见[服务注册能力提案](service-registration-proposal.md)。
+非目标：包扫描、隐式接口发现、自动 Run、通用 workload SPI、Recovery 之外的默认 Middleware、hlog 生命周期、启动配置热更新、当前版本的服务注册、观测后端资源创建和信号处理。后续服务注册作为独立 TODO feature 设计，不改变本文描述的现状，详见[服务注册能力提案](service-registration-proposal.md)。
 
 ## 3. 核心决策
 
@@ -53,9 +53,9 @@ Hertz hlog 是进程级可变状态，不属于单个 Server bean。本模块不
 
 ### 3.6 标准 Middleware 使用固定阶段和实例私有状态
 
-约束是配置需要表达 Recovery、Request ID、Access Log、CORS、Gzip 等可选基础组件，但不能允许任意 Order 形成不可验证组合，也不能让第三方包级可变状态造成多 Server 互相污染。Access Log 的模块归属和安装方式与这些基础组件一致：由 `app-web-hertz` 实现、通过 `web.hertz.middleware.accessLog` 显式启用，不依赖 Prometheus、OTel 或 `app-observe-webhertz`。
+约束是配置需要表达 Recovery、Request ID、Access Log、CORS、Gzip 等基础组件，但不能允许任意 Order 形成不可验证组合，也不能让第三方包级可变状态污染 Server。Recovery 是默认启用的安全基线；Access Log 等可选能力由 `app-web-hertz` 实现并显式启用，不依赖 Prometheus、OTel 或 `app-observe-webhertz`。
 
-当前选择由 `app-web-hertz` 公开稳定 Config/typed policy，Middleware 实现保持私有且只持有当前构造快照；Recovery 复用锁定版本的 Hertz 内置实现。固定链为 `advanced outer -> instrumentation -> Request ID -> completion event -> Recovery -> CORS -> Gzip -> global Filters -> grouped Filters -> Controller-local Middleware`。LoggerFactory 是必需依赖，Init 一次派生 assembly、middleware、provider 和 request Logger；内建 Access Log 与 IOC Observer 共享一次请求完成事件，Instrumentation Bundle 由 IOC 按对象存在性启用。`app-web-hertz` 不创建日志 Provider、Registry 或 Trace Provider。
+当前选择由 `app-web-hertz` 公开稳定 Config/typed policy，Middleware 实现保持私有且只持有当前构造快照；Recovery 复用锁定版本的 Hertz 内置实现。默认 `bestEffort` 链为 `advanced outer -> instrumentation -> Request ID -> completion event -> Recovery -> CORS -> Gzip -> global Filters -> grouped Filters -> Controller-local Middleware`；显式 `required` 在最外层安装 request gate。LoggerFactory 是必需依赖，Init 一次派生 assembly、middleware、provider 和 request Logger；内建 Access Log 与 IOC Observer 共享一次请求完成事件，Instrumentation Bundle 由 IOC 按对象存在性启用。`app-web-hertz` 不创建日志 Provider、Registry 或 Trace Provider。
 
 ## 4. 依赖方向
 
@@ -95,24 +95,25 @@ flowchart LR
 | Instrumentation Bundle | 可选 Trace 适配器 | 适配 bean | app-web-hertz 只借用；Bundle 不拥有 Provider |
 | OTel Provider/Exporter | 应用 Provider managed bean | 应用/IOC | Server/adapter 关闭后 ForceFlush、Shutdown |
 
-托管 bean 本身实现 `web.Server`、`ioc.Initializer` 和 `ioc.Closer`，但只向容器额外声明 `web.Server`；同一实例只执行一次 Init/Close。
+托管 bean 本身实现 `web.StartupServer`、`ioc.Initializer` 和 `ioc.Closer`，向容器同时声明 `web.Server` 与 `web.StartupServer`；两个接口指向同一实例且只执行一次 Init/Close。
 
 ## 6. 配置与声明模型
 
 | 输入 | 默认/零值 | 归并规则 | 生效阶段 | 失败语义 |
 |---|---|---|---|---|
-| Module config scope | 空白为 `web.hertz` | 构造时固定 | Server bean Init | `config_load_failed` |
-| `webhertz.Config` | provider 默认；Router bool 为三态 | typed Config 后由原生 Option 覆盖；WithNoMethod 可达性除外 | provider 构造 | 保留 web-hertz cause |
-| `appwebhertz.Config` | Server 默认 + 标准能力全关闭 | Server YAML inline；Middleware 使用子段 | Server Init | `config_invalid` / `config_load_failed` |
-| Recovery / Request ID / Access Log / CORS / Gzip 可选基础组件 | enabled=false | Snapshot 配置后由 typed policy/LoggerFactory 补充策略 | 标准链构造 | 配置非法或 typed 依赖缺失 fail-fast |
+| Module config scope | 空白为 `web.hertz` | 构造时固定 | Server bean Init | `app_web_hertz.config.load_failed` |
+| `webhertz.Config` | provider 默认；HandlerCompletion=`bestEffort`；Router bool 为三态 | typed Config 后由显式 HandlerCompletion/Hertz Option 覆盖；WithNoMethod 可达性除外 | provider 构造 | 保留 web-hertz cause |
+| `appwebhertz.Config` | Server 默认 + Recovery 默认启用，其余能力关闭 | Server YAML inline；Middleware 使用子段 | Server Init | `app_web_hertz.config.invalid` / `app_web_hertz.config.load_failed` |
+| Recovery | `disabled=false`、JSON 500 | Snapshot 可显式关闭或选择响应；typed Handler 覆盖响应策略 | 标准链构造 | 配置非法 fail-fast |
+| Request ID / Access Log / CORS / Gzip 可选基础组件 | enabled=false | Snapshot 配置后由 typed policy/LoggerFactory 补充策略 | 标准链构造 | 配置非法或 typed 依赖缺失 fail-fast |
 | 通用 RequestObserver | 空集合 | IOC 注册顺序 | 完成态阶段 | nil fail-fast；无 YAML 总开关 |
 | Instrumentation Bundle | 空集合（Trace 默认关闭） | IOC 注册顺序 | provider 构造前 | Option/Middleware 任一非法则整体 fail-fast |
-| `WithRoutePathStyle` | Kebab | 后者覆盖 | Controller plan | `declaration_invalid` |
+| `WithRoutePathStyle` | Kebab | 后者覆盖 | Controller plan | `app_web_hertz.declaration.invalid` |
 | `WithServerOptions` | 空集合 | 按声明顺序追加 | provider 构造 | nil fail-fast |
 | Controller/Filter | 可为空 | IOC 注册顺序 | Build 注入 | typed nil 在 plan 阶段失败 |
 | NoRoute/NoMethod Handler | 可为空 | 先按 IOC 注册顺序注入，再按 Order 稳定排序 | Build 注入 | typed nil 在 fallback plan 阶段失败 |
 
-Module 只读取当前 Snapshot 一次且不调用 Subscribe。旧的扁平 Server 字段与新增 `router`、`middleware` 子段从同一 config scope 解码；即使 Manager 后续发布新 Snapshot，已构造 Server 的地址、timeout、Middleware 和路由也不改变。
+Module 只读取当前 Snapshot 一次且不调用 Subscribe。旧的扁平 Server 字段与 `shutdown`、`router`、`middleware` 子段从同一 config scope 解码；即使 Manager 后续发布新 Snapshot，已构造 Server 的地址、关闭合同、timeout、Middleware 和路由也不改变。
 
 ## 7. 构建事务
 
@@ -177,17 +178,19 @@ Controller 计划分三个阶段：
 
 Filter 在构造期先按接口类型分类，再在各自作用域内按 `(Order, IOC/input index)` 稳定排序。普通 Filter 注册到 Engine 全局链；GroupedFilter 注册到 GroupPath 对应的基础 group，根 GroupPath 仍不是全局。请求期直接执行 `DoFilter` 方法值，不创建适配对象。
 
-标准 Middleware 在 Filter 计划之前构造，但最终由 `web-hertz` 一次性冻结。advanced outer 来源于既有 `WithServerOptions`；Instrumentation Bundle 紧随其后，Request ID 与 Recovery 之间只安装一个请求完成事件边界；全部 Filter 位于 Gzip 内层。Bundle 先完整验证 Option/Middleware，再进入构造计划。Access Log 缺少 `LoggerFactory`、CORS 缺少动态策略、Bundle 任一半非法均以 `declaration_invalid` 在 Engine 创建前失败。
+标准 Middleware 在 Filter 计划之前构造，但最终由 `web-hertz` 一次性冻结。advanced outer 来源于既有 `WithServerOptions`；Instrumentation Bundle 紧随其后，Request ID 与 Recovery 之间只安装一个请求完成事件边界；全部 Filter 位于 Gzip 内层。Bundle 先完整验证 Option/Middleware，再进入构造计划。Access Log 缺少 `LoggerFactory`、CORS 缺少动态策略、Bundle 任一半非法均以 `app_web_hertz.declaration.invalid` 在 Engine 创建前失败。
 
 ## 10. 生命周期与并发
 
 托管代理不复制 `web-hertz` 状态机：
 
-1. `Init` 前 Run/Shutdown 返回 `server_state_invalid`，不得 panic。
-2. `Init` 成功后 Run/Shutdown 原样委托底层 `web.Server`。
+1. `Init` 前 Run/WaitStarted/Shutdown 返回 `server.state_invalid`，不得 panic。
+2. `Init` 成功后 Run/WaitStarted/Shutdown 原样委托底层 `web.StartupServer`。
 3. `Close` 在未取得 delegate 时为幂等 nil；正常路径委托 Shutdown。
 4. Server 单运行周期、并发 Shutdown、caller 等待中断和稳定结果均由 `web-hertz` 定义。
 5. Module 不创建后台 goroutine；唯一运行 goroutine由调用方选择。
+6. WaitStarted 广播并缓存首次启动成功或失败；单个 caller context 只结束自身等待，不控制 Server 生命周期。
+7. 默认 `bestEffort` 不安装 request gate，保持有界尽力关闭；显式 `required` 保证已放行 Handler 全部返回后 Run 才结束。
 
 独立诊断端口不改变上述 Server bean 合同。应用 composition root 可以把业务
 `web.Server` 与 owned 诊断 `net/http.Server` 作为同级工作负载交给复合 Workload
@@ -196,19 +199,21 @@ Filter 在构造期先按接口类型分类，再在各自作用域内按 `(Orde
 
 如果 Run 因 context 取消已正常停止，后续 Container Close 再次 Shutdown 是幂等操作。
 
-首次 Container Close context 必须覆盖 Server 的完整优雅停止窗口。IOC 的 Closer 等待若先超时，会按容器合同继续关闭后续 bean；因此短 deadline 不能保证 Server 后台停止期间 Controller/Filter 仍保持可用。
+首次 Container Close context 应覆盖 Server 的完整优雅停止窗口。IOC 即使观察到 timeout 也会继续等待当前 Closer 真实结束，避免 Server 尚在使用 Controller/Filter 时提前销毁其依赖；因此所有 Closer 都必须响应 context 并最终返回。
 
 ## 11. 错误与诊断日志
 
 | 稳定错误码 | 阶段 | 状态语义 |
 |---|---|---|
-| `app_web_hertz.config_invalid` | Init config resolve | 未创建 Handler/Engine，保留 provider cause |
-| `app_web_hertz.config_load_failed` | Init/load config | delegate 未发布，IOC Build 失败 |
-| `app_web_hertz.declaration_invalid` | Option/plan/precheck | Registry 无部分修改或 delegate 未发布 |
-| `app_web_hertz.server_build_failed` | provider build | delegate 未发布，保留 provider cause |
-| `app_web_hertz.module_register_failed` | Module Register | Server bean 未注册，保留 IOC cause |
-| `app_web_hertz.server_state_invalid` | Run/Shutdown precheck | 未调用底层对象 |
-| `app_web_hertz.server_resolve_failed` | app Workload precheck/resolve | 未调用底层对象，保留 IOC cause |
+| `app_web_hertz.config.invalid` | Init config resolve | 未创建 Handler/Engine，保留 provider cause |
+| `app_web_hertz.config.load_failed` | Init/load config | delegate 未发布，IOC Build 失败 |
+| `app_web_hertz.declaration.invalid` | Option/plan/precheck | Registry 无部分修改或 delegate 未发布 |
+| `app_web_hertz.route.register_failed` | Controller route registration | delegate 未发布，保留 Registrar cause |
+| `app_web_hertz.middleware.execution_failed` | request middleware | 当前请求失败，保留底层 cause 并记录结构化日志 |
+| `app_web_hertz.server.build_failed` | provider build | delegate 未发布，保留 provider cause |
+| `app_web_hertz.module.register_failed` | Module Register | Server bean 未注册，保留 IOC cause |
+| `app_web_hertz.server.state_invalid` | Run/WaitStarted/Shutdown precheck | 未调用底层对象 |
+| `app_web_hertz.server.resolve_failed` | app Workload precheck/resolve | 未调用底层对象，保留 IOC cause |
 
 Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和循环分别由 IOC 在 Init 前返回稳定错误码。错误消息携带适用的 `op/result/stage/reason/scope/index`，不得包含请求体、token、TLS 私钥或完整凭据。
 
@@ -219,7 +224,7 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 | 可观察合同 | 保证机制 | 合同测试 |
 |---|---|---|
 | 私有 builder 完整拒绝非法组件和 Option | Engine 创建前统一计划校验 | `TestBuildServerRejectsInvalidDeclarations` |
-| Module 自动发布唯一 `web.Server` | Build 前声明 + 接口索引 | `TestModuleAutomaticallyAssemblesControllerFilterAndServer` |
+| Module 自动发布指向同一 bean 的唯一 `web.Server`/`web.StartupServer` | Build 前声明 + 接口索引 | `TestModuleAutomaticallyAssemblesControllerFilterAndServer` |
 | Definition 工厂发布语义接口 | 工厂内固定 WithDeclare + Runtime 原样注册 | `TestDefinitionFactoriesPublishApplicationSemanticInterfaces` |
 | fallback handler 稳定排序且拒绝 typed nil | `(Order, registration index)` 稳定计划 | `TestPrepareFallbackHandlersSortsStablyAndRejectsTypedNil` |
 | Container Close 能停止正在运行的 Server | managed bean Close 委托 Shutdown | `TestContainerCloseStopsManagedRunningServer` |
@@ -227,7 +232,7 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 | 默认 config scope 缺失回退、自定义 config scope 缺失失败、trim/最后声明和错误链稳定 | WithConfigScope + Init 单次 loadConfig | `TestLoadConfigUsesDefaultsWhenDefaultConfigScopeMissing`、`TestLoadConfigRejectsMissingCustomConfigScope`、`TestWithConfigScopeUsesDefaultAndLastDeclaration`、`TestModuleUsesCustomConfigScopeAndPreservesConfigFailures` |
 | 旧扁平字段与 middleware 子段同源解码 | Config.Server YAML inline | `TestLoadConfigPreservesFlatConfigScopeAndDecodesRouterConfig` |
 | Go 配置值与 Snapshot 解析一致且无订阅 | 共用 resolveConfiguredConfig | `TestGoValueAndSnapshotConfigResolveIdentically` |
-| 标准链顺序和 panic 最终 500 稳定 | 固定 Handler 阶段 + Recovery 外层 | `TestPrepareStandardMiddlewareKeepsFixedOrder`、`TestRecoveryProducesFinal500AndPreservesRequestID` |
+| Recovery 零配置默认启用、可显式关闭，且 panic 最终 500 稳定 | 固定 Handler 阶段 + Recovery 外层 | `TestResolveConfiguredConfigUsesSafeDefaultsAndDetachesSlices`、`TestRecoveryProducesFinal500AndPreservesRequestID`、`TestRecoveryCanBeExplicitlyDisabled` |
 | IOC 配置只读一次并产生真实请求行为 | managed Init 单次 Current + 共用 build | `TestModuleBuildsConfiguredMiddlewareFromSingleSnapshot` |
 | CORS 不允许通配符凭据组合 | resolve 阶段安全校验 | `TestResolveConfiguredConfigRejectsInvalidMiddleware`、`TestCORSMiddlewareAppliesSafePreflightAndRejectsUnknownOrigin` |
 | Gzip 尊重协议与内容保护条件 | 完成态基础检查 | `TestGzipMiddlewareCompressesEligibleResponseAndRespectsGuards` |
@@ -241,6 +246,7 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 | Controller 反向依赖 Server 被拒绝 | IOC 拓扑循环检测 | `TestModuleRequiresManagerAndRejectsControllerServerCycle` |
 | nil Option 不留下部分注册 | Register 前 resolveOptions | `TestModuleRejectsInvalidDeclarationsBeforeRegistryMutation` |
 | Init 前生命周期调用不 panic | delegate 状态保护 | `TestManagedServerRejectsLifecycleBeforeInit` |
+| 显式 required 即使超过 Hertz ExitWaitTime，仍先排空真实请求和 Workload、再关闭 IOC 依赖 | app 监督器 + request gate + Runtime Close 分阶段 | `TestAppWorkloadGracefullyStopsRealHertzBeforeClosingIOCResources` |
 | 诊断端口不进入业务 Router 或 Server bean | 应用 Workload Controller + 私有 ServeMux | `TestWorkloadAssemblyExportsRealPrometheusAndStopsTogether` |
 | Filter 保留 Hertz 原生链和稳定顺序 | 构造期排序 + 方法值 | `TestFilterOrderExecutesThroughNativeHertzChain` |
 | 相同 GroupPath 共享分组 Filter 且 Controller Middleware 隔离 | 缓存基础 group + 无路径子分组 | `TestGroupedFiltersShareLogicalGroupWithoutLeakingControllerMiddleware`、`TestRootControllerMiddlewareDoesNotLeak` |
@@ -248,18 +254,18 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 ## 13. 容量、限制与演进
 
 1. Build 成本随 Controller 方法数、Filter 数和路由数线性增长；请求期没有反射调用。
-2. 当前 `Workload()` 按类型唯一解析 `web.Server`；多 Server 需要由各 adapter 提供唯一 Workload 名称和解析规则。
+2. 单 Runtime 单业务 Server 是明确边界；独立诊断 Server 使用专用 Workload/Resource，多业务 Server 使用独立 Runtime。
 3. 启动配置和路由计划不热更新；变化需要重建 Container/Runtime。
 4. 自动路由把方法名作为公开 URL 声明，兼容性敏感接口应使用显式路由。
 5. 标准 Middleware 只处理启动期静态策略；动态配置刷新需要独立原子策略合同，不能订阅整个 Config。
 6. Gzip 只处理完整内存响应，不接管流式/SSE/升级连接；Access Log 与通用 Observer 使用请求完成事件，Trace 使用原子 Instrumentation Bundle。Prometheus/OTel 的后端适配不属于本模块。
-7. 当前不聚合服务 Registrar，也不协调 Ready 后注册和关闭前注销；候选模块边界、Workload 内部顺序和验收标准见[服务注册能力提案](service-registration-proposal.md)。
+7. 当前不聚合服务 Registrar，也不协调启动成功后注册和关闭前注销；候选模块边界、Workload 内部顺序和验收标准见[服务注册能力提案](service-registration-proposal.md)。
 
 ## 14. File Map
 
 1. `app-web-hertz/controller.go`、`route_registrar.go`、`filter.go`、`grouped_filter.go`、`no_*_handler.go`：应用扩展合同。
 2. `app-web-hertz/route.go`、`group_path.go`、`route_path.go`、`route_path_style.go`、`filter_plan.go`：Controller/Filter 计划、逻辑分组和路径映射。
-3. `app-web-hertz/configured_config.go`、`middleware_config.go`：完整 Config、默认值和校验。
+3. `app-web-hertz/config.go`、`middleware_config.go`：完整 Config、默认值、加载和校验。
 4. `app-web-hertz/middleware*.go`：标准链、typed policy 与 Recovery/Request ID/CORS/Gzip 实现。
 5. `app-web-hertz/logging.go`、`access_log.go`、`request_observation.go`：Logger 派生、组装摘要、内建日志映射和完成态桥接。
 6. `app-web-hertz/instrumentation_bundle.go`：无 OTel 类型的原子插桩合同。
@@ -270,7 +276,8 @@ Module Init 错误外层还会包含 `ioc.build.init_failed`；依赖缺失和�
 11. `app-web-hertz/workload.go`：唯一 Server 的 Workload Run/Shutdown 适配。
 12. `app-web-hertz/config.go`：独立 config scope 配置加载。
 13. `app-web-hertz/errors.go`：稳定错误码。
-14. `app-web-hertz/*_test.go`：配置、Middleware、Observation、Bundle、依赖图、路由和真实生命周期测试。
+14. `app-web-hertz/app_lifecycle_integration_test.go`：真实 App + Hertz 关闭、请求排空和依赖释放顺序。
+15. `app-web-hertz/*_test.go`：配置、Middleware、Observation、Bundle、依赖图、路由和生命周期合同测试。
 
 ## 15. 相关文档
 

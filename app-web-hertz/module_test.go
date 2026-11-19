@@ -101,6 +101,10 @@ func TestModuleAutomaticallyAssemblesControllerFilterAndServer(t *testing.T) {
 	if err != nil || webServer == nil {
 		t.Fatalf("resolve web server: server=%v err=%v", webServer, err)
 	}
+	startupServer, err := ioc.ResolveAs[baseweb.StartupServer](container)
+	if err != nil || startupServer == nil || startupServer != webServer {
+		t.Fatalf("resolve same startup server: startup=%v server=%v err=%v", startupServer, webServer, err)
+	}
 	bean, err := ioc.ResolveAs[*managedServer](container)
 	if err != nil {
 		t.Fatalf("resolve managed server: %v", err)
@@ -128,7 +132,7 @@ func TestModuleAutomaticallyAssemblesControllerFilterAndServer(t *testing.T) {
 }
 
 // TestModuleBuildsConfiguredMiddlewareFromSingleSnapshot 验证 IOC Init 从同一 Snapshot 装配标准 Middleware，并保持 typed policy 与生命周期边界。
-// 测试方法：配置 Request ID/Recovery，注入固定 Generator 和预绑定 listener，访问 panic 路由后断言 500/ID，再检查 Manager 单次读取且无订阅。
+// 测试方法：只配置 Request ID、保持 Recovery 未声明，注入固定 Generator 和预绑定 listener；访问 panic 路由断言默认 500/ID，再检查 Manager 单次读取且无订阅。
 func TestModuleBuildsConfiguredMiddlewareFromSingleSnapshot(t *testing.T) {
 	// 第一阶段：准备单一 Snapshot、可控 listener 与会触发 panic 的 Controller 声明。
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -141,7 +145,6 @@ func TestModuleBuildsConfiguredMiddlewareFromSingleSnapshot(t *testing.T) {
 			"exitWaitTime": time.Second,
 			"middleware": map[string]any{
 				"requestId": map[string]any{"enabled": true},
-				"recovery":  map[string]any{"enabled": true, "response": "json"},
 				"accessLog": map[string]any{"enabled": true, "slowThreshold": "1ns"},
 			},
 		}},
