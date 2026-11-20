@@ -352,7 +352,7 @@ request ID 能找到该请求的入口、错误和关键业务事件”；第二
 
 1. [Web 可观测性提案](../architecture/web-observability-proposal.md)：本项目为什么采用
    当前模块边界和生命周期合同。
-2. [Web 可观测性使用指南](web-observability.md)：如何在应用中装配 Metrics、Tracing
+2. [app-observe-webhertz 使用指南](app-observe-webhertz-usage.md)：如何在应用中装配 Metrics、Tracing
    和独立 Metrics Server。
 3. [高级可运行示例](../../examples/quickstart-app-observe-webhertz/README.md)：完整代码。
 4. [app-web-hertz 使用指南](app-web-hertz-usage.md)：Access Log、Request ID 等基础组件。

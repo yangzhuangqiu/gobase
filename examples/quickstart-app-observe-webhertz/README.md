@@ -50,21 +50,21 @@ Span，例如：
 trace span="GET /api/orders/:id" trace_id=... span_id=... status=Unset
 ```
 
-按 `Ctrl+C` 后，复合 Workload 会先收敛业务和 Metrics Server；随后 IOC 按依赖逆序关闭
-Hertz Server、观测 adapter，最后由应用拥有的 TracerProvider 执行
+按 `Ctrl+C` 后，App 会并发关闭业务 Hertz 与 Metrics 两个 Workload，并等待两个 Run
+真实收敛；随后 IOC 按依赖逆序关闭观测 adapter，最后由应用拥有的 TracerProvider 执行
 `ForceFlush`/`Shutdown`。
 
 ## 关键装配语义
 
 1. `traceProviderOwner` 是 managed bean，拥有 SDK Provider、Sampler 和 Exporter。
-2. 默认配置同时提供 `log.zap`、`web.hertz` 与 `observability.metrics.server`
-   scope，保证日志、业务端口和 Metrics 端口在 IOC Build 阶段冻结。
+2. 默认配置同时提供 `log.zap`、`web.hertz` 与统一 `observability.webHertz` scope，
+   保证日志、业务端口、指标/Trace 策略和 Metrics 端口在 IOC Build 阶段冻结。
 3. `app-observe-webhertz` 只借用 Provider/Propagator，原子发布
    `InstrumentationBundle`，同时用私有 Registry 发布 `RequestObserver` 与
    `PrometheusHandler`。
 4. `app-web-hertz` 从 IOC 聚合 Bundle 和 Observer，一次性组装唯一业务 Server。
-5. `WithMetricsServer()` 显式声明第二个内部 Server；模块 `Workload()` 解析唯一
-   `web.Server` 和内部监听计划，先预绑定 Metrics 端口，再监督两个 Server。
+5. observe Module 在 IOC Build 预绑定 Metrics 端口；`appwebhertz.Workload()` 与
+   `webhertzobserve.Workload()` 分别运行唯一业务 Server 和独立 Metrics Server。
 6. `/healthz` 被 Access Log 和 Trace 忽略；Metrics 是否忽略应由 Collector 策略
    单独决定，本示例仍统计它。
 
@@ -86,4 +86,4 @@ Exporter、合理 Sampler，并保持相同的 owned managed bean 生命周期�
 4. `main_test.go`：完整 IOC 图、Bundle、Metrics Server 配置和 Prometheus 合同验证。
 
 完整合同与生产化注意事项见
-[Web 可观测性使用指南](../../docs/guides/web-observability.md)。
+[app-observe-webhertz 使用指南](../../docs/guides/app-observe-webhertz-usage.md)。

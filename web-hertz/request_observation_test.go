@@ -71,7 +71,7 @@ func TestWithRequestObserversBuildsStableCompletionSnapshot(t *testing.T) {
 		t.Fatalf("new observed server: %v", err)
 	}
 
-	// 执行阶段：使用动态 URL 和已知请求体，确保原始 path 不会进入 RoutePattern。
+	// 执行阶段：使用带动态参数的实际请求 Path 和已知请求体，确保它不会进入 RoutePattern。
 	request := instance.engine.NewContext()
 	request.Request.SetRequestURI("/users/42?secret=hidden")
 	request.Request.Header.SetMethod(consts.MethodPost)
@@ -95,7 +95,7 @@ func TestWithRequestObserversBuildsStableCompletionSnapshot(t *testing.T) {
 	}
 }
 
-// TestRequestObservationUsesUnmatchedRouteAndIsolatesObserverPanic 验证未知动态 URL 固定收敛为 _unmatched，且单个 Observer 故障不阻断后续通知。
+// TestRequestObservationUsesUnmatchedRouteAndIsolatesObserverPanic 验证未匹配的实际请求 Path 固定收敛为 _unmatched，且单个 Observer 故障不阻断后续通知。
 // 测试方法：首个 Observer panic、第二个收集两条不同 404 URL，断言响应未改变且 RoutePattern 相同。
 func TestRequestObservationUsesUnmatchedRouteAndIsolatesObserverPanic(t *testing.T) {
 	observations := make([]HTTPRequestObservation, 0, 2)

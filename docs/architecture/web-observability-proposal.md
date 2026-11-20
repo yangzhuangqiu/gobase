@@ -18,7 +18,7 @@ OpenTelemetry Tracing 的跨模块方案。提案只讨论可观测性适配、�
 2. 阅读“背景与问题”和“决策摘要”，理解模块为什么这样拆分。
 3. 需要评审 API 与实现时，再阅读扩展合同、生命周期和安全不变量。
 4. 需要直接写应用代码时，转到
-   [Web 可观测性使用指南](../guides/web-observability.md)。
+   [app-observe-webhertz 使用指南](../guides/app-observe-webhertz-usage.md)。
 
 ## 贯穿案例：订单接口发布后变慢
 
@@ -48,10 +48,10 @@ Web 请求需要输出有限基数 Metrics 和可传播的 Server Span，但这�
 1. Metrics 只需要请求开始和最终完成态，不需要模拟 Hertz 内部阶段事件。
 2. Tracing 必须同时安装 Hertz native Tracer Option 与 Server Middleware。
 3. Prometheus Registry、OTel Provider、Exporter 和 Metrics listener 都是有所有权的
-   运行时资源，不能隐藏在 Config 或 Middleware 构造函数中；listener 只能由显式
-   Workload 在运行阶段创建。
+   运行时资源，不能隐藏在 Config 或 Middleware 构造函数中；listener 在 IOC Init
+   预绑定，主动 Server 只能由显式 Workload 运行。
 4. 业务 Server 不应直接依赖 Prometheus、OTel SDK 或具体 Exporter。
-5. 动态 URL、Header、Cookie、Body 和错误文本不能无边界进入 Label 或 Attribute。
+5. 实际请求 Path、Header、Cookie、Body 和错误文本不能无边界进入 Label 或 Attribute。
 
 如果把上述能力直接塞入 `web-hertz`，会让基础 provider 依赖具体观测后端；如果由
 `app-web-hertz` 创建 Registry/Provider，又会把应用装配与后端资源生命周期混为一体。
@@ -67,9 +67,9 @@ Web 请求需要输出有限基数 Metrics 和可传播的 Server Span，但这�
 3. `app-observe-webhertz` 按需把完成事件适配为 Prometheus 指标，把 borrowed
    TracerProvider/Propagator 适配为 OTel Bundle。
 
-应用 composition root 创建并拥有 Registry、TracerProvider 和 Exporter；可选 Metrics
-Server 由应用显式选择的适配模块 Workload 拥有。适配 bean 只拥有自身 Collector
-registration，不拥有 borrowed 外部资源，也不在 IOC Init 启动 listener。
+应用 composition root 创建并拥有 Registry、TracerProvider 和 Exporter；Metrics
+Server Resource 由 observe Module 创建并预绑定 listener，独立 Workload 只负责主动
+运行和关闭。适配 bean 不拥有 borrowed 外部资源，也不在 IOC Init 启动 goroutine。
 
 ## 3. 范围与非目标
 
@@ -102,7 +102,7 @@ Trace ID 与 Span 建立关联；这种关联不改变其模块归属。
 |---|---|---|
 | `web-hertz` | 复制请求开始/完成值快照；同步 fan-out Observer；保留 Hertz 原生扩展 | Prometheus、OTel、IOC、Exporter |
 | `app-web-hertz` | 聚合 Observer/Bundle；固定安装顺序；桥接 Request ID、Trace ID 和 panic 标记 | 创建 Registry、Provider、Exporter、诊断 Server |
-| `app-observe-webhertz` | Prometheus Collector/Handler；OTel Bundle；可选 Metrics Server 配置与 Workload | 拥有外部 Provider；在 Module Init 启动 listener；暴露 health/pprof |
+| `app-observe-webhertz` | Prometheus Collector/Handler；OTel Bundle；Metrics Server Resource 与独立 Workload | 拥有外部 Provider；在 Module Init 启动 Server/goroutine；暴露 health/pprof |
 | Application | 选择能力；创建 owned Provider/Exporter；选择 Workload 与暴露策略 | 把资源所有权下放给请求 Middleware |
 
 依赖方向：
@@ -111,7 +111,8 @@ Trace ID 与 Span 建立关联；这种关联不改变其模块归属。
 Application
   ├─ owns Prometheus Registry
   ├─ owns OTel Provider / Exporter / Sampler
-  ├─ declares app-observe-webhertz adapters / optional Metrics Server
+  ├─ declares app-observe-webhertz adapters / Metrics Resource
+  ├─ selects app-web-hertz Workload
   ├─ selects app-observe-webhertz Workload
   └─ declares app-web-hertz Server
 
@@ -123,7 +124,8 @@ app-web-hertz
 app-observe-webhertz
   ├─ implements RequestObserver
   ├─ implements PrometheusHandler
-  └─ implements InstrumentationBundle
+  ├─ implements InstrumentationBundle
+  └─ owns Metrics listener / Server Resource
 ```
 
 `web-hertz` 不反向依赖 app 层；`app-web-hertz` 不依赖具体适配包；适配包不依赖
@@ -204,8 +206,9 @@ Trace ID。
 | `gobase_http_server_response_bytes` | Histogram | method, route, status |
 | `gobase_http_server_in_flight_requests` | Gauge | method |
 
-Histogram 使用秒和 byte 作为单位。namespace、subsystem 和 buckets 是构造期 typed
-Option；名称、类型和 Label 一经发布即视为 Dashboard/Alert 合同。
+Histogram 使用秒和 byte 作为单位。namespace、subsystem 和 buckets 属于统一 Config
+启动快照；名称、类型和 Label 一经发布即视为 Dashboard/Alert 合同。Registry 的
+private/shared 所有权仍由代码声明，避免配置隐式创建或借用资源。
 
 ### 6.2 Registry 模式
 
@@ -234,7 +237,7 @@ registration，但不关闭 shared Registry。
 
 ### 7.2 Sampling Policy Reference
 
-Sampler 在 Provider 构造时冻结。Module Option 中的 sampling policy reference
+Sampler 在 Provider 构造时冻结。统一 Config 中的 sampling policy reference
 只做启动期一致性校验，不在请求路径动态改变采样率。引用不一致时 IOC Build
 fail-fast，避免配置看似生效但实际接错 Provider。
 
@@ -248,8 +251,8 @@ fail-fast，避免配置看似生效但实际接错 Provider。
 - 受控 error type。
 
 `ServerSpanAttributeEnricher` 只接收安全完成态快照；保留键和 authorization、
-cookie、token、body、query 等敏感键会被过滤。未匹配路由使用固定值，不记录原始
-动态 URL。
+cookie、token、body、query 等敏感键会被过滤。未匹配路由使用固定值，不记录实际
+请求 Path。
 
 Request ID 默认与 Trace ID 独立。需要对齐时必须显式选择对齐生成器，并为无有效
 Span 场景提供 fallback。
@@ -257,20 +260,31 @@ Span 场景提供 fallback。
 ## 8. Metrics Server
 
 Metrics 等敏感运维端点推荐使用独立端口。内建 Metrics Server 是应用显式选择、由
-适配模块 Workload 管理的同级工作负载，不是 adapter 构造或 IOC Init 的副作用。
+适配模块 Workload 管理的同级工作负载；Module Init 只预绑定 listener，不启动 Server。
 
 稳定原则：
 
 1. 使用私有 `http.ServeMux`，不修改全局 DefaultServeMux。
-2. 先同步取得 listener，再启动业务 Server，避免端口冲突留下部分启动状态。
+2. IOC Init 预绑定 listener，再允许任何 Workload 启动，避免端口冲突留下部分启动状态。
 3. 只把配置的 Metrics path 挂载到同一原子 adapter 的 `PrometheusHandler`。
 4. 默认监听 loopback；对外开放时由部署配置 NetworkPolicy、sidecar、mTLS 或鉴权。
-5. 任一工作负载意外退出时取消其他成员，并统一等待关闭结果。
-6. `WithMetricsServer` 决定拓扑；独立 scope 只提供地址、路径和超时参数，配置存在
-   本身不能启用 Server。
+5. 业务 Hertz 与 Metrics 使用两个独立 Workload；任一意外退出时 App 取消其他成员并等待全部关闭。
+6. `NewModule()` 安装 adapter 和 Metrics Resource，显式 `Workload()` 决定主动运行；配置只提供运行策略，不决定能力安装和资源所有权。
 7. 默认监听 `127.0.0.1:9099`，路径 `/metrics`；自定义 scope 缺失和非法配置均
    fail-fast。
 8. health、ready 与 pprof 不属于内建 Server；需要时由应用使用公开 Handler 自定义。
+
+### 8.1 统一配置与代码声明边界
+
+默认 scope 是 `observability.webHertz`。Module 在 IOC Init 只读取一次完整 `Config`，
+先以 `DefaultConfig()` 为基底，再覆盖 ConfigManager 中显式提供的字段并统一校验：
+
+1. namespace、subsystem、buckets、ignoredPaths、samplingPolicyReference 和 Metrics
+   Server 参数属于可部署运行策略，进入 Config；
+2. private/shared Registry、是否安装 OTel、Span Formatter 与 Attribute Enricher 涉及
+   资源所有权或代码身份，只能由代码声明；
+3. 默认 scope 缺失使用完整默认配置，自定义 scope 缺失 fail-fast；
+4. Config 不启用能力、不创建 Registry/Provider/listener，也不支持这些合同的热更新。
 
 ## 9. 所有权与生命周期
 
@@ -286,12 +300,12 @@ app-web-hertz managed Server
 
 IOC 逆序关闭：
 
-1. 停止业务 Hertz Server，等待在途请求结束。
-2. 关闭 adapter，注销自身 Prometheus Collector。
+1. App 并发停止业务 Hertz 与 Metrics 两个 Workload，并等待两个 Run 返回。
+2. IOC 关闭 adapter，兜底停止 Metrics Resource 并注销自身 Prometheus Collector。
 3. Provider owner 执行 `ForceFlush` 和 `Shutdown`，释放 Exporter。
 
-Metrics Server 由适配模块 Workload 在返回前关闭。adapter bean 不关闭 shared Registry、
-Provider 或 Exporter，Module Init 也不创建主动工作负载。
+Metrics Server 由适配模块 Workload 在返回前关闭。adapter bean 只兜底关闭 owned Resource，
+不关闭 shared Registry、Provider 或 Exporter；Module Init 不创建主动 goroutine。
 
 ## 10. 错误、安全与可验证不变量
 
@@ -308,7 +322,7 @@ Provider 或 Exporter，Module Init 也不创建主动工作负载。
 
 必须持续验证：
 
-1. 动态资源 ID 不进入 route Label。
+1. 实际请求 Path 中的动态资源 ID 不进入 route Label。
 2. 未匹配请求固定使用 `_unmatched`。
 3. Observer panic 不破坏响应，原始业务 panic 仍由 Recovery 处理。
 4. private/shared Registry 可并存，关闭只注销本 adapter Collector。
@@ -325,7 +339,7 @@ Provider 或 Exporter，Module Init 也不创建主动工作负载。
 2. `app-web-hertz` Observer/Bundle 聚合和固定安装阶段。
 3. Prometheus private/shared Registry、Collector registration 和 Handler。
 4. borrowed Provider/Propagator、OTel Bundle、Trace ID 桥接和安全 Enricher。
-5. 配置驱动、显式启用的独立 Metrics Server、复用 Workload 与高级 Quickstart。
+5. 统一 Config 启动快照驱动的指标/Trace 策略与独立 Metrics Server、两个显式 Workload 和高级 Quickstart。
 
 开放问题：
 
@@ -337,7 +351,7 @@ Provider 或 Exporter，Module Init 也不创建主动工作负载。
 ## 12. 相关文档
 
 1. [可观测性入门](../guides/observability-primer.md)
-2. [Web 可观测性使用指南](../guides/web-observability.md)
+2. [app-observe-webhertz 使用指南](../guides/app-observe-webhertz-usage.md)
 3. [高级可运行示例](../../examples/quickstart-app-observe-webhertz/README.md)
 4. [web-hertz 架构设计](web-hertz-design.md)
 5. [app-web-hertz 架构设计](app-web-hertz-design.md)

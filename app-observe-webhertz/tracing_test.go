@@ -62,7 +62,7 @@ func TestOpenTelemetryBundlePropagatesAndRecordsSafeFinalSpan(t *testing.T) {
 	bundleValue, err := NewOpenTelemetryBundle(
 		&tracerProviderStub{provider: provider, samplingPolicyReference: "always_on"},
 		propagation.TraceContext{},
-		WithSamplingPolicyReference("always_on"),
+		TracingConfig{SamplingPolicyReference: "always_on"},
 		WithServerSpanAttributeEnrichers(enricher),
 	)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestOpenTelemetryBundlePropagatesAndRecordsSafeFinalSpan(t *testing.T) {
 // 测试方法：先用 nil Provider/Propagator 断言构造失败，再对精确忽略路径执行配对链并断言 SpanRecorder 为空。
 func TestOpenTelemetryBundleIgnoresExactPathAndNeverUsesGlobalFallback(t *testing.T) {
 	// 第一阶段：缺少任一 borrowed 依赖都必须在 Bundle 构造期失败。
-	if _, err := NewOpenTelemetryBundle(nil, propagation.TraceContext{}); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
+	if _, err := NewOpenTelemetryBundle(nil, propagation.TraceContext{}, TracingConfig{}); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
 		t.Fatalf("expected provider-required error, got=%v", err)
 	}
 	provider := sdktrace.NewTracerProvider()
@@ -129,6 +129,7 @@ func TestOpenTelemetryBundleIgnoresExactPathAndNeverUsesGlobalFallback(t *testin
 	bundleValue, err := NewOpenTelemetryBundle(
 		&tracerProviderStub{provider: provider},
 		nil,
+		TracingConfig{},
 	)
 	if !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) || bundleValue != nil {
 		t.Fatalf("expected propagator-required error: bundle=%v err=%v", bundleValue, err)
@@ -141,7 +142,7 @@ func TestOpenTelemetryBundleIgnoresExactPathAndNeverUsesGlobalFallback(t *testin
 	bundleValue, err = NewOpenTelemetryBundle(
 		&tracerProviderStub{provider: recordingProvider},
 		propagation.TraceContext{},
-		WithTracingIgnoredPaths("/healthz"),
+		TracingConfig{IgnoredPaths: []string{"/healthz"}},
 	)
 	if err != nil {
 		t.Fatalf("build ignored bundle: %v", err)
@@ -168,6 +169,7 @@ func TestOpenTelemetryBundleMarksPanicAndServerError(t *testing.T) {
 	bundleValue, err := NewOpenTelemetryBundle(
 		&tracerProviderStub{provider: provider},
 		propagation.TraceContext{},
+		TracingConfig{},
 		WithServerSpanNameFormatter(func(_ ServerSpanSnapshot) string { panic("formatter private value") }),
 	)
 	if err != nil {
@@ -226,21 +228,30 @@ func TestTraceAlignedRequestIDGeneratorUsesExplicitFallback(t *testing.T) {
 	}
 }
 
-// TestTracingOptionsRejectInvalidAndMismatchedPolicies 验证路径、typed Enricher 和采样策略引用在构造前 fail-fast。
-// 测试方法：表驱动非法 Option，再用不同 Provider policy 构造 Bundle，断言均为 declaration_invalid。
-func TestTracingOptionsRejectInvalidAndMismatchedPolicies(t *testing.T) {
-	// 第一阶段：逐类拒绝会破坏安全边界或导致运行期空引用的 Option。
+// TestTracingConfigAndCodeOptionsRejectInvalidDeclarations 验证配置策略与代码扩展在各自边界 fail-fast。
+// 测试方法：非法 ignored path 断言 config_invalid；nil Formatter/Enricher 断言 declaration_invalid；采样引用不匹配断言构造失败。
+func TestTracingConfigAndCodeOptionsRejectInvalidDeclarations(t *testing.T) {
+	// 第一阶段：路径属于 Config；相对路径和带 query 路径必须在统一快照冻结时失败。
+	for name, config := range map[string]TracingConfig{
+		"relative path":   {IgnoredPaths: []string{"healthz"}},
+		"path with query": {IgnoredPaths: []string{"/healthz?full=1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := resolveTracingConfig(config); !errcode.IsCode[ErrorCode](err, ErrCodeConfigInvalid) {
+				t.Fatalf("expected config error, got=%v", err)
+			}
+		})
+	}
+
+	// 第二阶段：函数和接口身份属于代码声明，仍在 Module 注册前拒绝 nil。
 	var typedNil *serverSpanAttributeEnricherStub
 	for name, option := range map[string]TracingOption{
 		"nil option":         nil,
-		"relative path":      WithTracingIgnoredPaths("healthz"),
-		"path with query":    WithTracingIgnoredPaths("/healthz?full=1"),
-		"empty policy":       WithSamplingPolicyReference(" "),
 		"nil formatter":      WithServerSpanNameFormatter(nil),
 		"typed nil enricher": WithServerSpanAttributeEnrichers(typedNil),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := resolveTracingOptions([]TracingOption{option}); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
+			if _, err := resolveTracingCodeOptions([]TracingOption{option}); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
 				t.Fatalf("expected declaration error, got=%v", err)
 			}
 		})
@@ -251,7 +262,7 @@ func TestTracingOptionsRejectInvalidAndMismatchedPolicies(t *testing.T) {
 	_, err := NewOpenTelemetryBundle(
 		&tracerProviderStub{provider: provider, samplingPolicyReference: "parent_ratio_10"},
 		propagation.TraceContext{},
-		WithSamplingPolicyReference("always_on"),
+		TracingConfig{SamplingPolicyReference: "always_on"},
 	)
 	if !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
 		t.Fatalf("expected sampling mismatch error, got=%v", err)

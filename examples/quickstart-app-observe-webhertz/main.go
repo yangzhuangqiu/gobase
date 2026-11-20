@@ -36,7 +36,7 @@ func main() {
 	}
 }
 
-// run 组合应用拥有的 Provider、观测 adapter、Hertz Server 与复合 Workload。
+// run 组合应用拥有的 Provider、观测 adapter，以及业务/Metric 两个独立 Workload。
 func run() error {
 	return baseapp.Run(
 		baseapp.WithName("quickstart-app-observe-webhertz"),
@@ -47,8 +47,8 @@ func run() error {
 		),
 		baseapp.WithLogging(apphlogzap.Wrap(applogzap.New())),
 		baseapp.WithBeanDefinitions(applicationDefinitions()...),
-		baseapp.WithModules(observationModule(), appwebhertz.NewModule()),
-		baseapp.WithWorkloads(webhertzobserve.Workload()),
+		baseapp.WithModules(appwebhertz.NewModule(), observationModule()),
+		baseapp.WithWorkloads(appwebhertz.Workload(), webhertzobserve.Workload()),
 	)
 }
 
@@ -65,18 +65,11 @@ func applicationDefinitions() []ioc.Definition {
 // observationModule 声明私有 Prometheus Registry 和借用应用 Provider 的 OTel 插桩。
 func observationModule() webhertzobserve.Module {
 	return webhertzobserve.NewModule(
-		webhertzobserve.WithPrivatePrometheus(
-			webhertzobserve.WithPrometheusNamespace("quickstart"),
-		),
-		webhertzobserve.WithMetricsServer(),
-		webhertzobserve.WithOpenTelemetry(
-			webhertzobserve.WithSamplingPolicyReference(alwaysOnSamplingPolicy),
-			webhertzobserve.WithTracingIgnoredPaths("/healthz"),
-		),
+		webhertzobserve.WithOpenTelemetry(),
 	)
 }
 
-// defaultConfig 返回业务 Server 的最低优先级配置；观测 adapter 保持对象化声明，不进入 YAML scope。
+// defaultConfig 返回业务 Server 与可观测策略的最低优先级启动快照。
 func defaultConfig() map[string]any {
 	return map[string]any{
 		"log": map[string]any{
@@ -101,11 +94,18 @@ func defaultConfig() map[string]any {
 			},
 		},
 		"observability": map[string]any{
-			"metrics": map[string]any{
-				"server": map[string]any{
-					"address":           loadMetricsAddress(),
-					"path":              "/metrics",
-					"readHeaderTimeout": "3s",
+			"webHertz": map[string]any{
+				"prometheus": map[string]any{
+					"namespace": "quickstart",
+					"server": map[string]any{
+						"address":           loadMetricsAddress(),
+						"path":              "/metrics",
+						"readHeaderTimeout": "3s",
+					},
+				},
+				"tracing": map[string]any{
+					"ignoredPaths":            []string{"/healthz"},
+					"samplingPolicyReference": alwaysOnSamplingPolicy,
 				},
 			},
 		},

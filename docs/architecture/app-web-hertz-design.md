@@ -192,9 +192,9 @@ Filter 在构造期先按接口类型分类，再在各自作用域内按 `(Orde
 6. WaitStarted 广播并缓存首次启动成功或失败；单个 caller context 只结束自身等待，不控制 Server 生命周期。
 7. 默认 `bestEffort` 不安装 request gate，保持有界尽力关闭；显式 `required` 保证已放行 Handler 全部返回后 Run 才结束。
 
-独立诊断端口不改变上述 Server bean 合同。应用 composition root 可以把业务
-`web.Server` 与 owned 诊断 `net/http.Server` 作为同级工作负载交给复合 Workload
-监督；`app-web-hertz` 不依赖诊断配置、Prometheus Handler 或 pprof。Metrics/Tracing
+独立诊断端口不改变上述 Server bean 合同。应用 composition root 把业务
+`web.Server` 与 owned 诊断 `net/http.Server` 声明为两个同级 Workload，由 app
+统一监督；`app-web-hertz` 不依赖诊断配置、Prometheus Handler 或 pprof。Metrics/Tracing
 的具体装配见 [Web 可观测性提案](web-observability-proposal.md)。
 
 如果 Run 因 context 取消已正常停止，后续 Container Close 再次 Shutdown 是幂等操作。

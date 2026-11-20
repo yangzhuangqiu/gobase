@@ -28,9 +28,6 @@ var (
 	defaultResponseByteBuckets = prometheus.ExponentialBuckets(128, 4, 8)
 )
 
-// PrometheusOption 定义 HTTP 指标命名和 Histogram bucket 的纯构造策略。
-type PrometheusOption func(options *prometheusOptions) error
-
 // prometheusOptions 保存一次 Collector 构造的不可变配置。
 type prometheusOptions struct {
 	// namespace 是全部 HTTP 指标的顶级名称。
@@ -65,58 +62,18 @@ var (
 	_ prometheus.Collector              = (*PrometheusObserver)(nil)
 )
 
-// WithPrometheusNamespace 设置指标 namespace；空白值回退 gobase。
-func WithPrometheusNamespace(namespace string) PrometheusOption {
-	return func(options *prometheusOptions) error {
-		options.namespace = strings.TrimSpace(namespace)
-		return nil
-	}
-}
-
-// WithPrometheusSubsystem 设置指标 subsystem；空白值回退 http_server。
-func WithPrometheusSubsystem(subsystem string) PrometheusOption {
-	return func(options *prometheusOptions) error {
-		options.subsystem = strings.TrimSpace(subsystem)
-		return nil
-	}
-}
-
-// WithDurationBuckets 设置请求耗时秒数 bucket；必须严格递增且全部大于零。
-func WithDurationBuckets(buckets ...float64) PrometheusOption {
-	return setPrometheusBuckets("duration", buckets, func(options *prometheusOptions, values []float64) { options.durationBuckets = values })
-}
-
-// WithRequestByteBuckets 设置请求体 byte bucket；必须严格递增且全部大于零。
-func WithRequestByteBuckets(buckets ...float64) PrometheusOption {
-	return setPrometheusBuckets("request_bytes", buckets, func(options *prometheusOptions, values []float64) { options.requestByteBuckets = values })
-}
-
-// WithResponseByteBuckets 设置响应体 byte bucket；必须严格递增且全部大于零。
-func WithResponseByteBuckets(buckets ...float64) PrometheusOption {
-	return setPrometheusBuckets("response_bytes", buckets, func(options *prometheusOptions, values []float64) { options.responseByteBuckets = values })
-}
-
-// setPrometheusBuckets 创建复制并校验 bucket 的 Option，防止调用方后续修改生效配置。
-func setPrometheusBuckets(stage string, buckets []float64, assign func(*prometheusOptions, []float64)) PrometheusOption {
-	return func(options *prometheusOptions) error {
-		values := append([]float64{}, buckets...)
-		if !validBuckets(values) {
-			return buildError(ErrCodeDeclarationInvalid, messagef("op=app_observe_webhertz.prometheus result=failed stage=validate_%s_buckets reason=buckets_invalid", stage))
-		}
-		assign(options, values)
-		return nil
-	}
-}
-
 // NewPrometheusObserver 创建尚未注册到任何 Registry 的 HTTP Collector/Observer。
 //
+// 参数:
+// - config: 指标命名和 Histogram 分桶策略；零值字段使用框架默认值。
+//
 // 返回对象不拥有 Registry；调用方必须显式 Register，或使用 NewPrivatePrometheusRuntime/NewSharedPrometheusRuntime 管理注册生命周期。
-func NewPrometheusObserver(options ...PrometheusOption) (*PrometheusObserver, error) {
-	resolved, err := resolvePrometheusOptions(options)
+func NewPrometheusObserver(config PrometheusConfig) (*PrometheusObserver, error) {
+	resolved, err := resolvePrometheusConfig(config)
 	if err != nil {
 		return nil, err
 	}
-	return newPrometheusObserver(resolved), nil
+	return newPrometheusObserver(prometheusOptionsFromConfig(resolved)), nil
 }
 
 // newPrometheusObserver 从已冻结纯值配置创建尚未注册的 Collector，不重放 Option。
@@ -179,35 +136,87 @@ func (this *PrometheusObserver) Collect(channel chan<- prometheus.Metric) {
 	this.inFlight.Collect(channel)
 }
 
-// resolvePrometheusOptions 校验全部 Option 并复制默认 bucket。
-func resolvePrometheusOptions(options []PrometheusOption) (prometheusOptions, error) {
-	resolved := prometheusOptions{
-		namespace: defaultPrometheusNamespace, subsystem: defaultPrometheusSubsystem,
-		durationBuckets:     append([]float64{}, prometheus.DefBuckets...),
-		requestByteBuckets:  append([]float64{}, defaultRequestByteBuckets...),
-		responseByteBuckets: append([]float64{}, defaultResponseByteBuckets...),
+// defaultPrometheusConfig 返回包含独立 Metrics Server 的完整 Prometheus 默认策略。
+func defaultPrometheusConfig() PrometheusConfig {
+	return PrometheusConfig{
+		Namespace: defaultPrometheusNamespace,
+		Subsystem: defaultPrometheusSubsystem,
+		Buckets: PrometheusBucketsConfig{
+			Duration:      append([]float64{}, prometheus.DefBuckets...),
+			RequestBytes:  append([]float64{}, defaultRequestByteBuckets...),
+			ResponseBytes: append([]float64{}, defaultResponseByteBuckets...),
+		},
+		Server: DefaultMetricsServerConfig(),
 	}
-	// 第一阶段：顺序执行 Option 并拒绝 nil，bucket slice 已由各 Option 复制。
-	for index, option := range options {
-		if option == nil {
-			return prometheusOptions{}, buildError(ErrCodeDeclarationInvalid, messagef("op=app_observe_webhertz.prometheus result=failed stage=resolve_options reason=option_required option_index=%d", index))
-		}
-		if err := option(&resolved); err != nil {
-			return prometheusOptions{}, err
-		}
+}
+
+// resolvePrometheusConfig 补齐默认值、复制 slice 并校验指标命名和全部 bucket。
+// 阶段角色：统一 Config 冻结时阻止非法指标合同进入 Collector registration。
+func resolvePrometheusConfig(input PrometheusConfig) (PrometheusConfig, error) {
+	resolved := input
+	resolved.Namespace = strings.TrimSpace(resolved.Namespace)
+	resolved.Subsystem = strings.TrimSpace(resolved.Subsystem)
+	if resolved.Namespace == "" {
+		resolved.Namespace = defaultPrometheusNamespace
 	}
-	if resolved.namespace == "" {
-		resolved.namespace = defaultPrometheusNamespace
+	if resolved.Subsystem == "" {
+		resolved.Subsystem = defaultPrometheusSubsystem
 	}
-	if resolved.subsystem == "" {
-		resolved.subsystem = defaultPrometheusSubsystem
+
+	// 缺失或显式空集合都表示沿用框架默认分桶；非空集合必须稳定有序。
+	defaults := defaultPrometheusConfig()
+	resolved.Buckets.Duration = resolveBucketDefaults(resolved.Buckets.Duration, defaults.Buckets.Duration)
+	resolved.Buckets.RequestBytes = resolveBucketDefaults(resolved.Buckets.RequestBytes, defaults.Buckets.RequestBytes)
+	resolved.Buckets.ResponseBytes = resolveBucketDefaults(resolved.Buckets.ResponseBytes, defaults.Buckets.ResponseBytes)
+	if err := validatePrometheusBuckets("duration", resolved.Buckets.Duration); err != nil {
+		return PrometheusConfig{}, err
 	}
-	// 第二阶段：在创建 Desc 前校验最终完整名称，避免错误延迟到 Registry Register。
-	metricName := prometheus.BuildFQName(resolved.namespace, resolved.subsystem, "requests_total")
+	if err := validatePrometheusBuckets("request_bytes", resolved.Buckets.RequestBytes); err != nil {
+		return PrometheusConfig{}, err
+	}
+	if err := validatePrometheusBuckets("response_bytes", resolved.Buckets.ResponseBytes); err != nil {
+		return PrometheusConfig{}, err
+	}
+
+	// 完整名称是 Dashboard/Alert 外部合同，必须在创建 Desc 前验证。
+	metricName := prometheus.BuildFQName(resolved.Namespace, resolved.Subsystem, "requests_total")
 	if !model.IsValidMetricName(model.LabelValue(metricName)) {
-		return prometheusOptions{}, buildError(ErrCodeDeclarationInvalid, "op=app_observe_webhertz.prometheus result=failed stage=validate_metric_name reason=name_invalid")
+		return PrometheusConfig{}, errorForConfigInvalid("op=app_observe_webhertz.config result=failed stage=validate_metric_name reason=name_invalid")
 	}
+	serverConfig, err := resolveMetricsServerConfig(resolved.Server)
+	if err != nil {
+		return PrometheusConfig{}, err
+	}
+	resolved.Server = serverConfig
 	return resolved, nil
+}
+
+// validatePrometheusBuckets 按稳定阶段名校验单类 Histogram 边界。
+// 阶段角色：保证多字段同时非法时仍返回确定且可检索的第一错误。
+func validatePrometheusBuckets(stage string, values []float64) error {
+	if validBuckets(values) {
+		return nil
+	}
+	return errorForConfigInvalid(messagef("op=app_observe_webhertz.config result=failed stage=validate_%s_buckets reason=buckets_invalid", stage))
+}
+
+// resolveBucketDefaults 复制显式配置或默认值，隔离 ConfigManager Snapshot 与运行时 Collector。
+func resolveBucketDefaults(values []float64, defaults []float64) []float64 {
+	if len(values) == 0 {
+		return append([]float64{}, defaults...)
+	}
+	return append([]float64{}, values...)
+}
+
+// prometheusOptionsFromConfig 把已校验的公开配置映射为请求期紧凑只读结构。
+func prometheusOptionsFromConfig(config PrometheusConfig) prometheusOptions {
+	return prometheusOptions{
+		namespace:           config.Namespace,
+		subsystem:           config.Subsystem,
+		durationBuckets:     append([]float64{}, config.Buckets.Duration...),
+		requestByteBuckets:  append([]float64{}, config.Buckets.RequestBytes...),
+		responseByteBuckets: append([]float64{}, config.Buckets.ResponseBytes...),
+	}
 }
 
 // validBuckets 验证 bucket 非空、正数且严格递增。
@@ -245,26 +254,26 @@ var (
 	_ webhertz.RequestLifecycleObserver = (*PrometheusRuntime)(nil)
 )
 
-// NewPrivatePrometheusRuntime 创建 owned-private Registry、Observer、注册和 Handler 原子组合。
-func NewPrivatePrometheusRuntime(options ...PrometheusOption) (*PrometheusRuntime, error) {
-	return newPrometheusRuntime(prometheus.NewRegistry(), options)
+// NewPrivatePrometheusRuntime 使用给定指标配置创建 owned-private Registry、Observer、注册和 Handler 原子组合。
+func NewPrivatePrometheusRuntime(config PrometheusConfig) (*PrometheusRuntime, error) {
+	return newPrometheusRuntime(prometheus.NewRegistry(), config)
 }
 
-// NewSharedPrometheusRuntime 在 borrowed-shared Registry 中注册独占 Observer，并由 Runtime 负责注销自身 Collector。
-func NewSharedPrometheusRuntime(registry PrometheusRegistry, options ...PrometheusOption) (*PrometheusRuntime, error) {
+// NewSharedPrometheusRuntime 使用给定指标配置在 borrowed-shared Registry 中注册独占 Observer，并由 Runtime 负责注销自身 Collector。
+func NewSharedPrometheusRuntime(registry PrometheusRegistry, config PrometheusConfig) (*PrometheusRuntime, error) {
 	if isNilValue(registry) {
 		return nil, buildError(ErrCodeDeclarationInvalid, "op=app_observe_webhertz.prometheus result=failed stage=precheck reason=registry_required")
 	}
-	return newPrometheusRuntime(registry, options)
+	return newPrometheusRuntime(registry, config)
 }
 
-// newPrometheusRuntime 原子创建 Observer、注册 Collector，并在成功后发布 Handler。
-func newPrometheusRuntime(registry PrometheusRegistry, options []PrometheusOption) (*PrometheusRuntime, error) {
-	resolved, err := resolvePrometheusOptions(options)
+// newPrometheusRuntime 校验公开配置后原子创建 Observer、注册 Collector 并发布 Handler。
+func newPrometheusRuntime(registry PrometheusRegistry, config PrometheusConfig) (*PrometheusRuntime, error) {
+	resolved, err := resolvePrometheusConfig(config)
 	if err != nil {
 		return nil, err
 	}
-	return newPrometheusRuntimeFromConfig(registry, resolved)
+	return newPrometheusRuntimeFromConfig(registry, prometheusOptionsFromConfig(resolved))
 }
 
 // newPrometheusRuntimeFromConfig 原子注册已冻结配置创建的 Observer，并在成功后发布 Handler。

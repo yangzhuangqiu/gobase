@@ -284,5 +284,5 @@ op=web_hertz.shutdown result=failed reason=engine_shutdown_failed
 3. [quickstart-web-hertz](../examples/quickstart-web-hertz/README.md)
 4. [根 web 生命周期合同](../web/README.md)
 5. [可观测性入门](../docs/guides/observability-primer.md)
-6. [Web 可观测性使用指南](../docs/guides/web-observability.md)
+6. [app-observe-webhertz 使用指南](../docs/guides/app-observe-webhertz-usage.md)
 7. [Web 可观测性提案](../docs/architecture/web-observability-proposal.md)

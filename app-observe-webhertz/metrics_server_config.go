@@ -1,20 +1,14 @@
 package webhertzobserve
 
 import (
-	"context"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
-
-	baseconfig "github.com/yangzhuangqiu/gobase/config"
-	"github.com/yangzhuangqiu/gobase/errcode"
 )
 
 const (
-	// DefaultMetricsServerScope 是可选 Metrics HTTP Server 默认读取的独立配置路径。
-	DefaultMetricsServerScope = "observability.metrics.server"
 	// defaultMetricsServerAddress 默认只监听回环地址，防止本地开箱能力意外暴露到外部网络。
 	defaultMetricsServerAddress = "127.0.0.1:9099"
 	// defaultMetricsServerPath 是 Prometheus 抓取 Handler 的稳定默认路径。
@@ -38,17 +32,6 @@ type MetricsServerConfig struct {
 	ReadHeaderTimeout time.Duration `yaml:"readHeaderTimeout"`
 }
 
-// MetricsServerOption 定义可选 Metrics HTTP Server 的纯声明策略。
-type MetricsServerOption func(options *metricsServerOptions) error
-
-// metricsServerOptions 保存 Module 注册前冻结的配置路径声明。
-type metricsServerOptions struct {
-	// scope 是 IOC Init 阶段读取一次的 dotted 配置路径。
-	scope string
-	// customScope 标记调用方是否显式选择非默认路径；缺失时必须 fail-fast。
-	customScope bool
-}
-
 // DefaultMetricsServerConfig 返回只监听回环地址的独立配置快照。
 func DefaultMetricsServerConfig() MetricsServerConfig {
 	return MetricsServerConfig{
@@ -56,105 +39,6 @@ func DefaultMetricsServerConfig() MetricsServerConfig {
 		Path:              defaultMetricsServerPath,
 		ReadHeaderTimeout: defaultMetricsServerReadHeaderTimeout,
 	}
-}
-
-// WithMetricsServerScope 设置 Metrics HTTP Server 单次读取的独立配置路径。
-//
-// 参数:
-// - scope: trim 后为空时回退 observability.metrics.server；非空路径缺失时启动失败。
-//
-// 说明:
-// - 多次声明时最后一次生效；
-// - 本 Option 不读取 ConfigManager，也不创建 listener。
-func WithMetricsServerScope(scope string) MetricsServerOption {
-	return func(options *metricsServerOptions) error {
-		scope = strings.TrimSpace(scope)
-		options.scope = DefaultMetricsServerScope
-		options.customScope = false
-		if scope != "" {
-			options.scope = scope
-			options.customScope = scope != DefaultMetricsServerScope
-		}
-		return nil
-	}
-}
-
-// resolveMetricsServerOptions 顺序应用声明并形成不可变配置定位策略。
-// 阶段角色：Module 修改 IOC Registry 前拒绝 nil Option。
-func resolveMetricsServerOptions(options []MetricsServerOption) (metricsServerOptions, error) {
-	resolved := metricsServerOptions{scope: DefaultMetricsServerScope}
-	for index, option := range options {
-		if option == nil {
-			return metricsServerOptions{}, errorForDeclarationInvalid(messagef(
-				"op=app_observe_webhertz.metrics_server result=failed stage=resolve_options reason=option_required option_index=%d",
-				index,
-			))
-		}
-		if err := option(&resolved); err != nil {
-			return metricsServerOptions{}, err
-		}
-	}
-	return resolved, nil
-}
-
-// loadMetricsServerConfig 从当前 Snapshot 读取并冻结一次监听配置。
-// 阶段角色：默认 scope 缺失时提供安全开箱默认值，自定义 scope 缺失或配置非法时 fail-fast。
-func loadMetricsServerConfig(
-	ctx context.Context,
-	manager baseconfig.Manager,
-	options metricsServerOptions,
-) (MetricsServerConfig, error) {
-	if ctx == nil {
-		return MetricsServerConfig{}, errorForMetricsServerConfigLoadFailed(
-			"op=app_observe_webhertz.metrics_server result=failed stage=precheck reason=context_required",
-		)
-	}
-	if isNilValue(manager) {
-		return MetricsServerConfig{}, errorForMetricsServerConfigLoadFailed(
-			"op=app_observe_webhertz.metrics_server result=failed stage=precheck reason=manager_required",
-		)
-	}
-	if err := ctx.Err(); err != nil {
-		return MetricsServerConfig{}, errorForMetricsServerConfigLoadFailed(
-			"op=app_observe_webhertz.metrics_server result=failed stage=precheck reason=context_done",
-			err,
-		)
-	}
-	snapshot := manager.Current()
-	if snapshot == nil {
-		return MetricsServerConfig{}, errorForMetricsServerConfigLoadFailed(
-			"op=app_observe_webhertz.metrics_server result=failed stage=current reason=snapshot_not_initialized",
-		)
-	}
-
-	// 默认路径不存在时使用安全回环默认值；显式自定义路径缺失通常表示部署配置拼写错误。
-	input := DefaultMetricsServerConfig()
-	if err := snapshot.Decode(options.scope, &input); err != nil {
-		missingDefault := !options.customScope &&
-			errcode.IsCode[baseconfig.ErrorCode](err, baseconfig.ErrCodeConfigDecodeScopeNotFound)
-		if !missingDefault {
-			return MetricsServerConfig{}, errorForMetricsServerConfigLoadFailed(
-				messagef(
-					"op=app_observe_webhertz.metrics_server result=failed stage=decode scope=%s reason=decode_failed",
-					options.scope,
-				),
-				err,
-			)
-		}
-	}
-
-	// 解码完成后统一补默认值和校验，避免 listener 才暴露稳定配置错误。
-	resolved, err := resolveMetricsServerConfig(input)
-	if err != nil {
-		return MetricsServerConfig{}, errorForMetricsServerConfigLoadFailed(
-			messagef(
-				"op=app_observe_webhertz.metrics_server result=failed stage=validate_config scope=%s reason=config_invalid",
-				options.scope,
-			),
-			err,
-		)
-	}
-	return resolved, nil
 }
 
 // resolveMetricsServerConfig 补齐空值并校验监听地址、路径和时间预算。
@@ -178,7 +62,7 @@ func resolveMetricsServerConfig(input MetricsServerConfig) (MetricsServerConfig,
 	}
 	parsedPath, err := url.ParseRequestURI(resolved.Path)
 	if err != nil || parsedPath.Path != resolved.Path || parsedPath.RawQuery != "" || parsedPath.Fragment != "" {
-		return MetricsServerConfig{}, errorForMetricsServerConfigInvalid(
+		return MetricsServerConfig{}, errorForConfigInvalid(
 			messagef(
 				"op=app_observe_webhertz.metrics_server result=failed stage=validate_path reason=absolute_path_required path=%s",
 				resolved.Path,
@@ -187,12 +71,12 @@ func resolveMetricsServerConfig(input MetricsServerConfig) (MetricsServerConfig,
 		)
 	}
 	if resolved.Path == "/" {
-		return MetricsServerConfig{}, errorForMetricsServerConfigInvalid(
+		return MetricsServerConfig{}, errorForConfigInvalid(
 			"op=app_observe_webhertz.metrics_server result=failed stage=validate_path reason=root_path_forbidden",
 		)
 	}
 	if resolved.ReadHeaderTimeout <= 0 {
-		return MetricsServerConfig{}, errorForMetricsServerConfigInvalid(
+		return MetricsServerConfig{}, errorForConfigInvalid(
 			"op=app_observe_webhertz.metrics_server result=failed stage=validate_timeout reason=positive_duration_required",
 		)
 	}
@@ -200,11 +84,11 @@ func resolveMetricsServerConfig(input MetricsServerConfig) (MetricsServerConfig,
 }
 
 // validateMetricsServerAddress 校验 host:port 结构和端口范围，不执行 DNS 或占用端口。
-// 阶段角色：配置冻结阶段排除确定性错误，真实端口冲突留给 Workload 预绑定处理。
+// 阶段角色：配置冻结阶段排除确定性错误，真实端口冲突留给 Module Init 预绑定处理。
 func validateMetricsServerAddress(address string) error {
 	_, port, err := net.SplitHostPort(address)
 	if err != nil {
-		return errorForMetricsServerConfigInvalid(
+		return errorForConfigInvalid(
 			messagef(
 				"op=app_observe_webhertz.metrics_server result=failed stage=validate_address reason=host_port_required address=%s",
 				address,
@@ -214,7 +98,7 @@ func validateMetricsServerAddress(address string) error {
 	}
 	portNumber, err := strconv.Atoi(port)
 	if err != nil || portNumber < 0 || portNumber > 65535 {
-		return errorForMetricsServerConfigInvalid(
+		return errorForConfigInvalid(
 			messagef(
 				"op=app_observe_webhertz.metrics_server result=failed stage=validate_address reason=port_invalid address=%s",
 				address,

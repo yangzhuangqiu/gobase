@@ -322,7 +322,7 @@ Hertz v0.10.5 的未运行错误 sentinel 未导出。provider 对文本 `engine
 | RouteFunc 只能取得生命周期隔离的共享根 RouterGroup | 构造期创建 `Group("/")`，不传递 Engine | `TestNewPassesLifecycleIsolatedRootGroup` |
 | NoRoute/NoMethod 继承全局 Middleware，且 WithNoMethod 必达 | 先安装全局 Middleware，最终开启 405 后安装 fallback | `TestWithNoRouteAppendsHandlersAndInheritsMiddleware`、`TestWithNoMethodForcesReachable405AndInheritsMiddleware` |
 | fallback Handler 的 panic 不在构造期吞掉 | 请求期由 Hertz 链和显式 Recovery 决定 | `TestFallbackHandlerPanicRemainsProgrammingFailure` |
-| 动态 URL 不扩张 route label，Observer panic 不破坏响应 | 模板 FullPath + 固定 unmatched + 单 Observer 隔离 | `TestRequestObservationUsesUnmatchedRouteAndIsolatesObserverPanic` |
+| 实际请求 Path 不扩张 route label，Observer panic 不破坏响应 | 模板 FullPath + 固定 unmatched + 单 Observer 隔离 | `TestRequestObservationUsesUnmatchedRouteAndIsolatesObserverPanic` |
 | 原始请求 panic 保持语义且仍产生完成态 | defer 快照/通知后重新 panic | `TestRequestObservationPreservesRawPanicSemantics` |
 | 底层 Shutdown 失败同时对 Run 和所有稳定 Shutdown 观察者可见 | 先缓存唯一 `shutdownErr`，再关闭共享完成信号 | `TestShutdownFailureIsSharedWithRun` |
 

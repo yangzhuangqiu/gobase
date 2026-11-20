@@ -149,7 +149,7 @@ server, err := webhertz.New(
 
 `app-web-hertz` 会从 IOC 聚合 Observer，使用该装配入口时不要额外安装第二个
 `WithRequestObservers`。Prometheus/OTel 的具体接入见
-[Web 可观测性使用指南](web-observability.md)。
+[app-observe-webhertz 使用指南](app-observe-webhertz-usage.md)。
 
 ## 6. 注册路由
 
@@ -354,5 +354,5 @@ if errcode.IsCode[webhertz.ErrorCode](err, webhertz.ErrCodeRunFailed) {
 5. [hlog-zap](../../hlog-zap/README.md)
 6. [测试规范](../testing/testing.md)
 7. [app-web-hertz 使用指南](app-web-hertz-usage.md)
-8. [Web 可观测性使用指南](web-observability.md)
+8. [app-observe-webhertz 使用指南](app-observe-webhertz-usage.md)
 9. [Web 可观测性提案](../architecture/web-observability-proposal.md)

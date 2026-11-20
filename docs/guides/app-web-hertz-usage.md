@@ -330,7 +330,7 @@ IOC 对象存在性启用的跨模块能力：
   managed bean。
 
 完整安装、采样策略、独立 `/metrics` 端口与关闭顺序见
-[Web 可观测性使用指南](web-observability.md)。
+[app-observe-webhertz 使用指南](app-observe-webhertz-usage.md)。
 
 ### CORS
 
@@ -388,7 +388,7 @@ composition root 应使用专用且具有唯一名称的 Workload；不要重复
 app 在任一 Workload 意外退出后关闭全组，并等待全部 Run/Shutdown 结果收敛。
 
 Metrics Handler、私有 ServeMux、listener 获取顺序和诊断端口安全策略见
-[Web 可观测性使用指南](web-observability.md#独立诊断-server)。当前只有一个真实
+[app-observe-webhertz 使用指南](app-observe-webhertz-usage.md#13-独立-metrics-server)。当前只有一个真实
 复用方，不抽取通用诊断 Server 模块。
 
 ## 8. 错误排查
@@ -424,6 +424,6 @@ Metrics Handler、私有 ServeMux、listener 获取顺序和诊断端口安全�
 2. [架构设计](../architecture/app-web-hertz-design.md)
 3. [web-hertz 指南](web-hertz-usage.md)
 4. [Quickstart](../../examples/quickstart-app-web-hertz/README.md)
-5. [Web 可观测性使用指南](web-observability.md)
+5. [app-observe-webhertz 使用指南](app-observe-webhertz-usage.md)
 6. [高级可观测性 Quickstart](../../examples/quickstart-app-observe-webhertz/README.md)
 7. [Web 可观测性提案](../architecture/web-observability-proposal.md)

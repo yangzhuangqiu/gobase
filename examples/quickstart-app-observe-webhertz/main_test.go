@@ -41,6 +41,8 @@ func TestLoadAddressesUseDefaultsAndEnvironmentOverrides(t *testing.T) {
 // TestApplicationDefinitionsBuildObservableServerGraph 验证高级示例能构建 Server、Observer、Handler、Bundle 与 Provider 完整依赖图。
 // 测试方法：模拟 app-runtime 注册 borrowed 基础设施后 Build 两个 Module，按语义接口解析并写入一次观测，再抓取 Metrics 断言稳定名称和路由模板。
 func TestApplicationDefinitionsBuildObservableServerGraph(t *testing.T) {
+	// Metrics listener 在 IOC Build 预绑定；测试使用系统分配端口，避免依赖固定本地端口。
+	t.Setenv(metricsAddressEnv, "127.0.0.1:0")
 	manager, err := baseconfig.New(
 		baseconfig.File(baseconfig.FileDisabled()),
 		baseconfig.Defaults(defaultConfig()),
@@ -71,11 +73,11 @@ func TestApplicationDefinitionsBuildObservableServerGraph(t *testing.T) {
 			t.Fatalf("register application definition index=%d: %v", index, err)
 		}
 	}
-	if err := observationModule().Register(container); err != nil {
-		t.Fatalf("register observation module: %v", err)
-	}
 	if err := appwebhertz.NewModule().Register(container); err != nil {
 		t.Fatalf("register web module: %v", err)
+	}
+	if err := observationModule().Register(container); err != nil {
+		t.Fatalf("register observation module: %v", err)
 	}
 	if err := container.Build(context.Background()); err != nil {
 		t.Fatalf("build observable server graph: %v", err)

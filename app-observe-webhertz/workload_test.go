@@ -6,8 +6,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +16,7 @@ import (
 	"github.com/yangzhuangqiu/gobase/errcode"
 	"github.com/yangzhuangqiu/gobase/ioc"
 	baselog "github.com/yangzhuangqiu/gobase/log"
-	baseweb "github.com/yangzhuangqiu/gobase/web"
+	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 )
 
 const (
@@ -26,20 +24,20 @@ const (
 	workloadTestTimeout = 3 * time.Second
 )
 
-// workloadTestRuntime 提供 Workload 所需的最小只读运行时。
+// workloadTestRuntime 提供 Metrics Workload 所需的最小只读运行时。
 type workloadTestRuntime struct {
-	// container 是已经完成 Build 的测试 IOC。
+	// container 是已经完成 Build 且持有预绑定 Metrics Resource 的测试 IOC。
 	container ioc.Container
 	// logger 是不输出事件但保持非 nil 语义的测试 Logger。
 	logger baselog.Logger
 }
 
-// Info 返回空应用元信息；Workload 不读取该字段。
+// Info 返回空应用元信息；Metrics Workload 不读取该字段。
 func (this *workloadTestRuntime) Info() appruntime.ApplicationInfo {
 	return appruntime.ApplicationInfo{}
 }
 
-// ConfigManager 返回 nil；Metrics 配置已在 plan 中冻结。
+// ConfigManager 返回 nil；配置已经在 IOC Build 阶段冻结到 Resource。
 func (this *workloadTestRuntime) ConfigManager() baseconfig.Manager { return nil }
 
 // Logger 返回稳定无输出 Logger。
@@ -48,153 +46,147 @@ func (this *workloadTestRuntime) Logger(string) baselog.Logger { return this.log
 // Container 返回已经完成 Build 的测试 IOC。
 func (this *workloadTestRuntime) Container() ioc.Container { return this.container }
 
-// workloadTestServer 模拟必须收到显式 Shutdown 才会结束 Run 的业务 Server。
-type workloadTestServer struct {
-	// started 标记 Run 是否真正进入。
-	started atomic.Bool
-	// shutdown 标记 Workload 是否调用了显式 Shutdown。
-	shutdown atomic.Bool
-	// stopped 是 Run 的真实完成屏障。
-	stopped chan struct{}
-	// stopOnce 保证重复 Shutdown 不会关闭两次通道。
-	stopOnce sync.Once
-}
-
-// Run 标记启动并等待显式 Shutdown，故意不依赖 run context。
-func (this *workloadTestServer) Run(context.Context) error {
-	this.started.Store(true)
-	<-this.stopped
-	return nil
-}
-
-// Shutdown 标记调用并真实结束 Run。
-func (this *workloadTestServer) Shutdown(context.Context) error {
-	this.shutdown.Store(true)
-	this.stopOnce.Do(func() { close(this.stopped) })
-	return nil
-}
-
-// workloadMetricsPlanStub 提供测试监听配置和固定 Handler。
-type workloadMetricsPlanStub struct {
-	// config 是 Workload 读取的冻结配置。
-	config MetricsServerConfig
-	// handler 是 Metrics HTTP 响应实现。
-	handler PrometheusHandler
-}
-
-// metricsConfig 返回测试配置。
-func (this *workloadMetricsPlanStub) metricsConfig() MetricsServerConfig { return this.config }
-
-// metricsHandler 返回测试 Handler。
-func (this *workloadMetricsPlanStub) metricsHandler() PrometheusHandler { return this.handler }
-
-// TestWorkloadServesMetricsAndStopsBothServers 验证组合 Workload 使用 app 关闭 context 并建立真实收敛屏障。
+// TestMetricsWorkloadServesAndStopsIndependentServer 验证 observe Workload 只运行独立 Metrics Server。
 //
-// 测试方法：启动不响应 run context 的业务 Server 和真实 Metrics 端口；取消 run context 后显式调用 Shutdown，
-// 断言两个 Server 均结束、业务 Shutdown 被调用且 Workload Run/Shutdown 都成功返回。
-func TestWorkloadServesMetricsAndStopsBothServers(t *testing.T) {
-	address := reserveWorkloadTestAddress(t)
-	server := &workloadTestServer{stopped: make(chan struct{})}
-	plan := &workloadMetricsPlanStub{
-		config: MetricsServerConfig{
-			Address:           address,
-			Path:              "/metrics",
-			ReadHeaderTimeout: time.Second,
-		},
-		handler: http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-			_, _ = io.WriteString(writer, "workload_metric 1\n")
-		}),
+// 测试方法：通过 Module 在 IOC Build 预绑定随机端口，启动 Workload 后请求 /metrics，再调用 Shutdown，
+// 断言响应包含框架指标且 Run 在关闭后真实返回；测试容器不注册任何业务 web.Server。
+func TestMetricsWorkloadServesAndStopsIndependentServer(t *testing.T) {
+	// 第一阶段：Build 只创建 observe 资源，证明 Metrics Workload 不依赖业务 web.Server。
+	runtime := buildMetricsWorkloadTestRuntime(t, "127.0.0.1:0")
+	resource, err := ioc.ResolveAs[metricsServerResource](runtime.Container())
+	if err != nil {
+		t.Fatalf("resolve metrics resource: %v", err)
 	}
-	runtime := buildWorkloadTestRuntime(t, server, plan)
+	address, path := resource.endpoint()
+	observer, err := ioc.ResolveAs[webhertz.RequestObserver](runtime.Container())
+	if err != nil {
+		t.Fatalf("resolve request observer: %v", err)
+	}
+	observer.(webhertz.RequestLifecycleObserver).RequestStarted(context.Background(), "GET")
+	observer.Observe(context.Background(), webhertz.HTTPRequestObservation{
+		Method: "GET", RoutePattern: "/ready", Status: http.StatusOK, Outcome: webhertz.RequestOutcomeSuccess,
+	})
 	workload := Workload()
-	if workload.Name() != observedWorkloadName {
+	if workload.Name() != metricsWorkloadName {
 		t.Fatalf("unexpected workload name: %s", workload.Name())
 	}
+
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	runResult := make(chan error, 1)
 	go func() { runResult <- workload.Run(runCtx, runtime, nil) }()
-
-	body := requestWorkloadMetricsUntilReady(t, "http://"+address+"/metrics")
-	if body != "workload_metric 1\n" {
+	body := requestMetricsUntilReady(t, "http://"+address+path)
+	if !strings.Contains(body, "gobase_http_server") {
 		t.Fatalf("unexpected metrics body: %q", body)
 	}
+
+	// App 实际执行顺序会先取消 Run context，再调用 Shutdown；测试保持相同阶段顺序。
 	cancelRun()
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), time.Second)
 	shutdownErr := workload.Shutdown(shutdownCtx, runtime, nil)
 	cancelShutdown()
 	if shutdownErr != nil {
-		t.Fatalf("shutdown observed workload: %v", shutdownErr)
+		t.Fatalf("shutdown metrics workload: %v", shutdownErr)
 	}
 	select {
-	case err := <-runResult:
+	case err = <-runResult:
 		if err != nil {
-			t.Fatalf("workload returned error: %v", err)
+			t.Fatalf("metrics workload returned error: %v", err)
 		}
 	case <-time.After(workloadTestTimeout):
-		t.Fatal("workload did not converge after Shutdown")
-	}
-	if !server.started.Load() || !server.shutdown.Load() {
-		t.Fatalf("unexpected business lifecycle: started=%t shutdown=%t", server.started.Load(), server.shutdown.Load())
+		t.Fatal("metrics workload did not converge after Shutdown")
 	}
 }
 
-// TestWorkloadListenFailurePreventsBusinessStart 验证 Metrics 端口冲突在业务 Server Run 前失败。
+// TestMetricsListenerConflictFailsDuringRuntimeBuild 验证端口冲突发生在任何 Workload 启动之前。
 //
-// 测试方法：预占随机端口后执行 Workload，断言 listen_failed 错误码且业务 Server 从未启动。
-func TestWorkloadListenFailurePreventsBusinessStart(t *testing.T) {
+// 测试方法：预占随机端口后注册零参数 observe Module，执行 IOC Build，断言返回 listen_failed；
+// 不调用 Workload.Run，从而证明 listener 是 Runtime Resource 而不是运行 goroutine 内的延迟副作用。
+func TestMetricsListenerConflictFailsDuringRuntimeBuild(t *testing.T) {
+	// 第一阶段：由测试进程占用目标端口，建立确定的 Runtime Build 失败条件。
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("reserve occupied address: %v", err)
 	}
 	defer func() { _ = listener.Close() }()
 
-	server := &workloadTestServer{stopped: make(chan struct{})}
-	plan := &workloadMetricsPlanStub{
-		config: MetricsServerConfig{
-			Address:           listener.Addr().String(),
-			Path:              "/metrics",
-			ReadHeaderTimeout: time.Second,
-		},
-		handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
-	}
-	runtime := buildWorkloadTestRuntime(t, server, plan)
-	workload := Workload()
-	err = workload.Run(context.Background(), runtime, nil)
-	if !errcode.IsCode[ErrorCode](err, ErrCodeMetricsServerListenFailed) {
-		t.Fatalf("expected listen-failed error, got=%v", err)
-	}
-	if server.started.Load() {
-		t.Fatal("business server must not start after metrics listener conflict")
-	}
-	if shutdownErr := workload.Shutdown(context.Background(), runtime, nil); shutdownErr != nil {
-		t.Fatalf("shutdown failed setup: %v", shutdownErr)
-	}
-}
-
-// TestObservedAndBaseWorkloadCannotStartSameServerTwice 验证两个适配器共享业务 Server 语义身份。
-//
-// 测试方法：同时声明基础 Hertz Workload 与观测复合 Workload，执行前断言 app 以名称重复失败，
-// 避免使用者因组合两个看似独立的适配器而重复启动同一个业务 Server。
-func TestObservedAndBaseWorkloadCannotStartSameServerTwice(t *testing.T) {
-	application := baseapp.New(baseapp.WithWorkloads(appwebhertz.Workload(), Workload()))
-	err := application.ExecuteContext(context.Background(), nil)
-	if err == nil || !strings.Contains(err.Error(), "reason=name_duplicate name="+observedWorkloadName) {
-		t.Fatalf("expected duplicate business workload identity, got=%v", err)
-	}
-}
-
-// buildWorkloadTestRuntime 注册业务 Server 与内部 Metrics plan 并完成 IOC Build。
-func buildWorkloadTestRuntime(t *testing.T, server baseweb.Server, plan metricsServerPlan) baseapp.Runtime {
-	t.Helper()
+	// 第二阶段：只执行 Module Register/IOC Build，不进入任何 Workload.Run。
+	manager := newObservationTestManager(t, observationDefaults(listener.Addr().String()))
+	t.Cleanup(func() { _ = manager.Close() })
 	container := ioc.New()
-	if err := container.Register(server, ioc.WithDeclare[baseweb.Server](), ioc.WithBorrowed()); err != nil {
-		t.Fatalf("register business server: %v", err)
+	registerObservationTestManager(t, container, manager)
+	if err = NewModule().Register(container); err != nil {
+		t.Fatalf("register observe module: %v", err)
 	}
-	if err := container.Register(plan, ioc.WithDeclare[metricsServerPlan](), ioc.WithBorrowed()); err != nil {
-		t.Fatalf("register metrics plan: %v", err)
+	err = container.Build(context.Background())
+	if !errcode.IsCode[ErrorCode](err, ErrCodeMetricsServerListenFailed) {
+		t.Fatalf("expected listen-failed during Build, got=%v", err)
+	}
+}
+
+// TestModuleCloseReleasesPreboundMetricsListener 验证未启动 Workload 时 IOC Close 仍会释放 listener。
+//
+// 测试方法：Build 零参数 Module 后记录系统分配地址，不运行 Metrics Workload，直接关闭 Container，
+// 再绑定同一地址并断言成功，证明 Resource Close 覆盖命令未进入 Run 的回滚/短路路径。
+func TestModuleCloseReleasesPreboundMetricsListener(t *testing.T) {
+	// 第一阶段：Build 后读取实际预绑定地址，但故意不调用 Workload.Run。
+	manager := newObservationTestManager(t, observationDefaults("127.0.0.1:0"))
+	t.Cleanup(func() { _ = manager.Close() })
+	container := ioc.New()
+	registerObservationTestManager(t, container, manager)
+	if err := NewModule().Register(container); err != nil {
+		t.Fatalf("register observe module: %v", err)
 	}
 	if err := container.Build(context.Background()); err != nil {
-		t.Fatalf("build workload container: %v", err)
+		t.Fatalf("build observe module: %v", err)
+	}
+	resource, err := ioc.ResolveAs[metricsServerResource](container)
+	if err != nil {
+		t.Fatalf("resolve metrics resource: %v", err)
+	}
+	address, _ := resource.endpoint()
+	if err = container.Close(context.Background()); err != nil {
+		t.Fatalf("close observe container: %v", err)
+	}
+
+	// 第二阶段：立即复用同一地址，验证 IOC Closer 已释放未运行的 listener。
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("expected released metrics address %s: %v", address, err)
+	}
+	_ = listener.Close()
+}
+
+// TestBusinessAndMetricsWorkloadsHaveIndependentIdentities 验证两个 Server 可以作为并列 Workload 声明。
+//
+// 测试方法：以 WithoutRuntime 执行同时包含两个 Workload 的 App；断言错误来自缺少 Runtime，
+// 而不是声明期 name_duplicate，从而固定 web.hertz 与 web.hertz.metrics 的独立语义身份。
+func TestBusinessAndMetricsWorkloadsHaveIndependentIdentities(t *testing.T) {
+	// 两个 Workload 在声明期必须通过唯一名称校验；WithoutRuntime 只用于让执行快速进入依赖错误。
+	application := baseapp.New(
+		baseapp.WithoutRuntime(),
+		baseapp.WithWorkloads(appwebhertz.Workload(), Workload()),
+	)
+	err := application.ExecuteContext(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "reason=runtime_required") {
+		t.Fatalf("expected runtime-required execution error, got=%v", err)
+	}
+	if strings.Contains(err.Error(), "reason=name_duplicate") {
+		t.Fatalf("business and metrics workloads must have independent names: %v", err)
+	}
+}
+
+// buildMetricsWorkloadTestRuntime 构建含私有 Prometheus 与预绑定 Metrics Resource 的最小 Runtime。
+func buildMetricsWorkloadTestRuntime(t *testing.T, address string) baseapp.Runtime {
+	t.Helper()
+	manager := newObservationTestManager(t, observationDefaults(address))
+	t.Cleanup(func() { _ = manager.Close() })
+	container := ioc.New()
+	registerObservationTestManager(t, container, manager)
+	if err := NewModule().Register(container); err != nil {
+		t.Fatalf("register observe module: %v", err)
+	}
+	if err := container.Build(context.Background()); err != nil {
+		t.Fatalf("build observe container: %v", err)
 	}
 	t.Cleanup(func() { _ = container.Close(context.Background()) })
 	return &workloadTestRuntime{
@@ -203,22 +195,25 @@ func buildWorkloadTestRuntime(t *testing.T, server baseweb.Server, plan metricsS
 	}
 }
 
-// reserveWorkloadTestAddress 返回当前可绑定的回环地址；关闭后的短窗口只由单个测试占用。
-func reserveWorkloadTestAddress(t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve workload address: %v", err)
+// observationDefaults 返回默认统一 scope 下的测试监听配置。
+func observationDefaults(address string) map[string]any {
+	return map[string]any{
+		"observability": map[string]any{
+			"webHertz": map[string]any{
+				"prometheus": map[string]any{
+					"server": map[string]any{
+						"address":           address,
+						"path":              "/metrics",
+						"readHeaderTimeout": "1s",
+					},
+				},
+			},
+		},
 	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatalf("release workload address: %v", err)
-	}
-	return address
 }
 
-// requestWorkloadMetricsUntilReady 在固定预算内轮询 Metrics 端口并返回响应正文。
-func requestWorkloadMetricsUntilReady(t *testing.T, target string) string {
+// requestMetricsUntilReady 在固定预算内轮询 Metrics 端口并返回响应正文。
+func requestMetricsUntilReady(t *testing.T, target string) string {
 	t.Helper()
 	deadline := time.Now().Add(workloadTestTimeout)
 	for {
@@ -238,9 +233,3 @@ func requestWorkloadMetricsUntilReady(t *testing.T, target string) string {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
-
-var (
-	_ baseapp.Runtime   = (*workloadTestRuntime)(nil)
-	_ baseweb.Server    = (*workloadTestServer)(nil)
-	_ metricsServerPlan = (*workloadMetricsPlanStub)(nil)
-)

@@ -28,8 +28,16 @@ const (
 	tracingInstrumentationVersion = "0.1.0"
 )
 
-// TracingOption 定义 OTel Hertz 插桩的纯值策略声明。
-type TracingOption func(options *tracingOptions) error
+// TracingOption 定义不能由配置表达的 OTel Formatter/Enricher 代码扩展声明。
+type TracingOption func(options *tracingCodeOptions) error
+
+// tracingCodeOptions 保存需要函数或接口身份的代码扩展策略。
+type tracingCodeOptions struct {
+	// spanNameFormatter 只接收安全路由快照，不接触原始 URL。
+	spanNameFormatter ServerSpanNameFormatter
+	// enrichers 按声明顺序追加经安全过滤的自定义 Attribute。
+	enrichers []ServerSpanAttributeEnricher
+}
 
 // tracingOptions 保存构造前已冻结的 Trace 策略。
 type tracingOptions struct {
@@ -86,42 +94,9 @@ var (
 	_ hertztracer.Tracer                          = (*hertzServerTracer)(nil)
 )
 
-// WithTracingIgnoredPaths 声明不创建 Server Span 的精确路径。
-//
-// 参数:
-// - paths: 必须是以 `/` 开头且不含 query/fragment 的绝对路径；重复值自动去重。
-func WithTracingIgnoredPaths(paths ...string) TracingOption {
-	return func(options *tracingOptions) error {
-		for index, path := range paths {
-			path = strings.TrimSpace(path)
-			if path == "" || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") {
-				return buildError(ErrCodeDeclarationInvalid, messagef("op=app_observe_webhertz.tracing result=failed stage=declare_ignore_paths reason=path_invalid path_index=%d", index))
-			}
-			options.ignoredPaths[path] = struct{}{}
-		}
-		return nil
-	}
-}
-
-// WithSamplingPolicyReference 要求 borrowed Provider 的采样策略引用与声明一致。
-//
-// 说明:
-// - 本 Option 不创建或动态修改 Sampler；采样实现仍由 Provider owner 决定；
-// - 空白引用非法，匹配失败在 adapter Init 阶段 fail-fast。
-func WithSamplingPolicyReference(reference string) TracingOption {
-	return func(options *tracingOptions) error {
-		reference = strings.TrimSpace(reference)
-		if reference == "" {
-			return buildError(ErrCodeDeclarationInvalid, "op=app_observe_webhertz.tracing result=failed stage=declare_sampling_policy reason=reference_required")
-		}
-		options.samplingPolicyReference = reference
-		return nil
-	}
-}
-
 // WithServerSpanNameFormatter 替换默认 `METHOD route` Span 命名策略。
 func WithServerSpanNameFormatter(formatter ServerSpanNameFormatter) TracingOption {
-	return func(options *tracingOptions) error {
+	return func(options *tracingCodeOptions) error {
 		if formatter == nil {
 			return buildError(ErrCodeDeclarationInvalid, "op=app_observe_webhertz.tracing result=failed stage=declare_span_name reason=formatter_required")
 		}
@@ -132,7 +107,7 @@ func WithServerSpanNameFormatter(formatter ServerSpanNameFormatter) TracingOptio
 
 // WithServerSpanAttributeEnrichers 追加只接收安全完成态快照的 Attribute Enricher。
 func WithServerSpanAttributeEnrichers(enrichers ...ServerSpanAttributeEnricher) TracingOption {
-	return func(options *tracingOptions) error {
+	return func(options *tracingCodeOptions) error {
 		for index, enricher := range enrichers {
 			if isNilValue(enricher) {
 				return buildError(ErrCodeDeclarationInvalid, messagef("op=app_observe_webhertz.tracing result=failed stage=declare_enrichers reason=enricher_required enricher_index=%d", index))
@@ -148,7 +123,8 @@ func WithServerSpanAttributeEnrichers(enrichers ...ServerSpanAttributeEnricher) 
 // 参数:
 // - provider: 必填；由外部 managed bean 拥有并覆盖 Web Server 生命周期；
 // - propagator: 必填；不会回退到 OTel global；
-// - options: span 命名、忽略路径、采样策略引用和 Attribute 扩展。
+// - config: ignored paths 和采样策略引用启动快照；
+// - options: span 命名和 Attribute 扩展代码声明。
 //
 // 返回:
 // - InstrumentationBundle: 无资源、可并发复用的配对声明；
@@ -156,13 +132,18 @@ func WithServerSpanAttributeEnrichers(enrichers ...ServerSpanAttributeEnricher) 
 func NewOpenTelemetryBundle(
 	provider TracerProvider,
 	propagator propagation.TextMapPropagator,
+	config TracingConfig,
 	options ...TracingOption,
 ) (appwebhertz.InstrumentationBundle, error) {
-	resolved, err := resolveTracingOptions(options)
+	resolvedConfig, err := resolveTracingConfig(config)
 	if err != nil {
 		return nil, err
 	}
-	return newOpenTelemetryBundleFromConfig(provider, propagator, resolved)
+	codeOptions, err := resolveTracingCodeOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	return newOpenTelemetryBundleFromConfig(provider, propagator, buildTracingOptions(resolvedConfig, codeOptions))
 }
 
 // newOpenTelemetryBundleFromConfig 使用 Module 已冻结的策略构造 Bundle，避免 Init 重放用户 Option。
@@ -217,19 +198,53 @@ func NewTraceAlignedRequestIDGenerator(fallback appwebhertz.RequestIDGenerator) 
 	}, nil
 }
 
-// resolveTracingOptions 顺序应用纯声明并复制 slice/map，形成请求期不可变策略。
-func resolveTracingOptions(options []TracingOption) (tracingOptions, error) {
-	resolved := tracingOptions{ignoredPaths: make(map[string]struct{})}
+// resolveTracingCodeOptions 顺序应用函数型扩展并复制 slice，形成可重放代码声明。
+func resolveTracingCodeOptions(options []TracingOption) (tracingCodeOptions, error) {
+	resolved := tracingCodeOptions{}
 	for index, option := range options {
 		if option == nil {
-			return tracingOptions{}, buildError(ErrCodeDeclarationInvalid, messagef("op=app_observe_webhertz.tracing result=failed stage=resolve_options reason=option_required option_index=%d", index))
+			return tracingCodeOptions{}, buildError(ErrCodeDeclarationInvalid, messagef("op=app_observe_webhertz.tracing result=failed stage=resolve_options reason=option_required option_index=%d", index))
 		}
 		if err := option(&resolved); err != nil {
-			return tracingOptions{}, err
+			return tracingCodeOptions{}, err
 		}
 	}
 	resolved.enrichers = append([]ServerSpanAttributeEnricher{}, resolved.enrichers...)
 	return resolved, nil
+}
+
+// resolveTracingConfig 校验、去重并复制可部署覆盖的 Trace 策略。
+// 阶段角色：统一 Config 冻结时阻止非法 ignore path 进入请求热路径。
+func resolveTracingConfig(input TracingConfig) (TracingConfig, error) {
+	resolved := TracingConfig{SamplingPolicyReference: strings.TrimSpace(input.SamplingPolicyReference)}
+	seen := make(map[string]struct{}, len(input.IgnoredPaths))
+	// 保留首次声明顺序，去重后复制到新 slice，避免 Snapshot 后续引用变更影响请求路径。
+	for index, path := range input.IgnoredPaths {
+		path = strings.TrimSpace(path)
+		if path == "" || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") {
+			return TracingConfig{}, errorForConfigInvalid(messagef("op=app_observe_webhertz.config result=failed stage=validate_ignored_paths reason=path_invalid path_index=%d", index))
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		resolved.IgnoredPaths = append(resolved.IgnoredPaths, path)
+	}
+	return resolved, nil
+}
+
+// buildTracingOptions 合并已校验配置与代码声明，形成请求期不可变策略。
+func buildTracingOptions(config TracingConfig, code tracingCodeOptions) tracingOptions {
+	resolved := tracingOptions{
+		ignoredPaths:            make(map[string]struct{}, len(config.IgnoredPaths)),
+		samplingPolicyReference: config.SamplingPolicyReference,
+		spanNameFormatter:       code.spanNameFormatter,
+		enrichers:               append([]ServerSpanAttributeEnricher{}, code.enrichers...),
+	}
+	for _, path := range config.IgnoredPaths {
+		resolved.ignoredPaths[path] = struct{}{}
+	}
+	return resolved
 }
 
 // HertzOptions 返回当前 Bundle 的 Hertz tracer Option 副本。

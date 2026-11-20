@@ -395,7 +395,7 @@ Architecture 不承担以下职责：
 29. [app-observe-webhertz 模块入口](../app-observe-webhertz/README.md)
 30. [可观测性入门](guides/observability-primer.md)
 31. [Web 可观测性提案](architecture/web-observability-proposal.md)
-32. [Web 可观测性使用指南](guides/web-observability.md)
+32. [app-observe-webhertz 使用指南](guides/app-observe-webhertz-usage.md)
 33. [app-web-hertz 架构设计](architecture/app-web-hertz-design.md)
 34. [quickstart-app-web-hertz](../examples/quickstart-app-web-hertz/README.md)
 35. [quickstart-app-observe-webhertz](../examples/quickstart-app-observe-webhertz/README.md)

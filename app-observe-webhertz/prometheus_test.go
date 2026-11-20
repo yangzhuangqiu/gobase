@@ -19,7 +19,7 @@ import (
 // 测试方法：发送开始/完成事件，通过 Runtime Handler 抓取文本，断言名称、模板路由、状态和 in-flight 回零。
 func TestPrivatePrometheusRuntimePublishesStableMetricContract(t *testing.T) {
 	// 第一阶段：创建完全私有的 Registry/registration，不读取 DefaultRegistry。
-	runtime, err := NewPrivatePrometheusRuntime()
+	runtime, err := NewPrivatePrometheusRuntime(DefaultConfig().Prometheus)
 	if err != nil {
 		t.Fatalf("new private prometheus runtime: %v", err)
 	}
@@ -58,11 +58,11 @@ func TestPrivatePrometheusRuntimePublishesStableMetricContract(t *testing.T) {
 // 测试方法：创建两个同名私有 Runtime；再在共享 Registry 制造重复注册、关闭首个后重试并断言 Registry 可继续使用。
 func TestPrometheusRuntimesIsolateRegistriesAndOwnOnlyRegistration(t *testing.T) {
 	// 第一阶段：两个私有 Registry 允许完全相同的指标名并独立关闭。
-	firstPrivate, err := NewPrivatePrometheusRuntime()
+	firstPrivate, err := NewPrivatePrometheusRuntime(DefaultConfig().Prometheus)
 	if err != nil {
 		t.Fatalf("new first private runtime: %v", err)
 	}
-	secondPrivate, err := NewPrivatePrometheusRuntime()
+	secondPrivate, err := NewPrivatePrometheusRuntime(DefaultConfig().Prometheus)
 	if err != nil {
 		t.Fatalf("new second private runtime: %v", err)
 	}
@@ -75,17 +75,17 @@ func TestPrometheusRuntimesIsolateRegistriesAndOwnOnlyRegistration(t *testing.T)
 
 	// 第二阶段：共享 Registry 拒绝重复 Collector；注销后可复用且 Registry 所有权不转移。
 	registry := prometheus.NewRegistry()
-	firstShared, err := NewSharedPrometheusRuntime(registry)
+	firstShared, err := NewSharedPrometheusRuntime(registry, DefaultConfig().Prometheus)
 	if err != nil {
 		t.Fatalf("new first shared runtime: %v", err)
 	}
-	if _, err := NewSharedPrometheusRuntime(registry); !errcode.IsCode[ErrorCode](err, ErrCodeRegistrationFailed) {
+	if _, err := NewSharedPrometheusRuntime(registry, DefaultConfig().Prometheus); !errcode.IsCode[ErrorCode](err, ErrCodeRegistrationFailed) {
 		t.Fatalf("expected duplicate registration error, got=%v", err)
 	}
 	if err := firstShared.Close(); err != nil {
 		t.Fatalf("close first shared runtime: %v", err)
 	}
-	secondShared, err := NewSharedPrometheusRuntime(registry)
+	secondShared, err := NewSharedPrometheusRuntime(registry, DefaultConfig().Prometheus)
 	if err != nil {
 		t.Fatalf("expected shared registry reuse after unregister: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestPrometheusRuntimesIsolateRegistriesAndOwnOnlyRegistration(t *testing.T)
 func TestPrometheusObserverSupportsConcurrentCompletion(t *testing.T) {
 	// 第一阶段：在共享 Registry 注册单个并发安全 Observer。
 	registry := prometheus.NewRegistry()
-	runtime, err := NewSharedPrometheusRuntime(registry)
+	runtime, err := NewSharedPrometheusRuntime(registry, DefaultConfig().Prometheus)
 	if err != nil {
 		t.Fatalf("new concurrent prometheus runtime: %v", err)
 	}
@@ -137,19 +137,20 @@ func TestPrometheusObserverSupportsConcurrentCompletion(t *testing.T) {
 	t.Fatal("request counter family missing")
 }
 
-// TestPrometheusOptionsRejectInvalidBuckets 验证非法 Histogram bucket 在注册 Registry 前 fail-fast。
-// 测试方法：传入空、非递增和负数 bucket，断言稳定 declaration_invalid 错误码。
-func TestPrometheusOptionsRejectInvalidBuckets(t *testing.T) {
-	for name, option := range map[string]PrometheusOption{
-		"empty":          WithDurationBuckets(),
-		"not increasing": WithRequestByteBuckets(1, 1),
-		"negative":       WithResponseByteBuckets(-1, 1),
-		"nan":            WithDurationBuckets(math.NaN()),
-		"metric name":    WithPrometheusNamespace("bad-name"),
+// TestPrometheusConfigRejectsInvalidBuckets 验证非法 Histogram bucket 和指标命名在注册 Registry 前 fail-fast。
+// 测试方法：从默认配置复制后注入非递增、负数、NaN bucket 或非法 namespace，断言稳定 config_invalid 错误码。
+func TestPrometheusConfigRejectsInvalidBuckets(t *testing.T) {
+	for name, mutate := range map[string]func(*PrometheusConfig){
+		"not increasing": func(config *PrometheusConfig) { config.Buckets.RequestBytes = []float64{1, 1} },
+		"negative":       func(config *PrometheusConfig) { config.Buckets.ResponseBytes = []float64{-1, 1} },
+		"nan":            func(config *PrometheusConfig) { config.Buckets.Duration = []float64{math.NaN()} },
+		"metric name":    func(config *PrometheusConfig) { config.Namespace = "bad-name" },
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := NewPrometheusObserver(option); !errcode.IsCode[ErrorCode](err, ErrCodeDeclarationInvalid) {
-				t.Fatalf("expected invalid bucket error, got=%v", err)
+			config := DefaultConfig().Prometheus
+			mutate(&config)
+			if _, err := NewPrometheusObserver(config); !errcode.IsCode[ErrorCode](err, ErrCodeConfigInvalid) {
+				t.Fatalf("expected config-invalid error, got=%v", err)
 			}
 		})
 	}

@@ -16,11 +16,14 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// TestModuleBuildsPrivatePrometheusBeans 验证 Module 发布可注入的 Metrics Observer 和 Handler。
-// 测试方法：声明私有 Prometheus 能力并 Build；分别调用观察与 Handler 接口，断言指标后关闭容器。
+// TestModuleBuildsPrivatePrometheusBeans 验证零参数 Module 开箱发布 Metrics Observer、Handler 和 Server Resource。
+// 测试方法：提供随机监听地址并 Build 零参数 Module；分别调用观察与 Handler 接口，断言指标后关闭容器。
 func TestModuleBuildsPrivatePrometheusBeans(t *testing.T) {
 	container := ioc.New()
-	module := NewModule(WithPrivatePrometheus())
+	manager := newObservationTestManager(t, observationDefaults("127.0.0.1:0"))
+	t.Cleanup(func() { _ = manager.Close() })
+	registerObservationTestManager(t, container, manager)
+	module := NewModule()
 	if module.Name() != moduleName {
 		t.Fatalf("unexpected module name: %s", module.Name())
 	}
@@ -73,6 +76,9 @@ func TestSharedPrometheusModuleRequiresRegistryAndUnregistersCollector(t *testin
 	// 第二阶段：显式 borrowed Registry 覆盖 adapter 生命周期，容器关闭后 Registry 本身仍可 Gather。
 	registry := prometheus.NewRegistry()
 	container := ioc.New()
+	manager := newObservationTestManager(t, observationDefaults("127.0.0.1:0"))
+	t.Cleanup(func() { _ = manager.Close() })
+	registerObservationTestManager(t, container, manager)
 	if err := container.Register(registry, ioc.WithDeclare[PrometheusRegistry](), ioc.WithBorrowed()); err != nil {
 		t.Fatalf("register borrowed prometheus registry: %v", err)
 	}
@@ -104,17 +110,13 @@ func TestSharedPrometheusModuleRequiresRegistryAndUnregistersCollector(t *testin
 	}
 }
 
-// TestModuleRejectsEmptyAndConflictingDeclarationsBeforeRegistration 验证空能力、nil Option、重复能力及 Metrics Server 缺失 Prometheus 在修改 IOC Registry 前失败。
+// TestModuleRejectsConflictingDeclarationsBeforeRegistration 验证 nil Option 与重复高级能力在修改 IOC Registry 前失败。
 // 测试方法：表驱动调用 Register 断言 declaration_invalid；随后向同一 Container 注册探针，确认 Registry 仍处于可用状态。
-func TestModuleRejectsEmptyAndConflictingDeclarationsBeforeRegistration(t *testing.T) {
+func TestModuleRejectsConflictingDeclarationsBeforeRegistration(t *testing.T) {
 	tests := map[string]Module{
-		"empty":                     NewModule(),
-		"nil option":                NewModule(ModuleOption(nil)),
-		"dual registry":             NewModule(WithPrivatePrometheus(), WithSharedPrometheus()),
-		"dual tracing":              NewModule(WithOpenTelemetry(), WithOpenTelemetry()),
-		"metrics server only":       NewModule(WithMetricsServer()),
-		"dual metrics server":       NewModule(WithPrivatePrometheus(), WithMetricsServer(), WithMetricsServer()),
-		"nil metrics server option": NewModule(WithPrivatePrometheus(), WithMetricsServer(MetricsServerOption(nil))),
+		"nil option":    NewModule(ModuleOption(nil)),
+		"dual registry": NewModule(WithPrivatePrometheus(), WithSharedPrometheus()),
+		"dual tracing":  NewModule(WithOpenTelemetry(), WithOpenTelemetry()),
 	}
 	for name, module := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -124,6 +126,36 @@ func TestModuleRejectsEmptyAndConflictingDeclarationsBeforeRegistration(t *testi
 			}
 			if err := container.Register(&struct{}{}, ioc.WithName("Probe")); err != nil {
 				t.Fatalf("expected registry to remain mutable: %v", err)
+			}
+		})
+	}
+}
+
+// TestWithConfigScopeUsesDefaultAndLastDeclaration 验证配置路径遵循统一的空值回退与最后声明优先级。
+// 测试方法：分别解析零声明、空白声明和两个非空声明，断言默认路径稳定且最后一个自定义路径生效。
+func TestWithConfigScopeUsesDefaultAndLastDeclaration(t *testing.T) {
+	tests := map[string]struct {
+		options  []ModuleOption
+		expected string
+	}{
+		"default": {expected: DefaultConfigScope},
+		"blank": {
+			options:  []ModuleOption{WithConfigScope("  ")},
+			expected: DefaultConfigScope,
+		},
+		"last declaration": {
+			options:  []ModuleOption{WithConfigScope("services.first.metrics"), WithConfigScope(" services.second.metrics ")},
+			expected: "services.second.metrics",
+		},
+	}
+	for name, item := range tests {
+		t.Run(name, func(t *testing.T) {
+			resolved, err := resolveModuleOptions(item.options)
+			if err != nil {
+				t.Fatalf("resolve module options: %v", err)
+			}
+			if resolved.configScope != item.expected {
+				t.Fatalf("unexpected config scope: got=%q expected=%q", resolved.configScope, item.expected)
 			}
 		})
 	}
@@ -147,13 +179,19 @@ func TestOpenTelemetryModuleRequiresBorrowedDependenciesAndPublishesBundle(t *te
 	providerReference := &tracerProviderStub{provider: provider, samplingPolicyReference: "always_on"}
 	propagator := propagation.TraceContext{}
 	container := ioc.New()
+	defaults := observationDefaults("127.0.0.1:0")
+	webHertz := defaults["observability"].(map[string]any)["webHertz"].(map[string]any)
+	webHertz["tracing"] = map[string]any{"samplingPolicyReference": "always_on"}
+	manager := newObservationTestManager(t, defaults)
+	t.Cleanup(func() { _ = manager.Close() })
+	registerObservationTestManager(t, container, manager)
 	if err := container.Register(providerReference, ioc.WithDeclare[TracerProvider](), ioc.WithBorrowed()); err != nil {
 		t.Fatalf("register borrowed tracer provider: %v", err)
 	}
 	if err := container.Register(propagator, ioc.WithDeclare[propagation.TextMapPropagator](), ioc.WithBorrowed()); err != nil {
 		t.Fatalf("register borrowed propagator: %v", err)
 	}
-	if err := NewModule(WithOpenTelemetry(WithSamplingPolicyReference("always_on"))).Register(container); err != nil {
+	if err := NewModule(WithOpenTelemetry()).Register(container); err != nil {
 		t.Fatalf("register tracing module: %v", err)
 	}
 	if err := container.Build(context.Background()); err != nil {
