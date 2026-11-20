@@ -4,8 +4,8 @@
 
 | 场景 | 声明方式 | 业务合同 |
 |---|---|---|
-| 一次性任务 | `WithWorkloads(Runner(fn))` | `RunFunc(ctx, runtime, command)` |
-| 常驻服务/Consumer/Scheduler | `WithWorkloads(workload...)` | `Workload.Run/Shutdown` |
+| 一次性任务 | `WithModules(Runner(fn))` | `RunFunc(ctx, runtime, command)` |
+| 常驻服务/Consumer/Scheduler | `WithModules(module...)` | `WorkloadModule.Register/Workloads` |
 | 被动连接池/Client | IOC Definition/Module | `Resource.Close(ctx)` |
 | 子命令 | `NewCommand(use, options...)` | 节点自己的 Workloads |
 | 遗留关闭回调 | `WithShutdownHook` | 高级逃生口 |
@@ -19,7 +19,7 @@ func main() {
     app.Main(
         app.WithName("report"),
         app.WithDescription("Generate reports"),
-        app.WithWorkloads(app.Runner(func(
+        app.WithModules(app.Runner(func(
             ctx context.Context,
             runtime app.Runtime,
             command app.CommandContext,
@@ -30,7 +30,7 @@ func main() {
 }
 ```
 
-`Runner` 返回固定名称 `runner` 的 Workload。函数返回表示任务真实完成；它适合迁移、校验、生成等 one-shot 工作。可取消的一次性任务必须监听传入的 `ctx`；`Runner.Shutdown` 是无副作用操作，收到关闭信号时只能依靠业务函数响应 run context 并返回。
+`Runner` 返回固定名称 `runner` 的 workload-only Module。它不注册 Bean，只贡献一个同名 Workload。函数返回表示任务真实完成；它适合迁移、校验、生成等 one-shot 工作。可取消的一次性任务必须监听传入的 `ctx`；`Runner.Shutdown` 是无副作用操作，收到关闭信号时只能依靠业务函数响应 run context 并返回。
 
 ## 3. 常驻 Workload
 
@@ -58,11 +58,21 @@ func (this *HTTPWorkload) Shutdown(ctx context.Context, _ app.Runtime, _ app.Com
     <-this.done
     return nil
 }
+
+type HTTPModule struct {
+    workload *HTTPWorkload
+}
+
+func (this *HTTPModule) Name() string { return "http" }
+func (this *HTTPModule) Register(ioc.Registry) error { return nil }
+func (this *HTTPModule) Workloads() []app.Workload {
+    return []app.Workload{this.workload}
+}
 ```
 
 ```go
 app.Main(
-    app.WithWorkloads(httpWorkload, consumerWorkload),
+    app.WithModules(httpModule, consumerModule),
 )
 ```
 
@@ -82,18 +92,18 @@ app.Main(
 ```go
 app.Main(
     app.WithName("ops"),
-    app.WithBeforeRunHook(rootAudit),
+    app.WithGlobalBeforeRunHook(globalAudit),
     app.WithCommands(
         app.NewCommand("admin",
             app.WithDescription("Administrative commands"),
-            app.WithBeforeRunHook(adminAudit),
             app.WithCommands(
                 app.NewCommand("status [service]",
                     app.WithDescription("Show service status"),
                     app.WithArgsValidator(requireOneArg),
                     app.WithoutRuntime(),
                     app.WithFlagBinder(&statusFlags{}),
-                    app.WithWorkloads(app.Runner(runStatus)),
+                    app.WithBeforeRunHook(prepareStatus),
+                    app.WithModules(app.Runner(runStatus)),
                 ),
             ),
         ),
@@ -108,7 +118,7 @@ app.Main(
 - `CommandContext.Args()` 是 `[]string{"payment"}`；
 - 只执行 status 节点的 Workload；
 - Runtime 需求取路径上最近的显式声明；
-- 需要 Runtime 时 BeforeRunHook 按 root→admin→status 顺序执行。
+- GlobalBeforeRunHook 执行一次，然后只执行 status 节点的 BeforeRunHook；两者收到 nil Runtime。
 
 分组节点可以只有 `WithCommands` 而没有 Workload，直接执行时显示该节点 help。叶子节点缺少 Workload 返回 `app.lifecycle.workload_required`。
 
@@ -122,8 +132,9 @@ app.Main(
 | `WithVersion` | `--version` 文本 |
 | `WithOutput` / `WithErrorOutput` | CLI 输出目标 |
 | `WithRuntime` / `WithRuntimeOptions` | Runtime 蓝图 |
-| `WithConfig` / `WithLogging` / `WithModules` | 高频 Runtime 门面 |
+| `WithConfig` / `WithLogging` | 高频 Runtime 门面 |
 | `WithShutdownPolicy` | 进程信号和 App 默认关闭预算 |
+| `WithGlobalBeforeRunHook` | 每次实际命令执行都调用的 App 全局运行前策略 |
 
 ### NodeOption（root 与子命令共用）
 
@@ -133,17 +144,30 @@ app.Main(
 | `WithArgsValidator` | 当前节点局部 |
 | `WithoutRuntime` / `RequireRuntime` | 最近显式声明覆盖；默认需要 Runtime |
 | `WithFlagBinder` | 当前节点局部，不继承 |
-| `WithWorkloads` | 当前节点局部，不继承 |
-| `WithBeforeRunHook` | root→leaf 追加 |
-| `WithShutdownHook` | root→leaf 追加 |
+| `WithBeanDefinitions` | 当前节点私有 Bean，不继承 |
+| `WithModules` | 当前节点局部、不继承；`WorkloadModule` 同时贡献主动执行单元 |
+| `WithBeforeRunHook` | 当前节点局部，不继承 |
+| `WithShutdownHook` | 当前节点局部，不继承 |
 | `WithCommands` | 递归添加直接子节点 |
+
+`WithBeanDefinitions` 与 `WithModules` 都属于最终选中节点，不从 root 或中间分组节点继承。
+只有真正需要在每个 Runtime 命令中重复注册的高级基础对象，才显式进入稳定 Runtime 蓝图：
+
+```go
+app.WithRuntimeOptions(
+    appruntime.WithBeanDefinitions(ioc.Define(globalInfrastructure)),
+)
+```
+
+普通业务对象不要使用该高级入口，否则无关子命令也会初始化它并承受其启动失败。
+GlobalBeforeRunHook 适合审计、权限校验等跨命令策略；若其依赖 Runtime Bean，该 Bean 必须通过全局 Runtime 蓝图提供。
+BeforeRunHook 与 ShutdownHook 都只属于选中节点，应与该节点实际拥有的 Bean、Module、Workload/Resource 对齐。
 
 ### CommandOption
 
 | Option | 作用 |
 |---|---|
 | `WithShutdownBudget` | 两个 duration 字段分别覆盖祖先/App 默认 |
-| `WithoutInheritedShutdownHooks` | 清空祖先高级 Hook；本节点新 Hook 仍保留 |
 
 ## 6. FlagBinder
 
@@ -174,24 +198,25 @@ func (this *serveFlags) ValidateFlags() []error { return nil }
 
 默认 root 需要 Runtime，子命令未声明时自动继承最近祖先。普通命令不需要声明任何 Runtime Option。
 
-纯本地诊断、离线转换或修复 Runtime 启动条件的命令使用 `WithoutRuntime()`：不构建 Runtime、不执行 BeforeRunHook，Workload/ShutdownHook 收到 nil Runtime。在整个禁用子树中，只有少数命令重新依赖 config/log/ioc 时，才使用高级覆盖入口 `RequireRuntime()`：
+纯本地诊断、离线转换或修复 Runtime 启动条件的命令使用 `WithoutRuntime()`：不构建 Runtime，GlobalBeforeRunHook、选中节点 BeforeRunHook、Workload/ShutdownHook 均收到 nil Runtime。在整个禁用子树中，只有少数命令重新依赖 config/log/ioc 时，才使用高级覆盖入口 `RequireRuntime()`：
 
 ```go
 app.NewCommand("admin",
     app.WithoutRuntime(),
     app.WithCommands(
         app.NewCommand("local-check",
-            app.WithWorkloads(app.Runner(runLocalCheck)),
+            app.WithModules(app.Runner(runLocalCheck)),
         ),
         app.NewCommand("repair",
             app.RequireRuntime(),
-            app.WithWorkloads(app.Runner(runRepair)),
+            app.WithModules(app.Runner(runRepair)),
         ),
     ),
 )
 ```
 
 继承所需的未声明/需要/禁用三态完全位于框架内部；调用方只表达“这个节点不需要 Runtime”或“在禁用子树中重新需要 Runtime”。
+`WithoutRuntime()` 节点不能同时声明 `WithBeanDefinitions(...)`；该组合会以 `bean_definitions_require_runtime` fail-fast，而不是静默忽略对象图。
 
 ## 8. Shutdown Policy 与命令 Budget
 
@@ -207,7 +232,7 @@ app.New(
             app.WithShutdownBudget(app.ShutdownBudget{
                 WorkloadGracefulTimeout: 2 * time.Minute,
             }),
-            app.WithWorkloads(importWorkload),
+            app.WithModules(importModule),
         ),
     ),
 )
@@ -247,17 +272,19 @@ app.WithShutdownHook("legacy.lease", func(
 
 普通 Server/Consumer 不要使用 Hook，应实现 Workload。普通 Client/连接池不要使用 Hook，应交给 IOC Resource。
 
-某个子命令不应执行祖先高级 Hook 时：
+ShutdownHook 不继承；root 与子命令可以使用相同名称而互不冲突：
 
 ```go
+app.WithShutdownHook("root.legacy", cleanupRoot)
+
 app.NewCommand("doctor",
     app.WithoutRuntime(),
-    app.WithoutInheritedShutdownHooks(),
-    app.WithWorkloads(app.Runner(runDoctor)),
+    app.WithShutdownHook("doctor.legacy", cleanupDoctor),
+    app.WithModules(app.Runner(runDoctor)),
 )
 ```
 
-`WithoutInheritedShutdownHooks` 不影响 Workload Shutdown 或 Runtime Close。
+执行 `doctor` 时只调用 `doctor.legacy`；Workload Shutdown 与 Runtime Close 仍按固定生命周期执行。
 
 ## 10. Web Server 集成
 
@@ -266,11 +293,10 @@ app.NewCommand("doctor",
 ```go
 app.Main(
     app.WithModules(appwebhertz.NewModule()),
-    app.WithWorkloads(appwebhertz.Workload()),
 )
 ```
 
-其流程是：从 IOC 解析唯一 `web.Server`，Workload Run 委托 `Server.Run`，Shutdown 委托 `Server.Shutdown`，app 等待 Run 返回，最后 IOC Close Server Resource。
+`app-web-hertz` Module 在第一阶段注册唯一 `web.Server`，在第二阶段自动贡献 Server Workload。其 Run 委托 `Server.Run`，Shutdown 委托 `Server.Shutdown`；app 等待 Run 返回，最后 IOC Close Server Resource。
 
 ## 11. 顺序复用同一个 App
 
@@ -287,8 +313,8 @@ app.Main(
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `workload_required` | 选中叶子没有 Workload | 使用 `WithWorkloads` 或 `Runner` |
-| 子命令没执行 root Workload | Workload 是节点局部能力 | 在该子命令声明自己的 Workload |
+| `workload_required` | 选中叶子的 Module 没有贡献 Workload | 使用 `WithModules(Runner(...))` 或声明 `WorkloadModule` |
+| 子命令没执行 root Module/Workload | Module 是节点局部能力 | 在该子命令声明自己的 Module |
 | root Binder 未校验子命令 | Binder 不继承 | 把共用规则提取为普通函数或给各节点声明 Binder |
 | `WithoutRuntime` 命令收到 nil Runtime | 这是声明合同 | 不访问 Runtime，或在该节点使用 `RequireRuntime()` |
 | Runtime Close 一直等待 | Workload/Closer 尚未真实结束 | 实现 context 感知的 graceful→force→wait |

@@ -36,7 +36,7 @@ func TestUseCaseHostCancellationRunsShutdownBeforeRunnerConverges(t *testing.T) 
 	hookCalled := make(chan struct{})
 	cause := errors.New("host stopped")
 	application := New(
-		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
+		WithModules(Runner(func(context.Context, Runtime, CommandContext) error {
 			close(started)
 			<-release
 			return context.Canceled
@@ -67,24 +67,29 @@ func TestUseCaseHostCancellationRunsShutdownBeforeRunnerConverges(t *testing.T) 
 	}
 }
 
-// TestUseCaseCommandCanDisableInheritedShutdownHooks 验证子命令可只关闭应用 Shutdown Group，而不影响 Runner。
+// TestUseCaseCommandUsesOnlyLocalShutdownHooks 验证子命令只执行自身高级关闭动作。
 //
 // 测试方法：
-// 1. 应用注册一个会记录调用的 Shutdown Hook；
-// 2. 执行 WithoutRuntime 且清空祖先 Shutdown Hooks 的子命令；
-// 3. 断言 Runner 执行而 Hook 未执行。
-func TestUseCaseCommandCanDisableInheritedShutdownHooks(t *testing.T) {
-	hookCalled := false
+// 1. root 与子命令分别注册一个会记录调用的 Shutdown Hook；
+// 2. 执行 WithoutRuntime 子命令并等待 Runner 收敛；
+// 3. 断言 Runner 和子命令 Hook 执行，而 root Hook 未执行。
+func TestUseCaseCommandUsesOnlyLocalShutdownHooks(t *testing.T) {
+	rootHookCalled := false
+	childHookCalled := false
 	runnerCalled := false
 	application := New(
 		WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
-			hookCalled = true
+			rootHookCalled = true
 			return nil
 		}),
 		WithCommands(NewCommand("doctor",
 			WithoutRuntime(),
-			WithoutInheritedShutdownHooks(),
-			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
+			// 与 root 复用同名 Hook，证明名称和执行集合都只在选中节点内生效。
+			WithShutdownHook("server", func(context.Context, Runtime, CommandContext) error {
+				childHookCalled = true
+				return nil
+			}),
+			WithModules(Runner(func(context.Context, Runtime, CommandContext) error {
 				runnerCalled = true
 				return nil
 			})),
@@ -93,8 +98,8 @@ func TestUseCaseCommandCanDisableInheritedShutdownHooks(t *testing.T) {
 	if err := application.ExecuteContext(context.Background(), []string{"doctor"}); err != nil {
 		t.Fatalf("execute disabled hook command failed: %v", err)
 	}
-	if !runnerCalled || hookCalled {
-		t.Fatalf("unexpected lifecycle result: runner=%t hook=%t", runnerCalled, hookCalled)
+	if !runnerCalled || !childHookCalled || rootHookCalled {
+		t.Fatalf("unexpected lifecycle result: runner=%t child_hook=%t root_hook=%t", runnerCalled, childHookCalled, rootHookCalled)
 	}
 }
 
@@ -114,7 +119,7 @@ func TestUseCaseRunTreatsSignalOnlyShutdownAsSuccess(t *testing.T) {
 	causeObserved := make(chan error, 1)
 	hookCalled := false
 	application := New(
-		WithWorkloads(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
+		WithModules(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
 			close(started)
 			<-ctx.Done()
 			causeObserved <- context.Cause(ctx)
@@ -154,7 +159,7 @@ func TestUseCaseRunPreservesShutdownHookCancellationError(t *testing.T) {
 	signalSource := &testProcessSignalSource{Events: make(chan os.Signal, 1)}
 	started := make(chan struct{})
 	application := New(
-		WithWorkloads(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
+		WithModules(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
 			close(started)
 			<-ctx.Done()
 			return ctx.Err()
@@ -176,10 +181,10 @@ func TestUseCaseRunPreservesShutdownHookCancellationError(t *testing.T) {
 	}
 }
 
-// TestUseCaseSignalDuringBeforeHookIsNormalExit 验证协调器启动前的具体进程信号仍按正常退出处理。
+// TestUseCaseSignalDuringBeforeRunHookIsNormalExit 验证协调器启动前的具体进程信号仍按正常退出处理。
 //
 // 测试方法：Before Hook 等待 context 取消，投递 os.Interrupt 后返回类型化 cause；断言 Runner/Shutdown Hook 未启动且 Run 返回 nil。
-func TestUseCaseSignalDuringBeforeHookIsNormalExit(t *testing.T) {
+func TestUseCaseSignalDuringBeforeRunHookIsNormalExit(t *testing.T) {
 	originalArgs := os.Args
 	t.Cleanup(func() { os.Args = originalArgs })
 	os.Args = []string{"demo"}
@@ -189,12 +194,12 @@ func TestUseCaseSignalDuringBeforeHookIsNormalExit(t *testing.T) {
 	runnerCalled := false
 	shutdownCalled := false
 	application := New(
-		WithBeforeRunHook(func(ctx context.Context, _ Runtime, _ CommandContext) error {
+		WithGlobalBeforeRunHook(func(ctx context.Context, _ Runtime, _ CommandContext) error {
 			close(beforeStarted)
 			<-ctx.Done()
 			return context.Cause(ctx)
 		}),
-		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
+		WithModules(Runner(func(context.Context, Runtime, CommandContext) error {
 			runnerCalled = true
 			return nil
 		})),
@@ -223,7 +228,7 @@ func TestUseCaseSignalDuringBeforeHookIsNormalExit(t *testing.T) {
 func TestUseCaseDuplicateShutdownDeclarationsFailFast(t *testing.T) {
 	noopHook := func(context.Context, Runtime, CommandContext) error { return nil }
 	application := New(
-		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
+		WithModules(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
 		WithShutdownPolicy(ShutdownPolicy{WorkloadGracefulTimeout: time.Second}),
 		WithShutdownPolicy(ShutdownPolicy{WorkloadGracefulTimeout: 2 * time.Second}),
 		WithShutdownHook("server", noopHook),
@@ -243,7 +248,7 @@ func TestUseCaseShutdownHooksRunConcurrentlyAndAggregateErrors(t *testing.T) {
 	firstErr := errors.New("first shutdown failed")
 	secondErr := errors.New("second shutdown failed")
 	application := New(
-		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
+		WithModules(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
 		WithShutdownHook("first", func(context.Context, Runtime, CommandContext) error {
 			close(firstStarted)
 			<-secondStarted
@@ -276,7 +281,7 @@ func TestUseCaseCancellationDoesNotHideRunnerBusinessError(t *testing.T) {
 	started := make(chan struct{})
 	hostCause := errors.New("host stopped")
 	businessErr := errors.New("serve failed")
-	application := New(WithWorkloads(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
+	application := New(WithModules(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
 		close(started)
 		<-ctx.Done()
 		return errors.Join(ctx.Err(), businessErr)

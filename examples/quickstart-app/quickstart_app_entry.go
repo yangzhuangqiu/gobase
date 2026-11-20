@@ -32,7 +32,7 @@ func runQuickstartApp() error {
 		// [可选][推荐] app 门面提供默认配置兜底。
 		app.WithConfig(config.Defaults(defaultMinimalConfig())),
 		// [必须][推荐] 提供 root 业务入口。
-		app.WithWorkloads(app.Runner(runMinimal)),
+		app.WithModules(app.Runner(runMinimal)),
 	)
 }
 

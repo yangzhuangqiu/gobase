@@ -49,7 +49,7 @@ Web 请求需要输出有限基数 Metrics 和可传播的 Server Span，但这�
 2. Tracing 必须同时安装 Hertz native Tracer Option 与 Server Middleware。
 3. Prometheus Registry、OTel Provider、Exporter 和 Metrics listener 都是有所有权的
    运行时资源，不能隐藏在 Config 或 Middleware 构造函数中；listener 在 IOC Init
-   预绑定，主动 Server 只能由显式 Workload 运行。
+   预绑定，主动 Server 只能由 Module 贡献的 Workload 在 app 监督阶段运行。
 4. 业务 Server 不应直接依赖 Prometheus、OTel SDK 或具体 Exporter。
 5. 实际请求 Path、Header、Cookie、Body 和错误文本不能无边界进入 Label 或 Attribute。
 
@@ -339,7 +339,7 @@ Metrics Server 由适配模块 Workload 在返回前关闭。adapter bean 只兜
 2. `app-web-hertz` Observer/Bundle 聚合和固定安装阶段。
 3. Prometheus private/shared Registry、Collector registration 和 Handler。
 4. borrowed Provider/Propagator、OTel Bundle、Trace ID 桥接和安全 Enricher。
-5. 统一 Config 启动快照驱动的指标/Trace 策略与独立 Metrics Server、两个显式 Workload 和高级 Quickstart。
+5. 统一 Config 启动快照驱动的指标/Trace 策略与独立 Metrics Server、两个 Module-contributed Workload 和高级 Quickstart。
 
 开放问题：
 

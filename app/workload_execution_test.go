@@ -63,10 +63,10 @@ func TestRunnerWrapsOneShotFunction(t *testing.T) {
 		called++
 		return nil
 	})
-	if workload == nil || workload.Name() != runnerWorkloadName {
-		t.Fatalf("unexpected runner workload: %#v", workload)
+	if workload == nil || workload.Name() != runnerModuleName {
+		t.Fatalf("unexpected runner module: %#v", workload)
 	}
-	application := New(WithWorkloads(workload))
+	application := New(WithModules(workload))
 	if err := application.ExecuteContext(context.Background(), nil); err != nil {
 		t.Fatalf("execute runner workload: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestAppClosesResourceAfterWorkloadRunConverges(t *testing.T) {
 	}
 	application := New(
 		WithBeanDefinitions(ioc.Define(&workloadOrderResource{runDone: runDone, closed: resourceClosed})),
-		WithWorkloads(workload),
+		WithModules(newTestWorkloadModule("server-module", workload)),
 	)
 	result := make(chan error, 1)
 	go func() { result <- application.ExecuteContext(hostCtx, nil) }()
@@ -229,10 +229,11 @@ func TestAppClosesResourceAfterWorkloadRunConverges(t *testing.T) {
 	}
 }
 
-// TestWithWorkloadsRejectsAmbiguousDeclarations 验证声明式 Workload 会在执行前拒绝歧义输入。
+// TestModuleWorkloadsRejectAmbiguousDeclarations 验证两阶段 Module 会在获取 Runtime 资源前拒绝歧义输入。
 //
-// 测试方法：分别声明两个固定名称 Runner、重复名称和 typed nil，检查 setup error 保留可搜索 reason。
-func TestWithWorkloadsRejectsAmbiguousDeclarations(t *testing.T) {
+// 测试方法：分别声明两个固定名称 Runner、跨 Module 重复 Workload 名称和 typed nil，
+// 执行命令并检查构建期或收集期错误保留可搜索 reason。
+func TestModuleWorkloadsRejectAmbiguousDeclarations(t *testing.T) {
 	noop := func(context.Context, Runtime, CommandContext) error { return nil }
 	workload := &testWorkload{name: "server", run: noop, shutdown: noop}
 	var typedNil *testWorkload
@@ -243,29 +244,57 @@ func TestWithWorkloadsRejectsAmbiguousDeclarations(t *testing.T) {
 	}{
 		{
 			name: "runner duplicate name",
-			app: New(WithWorkloads(
+			app: New(WithModules(
 				Runner(func(context.Context, Runtime, CommandContext) error { return nil }),
 				Runner(func(context.Context, Runtime, CommandContext) error { return nil }),
 			)),
 			reason: "name_duplicate",
 		},
 		{
-			name:   "duplicate name",
-			app:    New(WithWorkloads(workload, &testWorkload{name: "server", run: noop, shutdown: noop})),
+			name: "duplicate name",
+			app: New(WithModules(
+				newTestWorkloadModule("first", workload),
+				newTestWorkloadModule("second", &testWorkload{name: "server", run: noop, shutdown: noop}),
+			)),
 			reason: "name_duplicate",
 		},
 		{
 			name:   "typed nil",
-			app:    New(WithWorkloads(typedNil)),
+			app:    New(WithModules(newTestWorkloadModule("typed-nil", typedNil))),
 			reason: "workload_is_nil",
 		},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
-			if item.app.inputErr == nil || !strings.Contains(item.app.inputErr.Error(), item.reason) {
-				t.Fatalf("expected setup reason %q, got=%v", item.reason, item.app.inputErr)
+			err := item.app.ExecuteContext(context.Background(), nil)
+			if err == nil || !strings.Contains(err.Error(), item.reason) {
+				t.Fatalf("expected declaration reason %q, got=%v", item.reason, err)
 			}
 		})
+	}
+}
+
+// TestModuleWorkloadsValidateBeforeRuntimeBuild 验证 Workload 声明错误不会触发任何 Module.Register。
+//
+// 测试方法：声明一个会记录 Register 的 Module，但让 Workloads 返回 typed nil；执行后断言
+// 错误来自收集阶段且 Register 计数仍为零，固定“两阶段合同先校验、后 Build”的顺序。
+func TestModuleWorkloadsValidateBeforeRuntimeBuild(t *testing.T) {
+	registerCount := 0
+	var typedNil *testWorkload
+	module := &testWorkloadModule{
+		name:      "invalid-workloads",
+		workloads: []Workload{typedNil},
+		register: func(ioc.Registry) error {
+			registerCount++
+			return nil
+		},
+	}
+	err := New(WithModules(module)).ExecuteContext(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "reason=workload_is_nil") {
+		t.Fatalf("expected workload collection failure, got=%v", err)
+	}
+	if registerCount != 0 {
+		t.Fatalf("module registered before workload validation: count=%d", registerCount)
 	}
 }
 

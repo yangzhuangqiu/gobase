@@ -113,10 +113,12 @@ runtime, err := application.BuildWithInput(ctx, appruntime.BuildInput{
             config.FileDisabled(),
         },
     },
+    BeanDefinitions: []ioc.Definition{selectedCommandDefinition},
+    Modules: []appruntime.Module{selectedCommandModule},
 })
 ```
 
-应用顺序是 `Name 派生 env prefix < Application WithConfig options < BuildInput.Config`。BuildInput 只影响本次 Runtime，并只覆盖显式提供的 File path/watch/disabled 字段；`FileDisabled()` 是单向收紧。
+应用顺序是 `Name 派生 env prefix < Application WithConfig options < BuildInput.Config`。`BuildInput.BeanDefinitions/Modules` 分别追加在 Application 稳定同类声明之后。整个 BuildInput 只影响本次 Runtime，不写回可复用蓝图；局部声明在获取资源前校验。Config 只覆盖显式提供的 File path/watch/disabled 字段，`FileDisabled()` 是单向收紧。
 
 ## 5. 日志能力
 

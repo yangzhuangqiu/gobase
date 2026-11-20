@@ -152,14 +152,14 @@ func TestInvalidShutdownPolicyConfigStopsBeforeWorkload(t *testing.T) {
 				},
 			}),
 		),
-		WithWorkloads(&testWorkload{
+		WithModules(newTestWorkloadModule("shutdown-policy-workload", &testWorkload{
 			name: "probe",
 			run: func(context.Context, Runtime, CommandContext) error {
 				runCalled.Store(true)
 				return nil
 			},
 			shutdown: func(context.Context, Runtime, CommandContext) error { return nil },
-		}),
+		})),
 	)
 	// 第二阶段：执行应用，验证解析阶段失败且不越过 Workload 启动边界。
 	err := application.ExecuteContext(context.Background(), nil)
@@ -193,7 +193,7 @@ func TestConfiguredShutdownPolicyReachesWorkloadAndResource(t *testing.T) {
 			}),
 		),
 		WithBeanDefinitions(ioc.Define(&shutdownPolicyDeadlineResource{remaining: resourceRemaining})),
-		WithWorkloads(&testWorkload{
+		WithModules(newTestWorkloadModule("shutdown-policy-workload", &testWorkload{
 			name: "probe",
 			run:  func(context.Context, Runtime, CommandContext) error { return nil },
 			shutdown: func(ctx context.Context, _ Runtime, _ CommandContext) error {
@@ -205,7 +205,7 @@ func TestConfiguredShutdownPolicyReachesWorkloadAndResource(t *testing.T) {
 				workloadRemaining <- time.Until(deadline)
 				return nil
 			},
-		}),
+		})),
 	)
 	// 第二阶段：执行完整生命周期，使两个关闭阶段消费同一启动快照冻结出的对应预算。
 	if err := application.ExecuteContext(context.Background(), nil); err != nil {

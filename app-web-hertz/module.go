@@ -1,6 +1,7 @@
 package appwebhertz
 
 import (
+	baseapp "github.com/yangzhuangqiu/gobase/app"
 	"github.com/yangzhuangqiu/gobase/ioc"
 	baseweb "github.com/yangzhuangqiu/gobase/web"
 )
@@ -12,23 +13,13 @@ const (
 	serverBeanName = "WebHertzServer"
 )
 
-// Module 定义 app-web-hertz 在 IOC Build 前声明当前 Runtime 唯一托管 Server bean 的合同。
+// Module 定义声明当前 Runtime 唯一托管 Server bean，并贡献其主动生命周期的两阶段合同。
 //
 // 典型调用场景:
 // 1. 直接调用 Register 向普通 IOC Container 安装自动装配能力；
-// 2. 作为 app-runtime Module 使用，由 Runtime 在业务 bean 注册后统一执行。
+// 2. 作为 app Node Module 使用，由 Runtime 注册 Bean、由 app 监督其贡献的 Workload。
 type Module interface {
-	// Name 返回稳定模块名称，用于重复检测和错误归因。
-	Name() string
-	// Register 注册声明为 web.Server 的托管 bean，不读取配置或启动监听。
-	//
-	// 参数:
-	// - registry: 必填；必须处于 IOC Build 前的注册阶段。
-	//
-	// 返回:
-	// - nil: Server bean 声明成功；
-	// - error: Option、Registry 或重复声明非法，保留底层 IOC cause。
-	Register(registry ioc.Registry) error
+	baseapp.WorkloadModule
 }
 
 type module struct {
@@ -42,9 +33,15 @@ type module struct {
 // - options: 控制 config scope、路径风格、标准 typed policy 和 web-hertz 原生扩展，不承载 IOC 应用组件。
 //
 // 返回:
-// - Module: 可注册一次或在不同 Container 中重放的无资源声明对象；同一 Runtime 只允许安装一个实例。
+// - Module: 可跨 Container 重放，并为选中命令贡献唯一 Hertz Server Workload。
 func NewModule(options ...Option) Module {
 	return &module{options: append([]Option{}, options...)}
+}
+
+// Workloads 返回使用当前 Module 所声明 Server 的主动生命周期适配器。
+// 阶段角色：app 在 Runtime Build 前冻结本次 Workload 集合，适配器本身不获取资源。
+func (this *module) Workloads() []baseapp.Workload {
+	return []baseapp.Workload{newServerWorkload()}
 }
 
 // Name 返回 app-runtime 用于重复检测的稳定模块名。

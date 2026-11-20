@@ -337,8 +337,8 @@ func runQuickstartAppFull() error {
 		// [可选][推荐] app.WithFlagBinder：root Flag 声明与字段绑定入口（建议统一集中在一个结构里）。
 		app.WithFlagBinder(rootFlags),
 
-		// [可选][推荐] app.WithBeforeRunHook：业务前置切面（审计、追踪、打印上下文）。
-		app.WithBeforeRunHook(func(_ context.Context, _ app.Runtime, command app.CommandContext) error {
+		// [可选][推荐] app.WithGlobalBeforeRunHook：所有实际命令共享的运行前切面（审计、追踪、打印上下文）。
+		app.WithGlobalBeforeRunHook(func(_ context.Context, _ app.Runtime, command app.CommandContext) error {
 			_, _ = fmt.Fprintf(os.Stdout, "[hook before] command=%s path=%s\n", command.Name(), command.Path())
 			return nil
 		}),
@@ -347,7 +347,7 @@ func runQuickstartAppFull() error {
 			app.NewCommand("explain",
 				app.WithDescription("Explain one key metadata from latest snapshot"),
 				app.WithFlagBinder(explainFlags),
-				app.WithWorkloads(app.Runner(func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
+				app.WithModules(app.Runner(func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
 					meta, ok := runtime.ConfigManager().Current().Explain(explainFlags.Key)
 					if !ok {
 						_, _ = fmt.Fprintf(os.Stdout, "key=%s not found\n", explainFlags.Key)
@@ -367,7 +367,7 @@ func runQuickstartAppFull() error {
 			app.NewCommand("doctor",
 				app.WithDescription("Run diagnostics without loading runtime config"),
 				app.WithoutRuntime(),
-				app.WithWorkloads(app.Runner(func(_ context.Context, _ app.Runtime, _ app.CommandContext) error {
+				app.WithModules(app.Runner(func(_ context.Context, _ app.Runtime, _ app.CommandContext) error {
 					_, _ = fmt.Fprintln(os.Stdout, "doctor: ok (WithoutRuntime)")
 					return nil
 				})),
@@ -375,7 +375,7 @@ func runQuickstartAppFull() error {
 		),
 
 		// [必须][推荐] app.Runner：把一次性 root 函数包装为统一 Workload。
-		app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime, _ app.CommandContext) error {
+		app.WithModules(app.Runner(func(ctx context.Context, runtime app.Runtime, _ app.CommandContext) error {
 			iocContainer := runtime.Container()
 			worker, err := ioc.ResolveByNameAs[*quickstartFullIOCWorker](iocContainer, "QuickstartIOCWorker")
 			if err != nil {

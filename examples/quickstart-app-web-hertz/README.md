@@ -5,7 +5,7 @@
 1. `app` 创建 Config、Logging 和 IOC Runtime，`apphlogzap.Wrap(applogzap.New())` 让业务 Logger 与 Hertz hlog 共享 Zap Provider；
 2. `WithBeanDefinitions` 注册 Controller、Filter、NoRouteHandler 和 NoMethodHandler；
 3. `appwebhertz.NewModule()` 在 IOC Init 阶段聚合全部组件并构建唯一 `web.Server`；
-4. `appwebhertz.Workload()` 声明该 Server 的 Run/Shutdown 语义；
+4. `appwebhertz.NewModule()` 同时贡献该 Server 的 Run/Shutdown Workload；
 5. context 取消后，app 先等待 Workload 收敛，再由 IOC 逆序释放 Resource。
 
 ## 核心装配
@@ -25,7 +25,6 @@ app.Run(
 		appwebhertz.DefineNoMethodHandler(&jsonNoMethodHandler{}),
 	),
 	app.WithModules(appwebhertz.NewModule()),
-	app.WithWorkloads(appwebhertz.Workload()),
 )
 ```
 

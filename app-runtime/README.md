@@ -27,7 +27,7 @@
 | 对象 | 职责 |
 |---|---|
 | `Application` | 保存可重复 Build 的稳定能力声明 |
-| `BuildInput` | 保存一次运行才确定的 `config.Input` |
+| `BuildInput` | 保存一次运行才确定的 `config.Input`、局部 Bean Definitions 与 Modules |
 | `Runtime` | 拥有 ConfigManager、日志 Provider 和 IOC Container |
 | `Logging` | 基于已发布 ConfigManager 构建日志 Provider |
 | `Module` | 通过最小 `ioc.Registry` 声明可复用 bean 集合 |
@@ -95,7 +95,7 @@ func (this *OrderService) Create(ctx context.Context) error {
 | `WithModules(...)` | 模块 IOC | 按声明顺序执行具名 Module.Register |
 | `WithIOCOptions(...)` | 高级 IOC | 调整循环、关闭和 logger 等底层策略 |
 | `Application.Build(ctx)` | 常规构建 | 无单次覆盖的极简入口 |
-| `Application.BuildWithInput(ctx, input)` | 高级构建 | 合并一次 `config.Input`，不修改 Application |
+| `Application.BuildWithInput(ctx, input)` | 高级构建 | 合并一次 `config.Input`、局部 Bean Definitions 与 Modules，不修改 Application |
 | `Runtime.Close(ctx)` | 退出 | IOC -> logging -> config，所有调用返回首次结果 |
 
 `Application.BootstrapSchemas` 仅供 CLI 适配层在 Build 前发现 Provider schema；普通业务不需要调用。
@@ -105,10 +105,11 @@ func (this *OrderService) Create(ctx context.Context) error {
 1. Application name 默认 `app`。
 2. 未声明 config Option 时，config 保持默认文件发现。
 3. `WithConfig` 可以多次调用，Options 按 Application 声明顺序追加。
-4. Build 时先应用由 Name 派生的 env prefix，再应用稳定 Options，最后应用 `BuildInput.Config`；因此单次输入优先。
-5. `config.File(config.FileDisabled())` 是单向收紧；单次输入不能重新开启已禁用的文件能力。
-6. 未声明 Logging 时使用 log 标准回退，不产生需关闭 Provider。
-7. 未声明 Bean Definitions/Modules 时仍创建 IOC，并注册 Runtime 基础对象。
+4. Build 时先应用由 Name 派生的 env prefix，再应用稳定 Options，最后应用 `BuildInput.Config`；因此单次配置输入优先。
+5. `BuildInput.BeanDefinitions` 与 `BuildInput.Modules` 分别追加在稳定蓝图对应声明之后，仅作用于本次 Build；非法输入在资源获取前失败。
+6. `config.File(config.FileDisabled())` 是单向收紧；单次输入不能重新开启已禁用的文件能力。
+7. 未声明 Logging 时使用 log 标准回退，不产生需关闭 Provider。
+8. 未声明 Bean Definitions/Modules 时仍创建 IOC，并注册 Runtime 基础对象。
 
 ## 错误语义
 
@@ -154,7 +155,7 @@ Build 正常失败返回 error 并逆序回滚。ConfigManager 成功取得后�
 1. `application.go`：Application 蓝图、Module/Bean/Definition 声明校验和 schema 适配。
 2. `config_binding.go`：typed ConfigValue、scope validator 与 IOC binding 声明。
 3. `options.go`：Name/Config/Logging/Bean Definitions/Modules/IOC 聚合入口。
-4. `model.go`：BuildInput 与 ApplicationInfo。
+4. `model.go`：BuildInput（单次 Config/Bean Definitions/Modules）与 ApplicationInfo。
 5. `logging.go`：日志 Provider 构建契约。
 6. `module.go`：最小 Registry 模块契约。
 7. `runtime.go`：Build、基础 bean、回滚和并发 Close。

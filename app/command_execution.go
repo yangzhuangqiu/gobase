@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/yangzhuangqiu/gobase/ioc"
 )
 
 // runCommand 执行 root、一级子命令和任意深度子命令的统一生命周期。
@@ -28,14 +29,18 @@ func (this *App) runCommand(
 	} else if listed {
 		return nil
 	}
-	if len(plan.Workloads) == 0 {
+	workloads, workloadErr := resolveModuleWorkloads(plan.Modules)
+	if workloadErr != nil {
+		return stageError("resolve_module_workloads", workloadErr)
+	}
+	if len(workloads) == 0 {
 		// 纯分组节点展示自己的下一层命令；真正叶子节点必须声明至少一个 Workload。
 		if cmd.HasAvailableSubCommands() {
 			return stageError("render_help", cmd.Help())
 		}
 		return errorForAppWorkloadRequired(messagef("stage=validate_workloads command=%s reason=workload is required", cmd.CommandPath()))
 	}
-	return stageError("execute_command", this.executeCommand(session, plan, cmd, args))
+	return stageError("execute_command", this.executeCommand(session, plan, workloads, cmd, args))
 }
 
 // handlePrintVersion 在显式设置 --version 时输出版本并短路命令生命周期。
@@ -58,6 +63,7 @@ func (this *App) handlePrintVersion(cmd *cobra.Command) (bool, error) {
 func (this *App) executeCommand(
 	session *executionSession,
 	plan executionPlan,
+	workloads []Workload,
 	cmd *cobra.Command,
 	args []string,
 ) (err error) {
@@ -69,16 +75,21 @@ func (this *App) executeCommand(
 	}
 	commandContext := buildCommandContext(cmd, args)
 	shutdownPolicy := this.shutdown.executionPolicy(plan.ShutdownBudget)
-	supervisor := newWorkloadSupervisor(plan.Workloads)
+	supervisor := newWorkloadSupervisor(workloads)
 
-	// 阶段二：WithoutRuntime 不创建 Runtime/执行 Before Hooks，但仍进入统一 Workload 与 Shutdown 协调。
+	// 阶段二：WithoutRuntime 不创建 Runtime，但全局与选中节点 Before Hook 仍以 nil Runtime 执行。
 	if plan.RuntimeRequirement == runtimeRequirementDisabled {
+		if beforeErr := this.runExecutionBeforeRunHooks(ctx, nil, commandContext, plan.BeforeRunHooks); beforeErr != nil {
+			return beforeErr
+		}
 		return this.executeManagedWorkloads(session, ctx, nil, commandContext, supervisor, plan.ShutdownHooks, shutdownPolicy)
 	}
 	input, inputErr := buildRuntimeInput(cmd)
 	if inputErr != nil {
 		return stageError("build_runtime_input", inputErr)
 	}
+	input.BeanDefinitions = append([]ioc.Definition{}, plan.BeanDefinitions...)
+	input.Modules = append([]Module{}, plan.Modules...)
 	runtime, buildErr := this.runtimeApplication.BuildWithInput(ctx, input)
 	if buildErr != nil {
 		return stageError("build_runtime", buildErr)
@@ -94,8 +105,25 @@ func (this *App) executeCommand(
 		return stageError("resolve_shutdown_policy", policyErr)
 	}
 	shutdownPolicy = resolvedPolicy
-	if beforeErr := runBeforeHooks(ctx, runtime, commandContext, plan.BeforeHooks); beforeErr != nil {
-		return stageError("before_hooks", beforeErr)
+	if beforeErr := this.runExecutionBeforeRunHooks(ctx, runtime, commandContext, plan.BeforeRunHooks); beforeErr != nil {
+		return beforeErr
 	}
 	return this.executeManagedWorkloads(session, ctx, runtime, commandContext, supervisor, plan.ShutdownHooks, shutdownPolicy)
+}
+
+// runExecutionBeforeRunHooks 先执行 App 全局运行前 Hook，再执行选中命令节点局部运行前 Hook。
+// 阶段角色：Runtime 决策完成后、Workload 启动前落实作用域隔离；全局阶段失败时不进入局部准备。
+func (this *App) runExecutionBeforeRunHooks(
+	ctx context.Context,
+	runtime Runtime,
+	command CommandContext,
+	commandHooks []BeforeRunHook,
+) error {
+	if err := runBeforeRunHooks(ctx, runtime, command, "global", this.globalBeforeRunHooks); err != nil {
+		return stageError("global_before_run_hooks", err)
+	}
+	if err := runBeforeRunHooks(ctx, runtime, command, "command", commandHooks); err != nil {
+		return stageError("before_run_hooks", err)
+	}
+	return nil
 }

@@ -51,7 +51,7 @@ ioc 拥有 bean 图、注入和生命周期
 
 `Application` 是可重复使用的蓝图，保存 Name、Config Options、Logging、Bean Definitions、Modules 和 IOC Options。
 
-`BuildInput` 只保存一次运行才确定的 `config.Input`。普通路径调用 `Build(ctx)`；CLI、测试和嵌入式宿主调用 `BuildWithInput(ctx, input)`。
+`BuildInput` 保存一次运行才确定的 `config.Input`、局部 Bean Definitions 与 Modules。普通路径调用 `Build(ctx)`；CLI、测试和嵌入式宿主调用 `BuildWithInput(ctx, input)`。
 
 应用顺序：
 
@@ -62,6 +62,7 @@ Name 派生 env prefix
 ```
 
 单次输入不会写回 Application。`FileDisabled()` 是安全收紧语义，后声明只能禁用，不能重新开放。
+局部 Bean Definitions 与 Modules 分别追加在稳定蓝图同类声明之后；非法输入会在获取配置、日志等资源前失败。
 
 ## 4. 为什么：Bean Definitions 与 Modules 分层
 
@@ -111,7 +112,7 @@ ConfigManager 仍作为高级 bean 保留，用于 Explain、诊断和动态 key
 | 对象 | 阶段职责 |
 |---|---|
 | `Application` | 保存稳定声明和声明错误 |
-| `BuildInput` | 提供单次 config 输入 |
+| `BuildInput` | 提供单次 config 输入、局部 Bean Definitions 与 Modules |
 | `Runtime` | 持有并关闭本次资源 |
 | `Logging` | config 后构建日志 Provider |
 | `Module` | 通过 Registry 注册可复用 beans |
@@ -190,7 +191,9 @@ borrowed beans 不由 IOC 注入字段或调用生命周期，避免 Runtime 与
 | `WithConfig` | 按声明顺序追加 config.Options |
 | `WithLogging` | 后声明非 nil 实现覆盖 |
 | `WithBeanDefinitions` | 按声明顺序原样注册；Bean nil/typed nil fail-fast |
-| `WithModules` | 按声明顺序追加；name 非空且唯一 |
+| `WithModules` | 按声明顺序追加到稳定蓝图；name 非空且唯一 |
+| `BuildInput.BeanDefinitions` | 仅追加到本次 Build；Bean nil/typed nil fail-fast |
+| `BuildInput.Modules` | 仅追加到本次 Build；不得与稳定蓝图或本次其他 Module 重名 |
 | `WithIOCOptions` | 按声明顺序追加，调用方可覆盖默认 IOC logger |
 
 Provider 名称、bootstrap schema、snapshot validator 等语义只由 config 处理，app-runtime 不再维护第二份 Provider 注册表。

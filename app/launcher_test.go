@@ -62,7 +62,7 @@ func TestUseCasePackageRunUsesRuntimeFacade(t *testing.T) {
 			return nil
 		})),
 		WithModules(&facadeModule{}),
-		WithWorkloads(Runner(func(_ context.Context, runtime Runtime, _ CommandContext) error {
+		WithModules(Runner(func(_ context.Context, runtime Runtime, _ CommandContext) error {
 			runnerCalled = true
 			if runtime.Info().Name != "facade-service" {
 				return errors.New("runtime application name mismatch")
@@ -112,7 +112,7 @@ func TestUseCasePackageRunSupportsCommandOnlyApplication(t *testing.T) {
 				}
 				return nil
 			}),
-			WithWorkloads(Runner(func(_ context.Context, runtime Runtime, command CommandContext) error {
+			WithModules(Runner(func(_ context.Context, runtime Runtime, command CommandContext) error {
 				called = true
 				if runtime != nil {
 					return errors.New("disabled command runtime must be nil")
@@ -152,7 +152,7 @@ func TestUseCaseCommandOnlyRootShowsHelp(t *testing.T) {
 		WithCommands(NewCommand("status",
 			WithDescription("Show service status"),
 			WithoutRuntime(),
-			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
+			WithModules(Runner(func(context.Context, Runtime, CommandContext) error {
 				return nil
 			})),
 		)),
@@ -177,7 +177,7 @@ func TestUseCaseMainReturnsAfterSuccessfulRun(t *testing.T) {
 	called := false
 	Main(
 		WithName("facade-main"),
-		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
+		WithModules(Runner(func(context.Context, Runtime, CommandContext) error {
 			called = true
 			return nil
 		})),
@@ -196,7 +196,7 @@ func TestUseCaseMainWritesErrorAndExits(t *testing.T) {
 		os.Args = []string{"facade-main", "--bootstrap-without-config-file"}
 		Main(
 			WithName("facade-main"),
-			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
+			WithModules(Runner(func(context.Context, Runtime, CommandContext) error {
 				return errors.New("expected main failure")
 			})),
 		)

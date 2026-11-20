@@ -108,6 +108,14 @@ func (this *Application) build(ctx context.Context, input BuildInput) (*Runtime,
 	if this.inputErr != nil {
 		return nil, this.inputErr
 	}
+	definitions, err := this.resolveBuildBeanDefinitions(input.BeanDefinitions)
+	if err != nil {
+		return nil, err
+	}
+	modules, err := this.resolveBuildModules(input.Modules)
+	if err != nil {
+		return nil, err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -173,10 +181,10 @@ func (this *Application) build(ctx context.Context, input BuildInput) (*Runtime,
 		err = this.registerConfigValues(runtime, configValues)
 	}
 	if err == nil {
-		err = this.registerBeanDefinitions(runtime)
+		err = this.registerBeanDefinitions(runtime, definitions)
 	}
 	if err == nil {
-		err = this.registerModules(runtime)
+		err = this.registerModules(runtime, modules)
 	}
 	if err == nil {
 		err = runtime.container.Build(ctx)
@@ -316,8 +324,8 @@ func (this *Application) registerConfigValues(runtime *Runtime, values []boundCo
 
 // registerBeanDefinitions 按声明顺序注册携带完整 IOC 策略的 bean。
 // 阶段角色：基础 borrowed bean 之后、模块声明之前发布接口索引和生命周期所有权。
-func (this *Application) registerBeanDefinitions(runtime *Runtime) error {
-	for index, definition := range this.beanDefinitions {
+func (this *Application) registerBeanDefinitions(runtime *Runtime, definitions []ioc.Definition) error {
+	for index, definition := range definitions {
 		if err := runtime.container.RegisterDefinition(definition); err != nil {
 			return errorForBuildFailed(messagef("op=app_runtime.build result=failed stage=register_bean_definition reason=register_failed definition_index=%d", index), err)
 		}
@@ -325,15 +333,59 @@ func (this *Application) registerBeanDefinitions(runtime *Runtime) error {
 	return nil
 }
 
+// resolveBuildBeanDefinitions 合并稳定蓝图和本次局部 Definition，并在获取任何资源前校验 Bean。
+// 阶段角色：BuildInput 只扩展本次构建，输入切片及 RegisterOption 均复制后再进入注册阶段。
+func (this *Application) resolveBuildBeanDefinitions(input []ioc.Definition) ([]ioc.Definition, error) {
+	resolved := append([]ioc.Definition{}, this.beanDefinitions...)
+	for index, definition := range input {
+		if isNilLike(definition.Bean) {
+			return nil, errorForBeanInvalid(messagef(
+				"op=app_runtime.bean_definition result=failed stage=resolve_build_input reason=bean_required definition_index=%d",
+				index,
+			))
+		}
+		definition.Options = append([]ioc.RegisterOption{}, definition.Options...)
+		resolved = append(resolved, definition)
+	}
+	return resolved, nil
+}
+
 // registerModules 按稳定输入顺序执行可复用 bean 模块。
 // 阶段角色：IOC Build 前的模块化定义注册阶段。
-func (this *Application) registerModules(runtime *Runtime) error {
-	for _, module := range this.modules {
+func (this *Application) registerModules(runtime *Runtime, modules []Module) error {
+	for _, module := range modules {
 		if err := module.Register(runtime.container); err != nil {
 			return errorForBuildFailed(messagef("op=app_runtime.build result=failed stage=register_module reason=register_failed name=%s", module.Name()), err)
 		}
 	}
 	return nil
+}
+
+// resolveBuildModules 合并稳定蓝图和本次局部 Module，并在获取任何资源前校验身份。
+// 阶段角色：BuildInput 只扩展本次构建，重复名称、nil 和 typed nil 均 fail-fast。
+func (this *Application) resolveBuildModules(input []Module) ([]Module, error) {
+	resolved := append([]Module{}, this.modules...)
+	names := make(map[string]struct{}, len(resolved)+len(input))
+	for _, module := range resolved {
+		names[strings.TrimSpace(module.Name())] = struct{}{}
+	}
+
+	// 本次局部声明不写回 Application；每个元素都必须保持稳定可定位身份。
+	for index, module := range input {
+		if module == nil || isNilLike(module) {
+			return nil, errorForModuleInvalid(messagef("op=app_runtime.module result=failed stage=resolve_build_input reason=module_required module_index=%d", index))
+		}
+		name := strings.TrimSpace(module.Name())
+		if name == "" {
+			return nil, errorForModuleInvalid(messagef("op=app_runtime.module result=failed stage=resolve_build_input reason=name_required module_index=%d", index))
+		}
+		if _, exists := names[name]; exists {
+			return nil, errorForModuleInvalid(messagef("op=app_runtime.module result=failed stage=resolve_build_input reason=duplicate_name name=%s", name))
+		}
+		names[name] = struct{}{}
+		resolved = append(resolved, module)
+	}
+	return resolved, nil
 }
 
 // closeConfigManagerSafely 关闭构建阶段已取得但尚未发布的 Manager。

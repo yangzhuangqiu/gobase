@@ -17,6 +17,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/route"
 	baseapp "github.com/yangzhuangqiu/gobase/app"
 	baseconfig "github.com/yangzhuangqiu/gobase/config"
+	"github.com/yangzhuangqiu/gobase/ioc"
 	webhertz "github.com/yangzhuangqiu/gobase/web-hertz"
 )
 
@@ -42,12 +43,33 @@ type appLifecycleController struct {
 
 // appLifecycleWorkload 只记录真实 Hertz Workload 的 Run 返回阶段，不改变任何生命周期行为。
 type appLifecycleWorkload struct {
-	// delegate 是生产 Workload() 返回的真实适配器。
+	// delegate 是生产 Module 返回的真实适配器。
 	delegate baseapp.Workload
 	// runReturned 在 delegate.Run 返回后关闭，供 IOC Resource 校验阶段顺序。
 	runReturned chan struct{}
 	// runOnce 保证异常重复调用不会重复关闭完成信号。
 	runOnce sync.Once
+}
+
+// appLifecycleModule 为真实 Hertz Module 替换等价的可观测测试 Workload。
+type appLifecycleModule struct {
+	// delegate 保留生产 Module 的全部 IOC 注册行为。
+	delegate Module
+	// workload 仅增加 Run 返回信号，不改变生产生命周期语义。
+	workload baseapp.Workload
+}
+
+// Name 保留生产 Module 的稳定身份。
+func (this *appLifecycleModule) Name() string { return this.delegate.Name() }
+
+// Register 委托生产 Module 声明真实 Hertz Server Bean。
+func (this *appLifecycleModule) Register(registry ioc.Registry) error {
+	return this.delegate.Register(registry)
+}
+
+// Workloads 返回带阶段观测的真实 Hertz 生命周期适配器。
+func (this *appLifecycleModule) Workloads() []baseapp.Workload {
+	return []baseapp.Workload{this.workload}
 }
 
 // Name 保留生产 Hertz Workload 的稳定诊断名称。
@@ -115,7 +137,14 @@ func TestAppWorkloadGracefullyStopsRealHertzBeforeClosingIOCResources(t *testing
 		workloadReturned: workloadReturned,
 		controllerClosed: make(chan struct{}),
 	}
-	workload := &appLifecycleWorkload{delegate: Workload(), runReturned: workloadReturned}
+	workload := &appLifecycleWorkload{delegate: newServerWorkload(), runReturned: workloadReturned}
+	module := &appLifecycleModule{
+		delegate: NewModule(WithServerOptions(webhertz.WithHertzOptions(
+			server.WithListener(listener),
+			server.WithTransport(standard.NewTransporter),
+		))),
+		workload: workload,
+	}
 
 	// 第二阶段：通过公开 App API 装配 Module 与 Workload，启动完整 Runtime 事务。
 	application := baseapp.New(
@@ -128,11 +157,7 @@ func TestAppWorkloadGracefullyStopsRealHertzBeforeClosingIOCResources(t *testing
 			}}}),
 		),
 		baseapp.WithBeanDefinitions(DefineController(controller)),
-		baseapp.WithModules(NewModule(WithServerOptions(webhertz.WithHertzOptions(
-			server.WithListener(listener),
-			server.WithTransport(standard.NewTransporter),
-		)))),
-		baseapp.WithWorkloads(workload),
+		baseapp.WithModules(module),
 		baseapp.WithShutdownPolicy(baseapp.ShutdownPolicy{WorkloadGracefulTimeout: 2 * time.Second}),
 	)
 	hostCtx, cancelHost := context.WithCancelCause(context.Background())

@@ -116,10 +116,10 @@ func runQuickstartLogFull() error {
 			config.Validate(validateQuickstartLogFullConfig),
 		),
 		app.WithFlagBinder(rootFlags),
-		app.WithBeforeRunHook(func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
+		app.WithGlobalBeforeRunHook(func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
 			runtime.Logger("quickstart.log.hook").Info(
 				ctx, "before hook",
-				baselog.Op("quickstart.log.before_hook"), baselog.Result(baselog.ResultOK),
+				baselog.Op("quickstart.log.before_run_hook"), baselog.Result(baselog.ResultOK),
 				baselog.F("command", command.Name()), baselog.F("path", command.Path()),
 			)
 			return nil
@@ -128,7 +128,7 @@ func runQuickstartLogFull() error {
 			app.NewCommand("explain",
 				app.WithDescription("Explain one config key metadata"),
 				app.WithFlagBinder(explainFlags),
-				app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
+				app.WithModules(app.Runner(func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
 					meta, exists := runtime.ConfigManager().Current().Explain(explainFlags.Key)
 					if !exists {
 						_, _ = fmt.Fprintf(os.Stdout, "key=%s not found\n", explainFlags.Key)
@@ -148,13 +148,13 @@ func runQuickstartLogFull() error {
 			app.NewCommand("doctor",
 				app.WithDescription("Run diagnostics without loading config"),
 				app.WithoutRuntime(),
-				app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
+				app.WithModules(app.Runner(func(ctx context.Context, runtime app.Runtime, command app.CommandContext) error {
 					_, _ = fmt.Fprintln(os.Stdout, "doctor: ok (WithoutRuntime)")
 					return nil
 				})),
 			),
 		),
-		app.WithWorkloads(app.Runner(func(ctx context.Context, runtime app.Runtime, _ app.CommandContext) error {
+		app.WithModules(app.Runner(func(ctx context.Context, runtime app.Runtime, _ app.CommandContext) error {
 			cfg := &quickstartLogFullConfig{}
 			if err := runtime.ConfigManager().Current().Decode("", cfg); err != nil {
 				return err

@@ -90,7 +90,7 @@ func main() {
 			config.Validate(validateConfig),
 		),
 		app.WithFlagBinder(rootFlags),
-		app.WithBeforeRunHook(func(_ context.Context, _ app.Runtime, cmd app.CommandContext) error {
+		app.WithGlobalBeforeRunHook(func(_ context.Context, _ app.Runtime, cmd app.CommandContext) error {
 			_, _ = fmt.Fprintf(os.Stdout, "hook(before) command=%s\n", cmd.Name())
 			return nil
 		}),
@@ -98,7 +98,7 @@ func main() {
 			app.NewCommand("explain",
 				app.WithDescription("Explain config source for one key"),
 				app.WithFlagBinder(explainFlags),
-				app.WithWorkloads(app.Runner(func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
+				app.WithModules(app.Runner(func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
 					meta, ok := runtime.ConfigManager().Current().Explain(explainFlags.Key)
 					if !ok {
 						_, _ = fmt.Fprintf(os.Stdout, "key=%s not found\n", explainFlags.Key)
@@ -118,13 +118,13 @@ func main() {
 			app.NewCommand("doctor",
 				app.WithDescription("Run quick diagnostics without loading runtime config"),
 				app.WithoutRuntime(),
-				app.WithWorkloads(app.Runner(func(_ context.Context, _ app.Runtime, _ app.CommandContext) error {
+				app.WithModules(app.Runner(func(_ context.Context, _ app.Runtime, _ app.CommandContext) error {
 					_, _ = fmt.Fprintln(os.Stdout, "doctor: ok")
 					return nil
 				})),
 			),
 		),
-		app.WithWorkloads(app.Runner(func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
+		app.WithModules(app.Runner(func(_ context.Context, runtime app.Runtime, _ app.CommandContext) error {
 			cfg := &AppConfig{}
 			if err := runtime.ConfigManager().Current().Decode("", cfg); err != nil {
 				return errcode.New[ErrorCode](ErrCodeExampleRuntimeNotReady, "runtime config is not ready")

@@ -86,7 +86,7 @@ func runProcessSignalHelper(blockingHook bool) {
 	application := New(
 		WithCommands(NewCommand("serve",
 			WithoutRuntime(),
-			WithWorkloads(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
+			WithModules(Runner(func(ctx context.Context, _ Runtime, _ CommandContext) error {
 				_, _ = fmt.Fprintln(os.Stdout, processSignalHelperReady)
 				<-ctx.Done()
 				return ctx.Err()

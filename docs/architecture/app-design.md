@@ -7,7 +7,7 @@
 核心目标：
 
 1. root 和子命令使用相同的 Option 构建体验。
-2. `Workload` 是所有命令唯一的业务执行模型，一次性函数由 `Runner` 适配。
+2. `Module` 是所有命令唯一的装配入口；实现 `WorkloadModule` 时同时贡献主动执行单元，一次性函数由 `Runner` 适配。
 3. 每类能力都有显式继承、追加、覆盖或局部规则。
 4. 命令树/Flag 只构建一次，每次执行只切换 `executionSession`。
 5. 公共模型不泄漏 Cobra，也不把控制状态藏进 `context.Value`。
@@ -32,7 +32,7 @@ func WithCommands(commands ...Command) NodeOption
 Option 分类是编译期语义约束：
 
 - App 级：名称、版本、输出、Runtime 蓝图、进程信号与默认 Shutdown Policy。
-- Node 级：描述、参数规则、Runtime 需求、FlagBinder、Workload、Hook、子命令。
+- Node 级：描述、参数规则、Runtime 需求、FlagBinder、Bean Definitions、Module、Hook、子命令。
 - Command 级：关闭预算覆盖、清空祖先 Shutdown Hook。
 
 `Command` 不公开可直接写入的字段，防止调用方绕过 Option 校验和归并规则。
@@ -46,17 +46,33 @@ Option 分类是编译期语义约束：
 | 描述/别名/参数校验 | leaf 局部 | 只描述当前 CLI 节点 |
 | Runtime 需求 | 最近显式值 | 子节点可以通过语义 Option 覆盖进程默认行为 |
 | FlagBinder | leaf 局部 | Flag 的声明、补全和校验必须同域 |
-| Workloads | leaf 局部 | 选择命令只执行该命令的业务单元 |
-| BeforeRunHooks | root→leaf 追加 | 通用审计/准备与局部准备自然组合 |
-| ShutdownHooks | root→leaf 追加，可清空 | 默认复用通用动作，同时提供明确隔离点 |
+| Bean Definitions | leaf 局部 | 选择命令只构建该节点私有对象，避免无关资源和失败域泄漏 |
+| Modules | leaf 局部 | 选择命令只构建该节点模块，并只执行其贡献的 Workload |
+| GlobalBeforeRunHooks | App 全局 | 审计、权限校验等跨命令策略对每次实际执行生效 |
+| BeforeRunHooks | leaf 局部 | 局部准备只依赖选中命令实际拥有的对象图 |
+| ShutdownHooks | leaf 局部 | 补偿动作必须与选中命令实际拥有的资源和 Workload 对齐 |
 | ShutdownBudget | 每个字段最近显式值 | 允许只覆盖一个预算，不意外遮蔽另一个 |
 | Commands | 递归子树 | 分组节点和叶子节点统一 |
 
 字段级规则由 `executionPlan` 固化，不依赖 Option 调用顺序的隐式副作用。
 
-## 4. Workload 统一执行模型
+Bean Definitions 与 Modules 的默认边界都是节点局部。只有明确需要对每个 Runtime 命令生效的
+基础对象，才通过 `WithRuntimeOptions(appruntime.WithBeanDefinitions(...))` 进入稳定 Runtime 蓝图；
+该入口是高级逃生口，不形成命令树继承关系。
+
+## 4. Module 与 Workload 两阶段执行模型
 
 ```go
+type Module interface {
+    Name() string
+    Register(ioc.Registry) error
+}
+
+type WorkloadModule interface {
+    Module
+    Workloads() []Workload
+}
+
 type Workload interface {
     Name() string
     Run(context.Context, Runtime, CommandContext) error
@@ -65,12 +81,12 @@ type Workload interface {
 
 type RunFunc func(context.Context, Runtime, CommandContext) error
 
-func Runner(run RunFunc) Workload
+func Runner(run RunFunc) Module
 ```
 
-`Runner` 的名称固定为 `runner`，Shutdown 无副作用，适合自行完成的一次性任务。Server/Consumer/Scheduler 必须直接实现 Workload，以表达语义化停止动作。
+`Runner` 的名称固定为 `runner`，它是不注册 Bean 的 workload-only Module；其 Shutdown 无副作用，适合自行完成的一次性任务。Server/Consumer/Scheduler Module 在 `Register` 阶段声明依赖图，在 `Workloads` 阶段返回纯内存生命周期适配器。
 
-root 与所有子命令都走同一个执行函数：没有 root runner、subcommand runner 两套路径。分组节点可以没有 Workload，此时直接执行节点会展示 help；没有子命令的叶子节点必须声明至少一个 Workload。
+root 与所有子命令都走同一个执行函数：没有 root runner、subcommand runner 两套路径。执行计划先收集并校验选中节点 Module 的 Workload，再把选中节点 Bean Definitions 与 Modules 注入本次 Runtime Build。两者都不继承。分组节点可以没有 Workload，此时直接执行节点会展示 help；没有子命令的叶子节点必须由 Module 贡献至少一个 Workload。
 
 ## 5. FlagBinder 作用域
 
@@ -91,7 +107,7 @@ Runtime 需求：
 - 子命令未声明时自动继承最近祖先；内部使用未声明/需要/禁用三态完成归并；
 - `WithoutRuntime()` 声明当前节点及未覆盖子节点不构建 Runtime；
 - `RequireRuntime()` 仅用于在禁用 Runtime 的子树中恢复完整 Runtime；
-- 不构建 Runtime 时不执行 BeforeRunHook，Workload/ShutdownHook 收到 nil Runtime。
+- 不构建 Runtime 时仍执行 GlobalBeforeRunHook 与选中节点 BeforeRunHook；Hook/Workload/ShutdownHook 收到 nil Runtime。
 
 Shutdown duration 优先级：
 
@@ -132,5 +148,6 @@ App 持有 Cobra 的可变解析状态，不支持并发执行同一个实例；
 | `app/command_builder.go` | 递归命令树构建 |
 | `app/execution_plan.go` | 字段级归并规则 |
 | `app/command_execution.go` | 统一命令执行流程 |
+| `app/workload_module.go` | 两阶段 Module 合同与 Workload 收集校验 |
 | `app/flag_binder.go` | Binder 执行期规则 |
 | `app/command_inheritance_test.go` | root/一级/多级继承矩阵证据 |

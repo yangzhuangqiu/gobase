@@ -44,7 +44,7 @@ func TestUseCaseSubCommandVersionSkipsRuntimeAndRunner(t *testing.T) {
 		WithVersion("v3.0.0"),
 		WithOutput(&output),
 		WithRuntime(appruntime.New(commandRuntimeTraceOptions(&trace)...)),
-		WithBeforeRunHook(func(context.Context, Runtime, CommandContext) error {
+		WithGlobalBeforeRunHook(func(context.Context, Runtime, CommandContext) error {
 			hookCalled = true
 			return nil
 		}),
@@ -54,7 +54,11 @@ func TestUseCaseSubCommandVersionSkipsRuntimeAndRunner(t *testing.T) {
 		}),
 		WithCommands(NewCommand("serve",
 			RequireRuntime(),
-			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
+			WithBeforeRunHook(func(context.Context, Runtime, CommandContext) error {
+				hookCalled = true
+				return nil
+			}),
+			WithModules(Runner(func(context.Context, Runtime, CommandContext) error {
 				runnerCalled = true
 				return nil
 			})),
@@ -88,7 +92,7 @@ func TestUseCaseArgumentValidatorHidesCobra(t *testing.T) {
 			}
 			return nil
 		}),
-		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
+		WithModules(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
 	)))
 	err := application.ExecuteContext(context.Background(), []string{"inspect"})
 	if err == nil || !strings.Contains(err.Error(), "one argument required") {

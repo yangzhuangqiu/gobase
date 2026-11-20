@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/yangzhuangqiu/gobase/ioc"
 )
 
 // ArgumentValidator 定义命令位置参数校验契约，不泄漏底层 CLI 类型。
 type ArgumentValidator func(args []string) error
 
 // RunFunc 定义一次性 Workload 的业务入口。
-// 典型调用场景：迁移、生成、校验等任务通过 Runner 适配为 Workload。
+// 典型调用场景：迁移、生成、校验等任务通过 Runner 适配为 workload-only Module。
 type RunFunc func(ctx context.Context, runtime Runtime, command CommandContext) error
 
 // runtimeRequirement 表示命令节点对完整应用 Runtime 的内部声明状态。
@@ -21,7 +23,7 @@ const (
 	runtimeRequirementUnspecified runtimeRequirement = iota
 	// runtimeRequirementRequired 表示构建 config/log/ioc 完整运行时；root 默认使用该状态。
 	runtimeRequirementRequired
-	// runtimeRequirementDisabled 表示不构建 Runtime，也不执行依赖 Runtime 的 BeforeRunHooks。
+	// runtimeRequirementDisabled 表示不构建 Runtime；BeforeRunHook、Workload 与 ShutdownHook 接收 nil Runtime。
 	runtimeRequirementDisabled
 )
 
@@ -50,18 +52,18 @@ type commandConfiguration struct {
 	RuntimeRequirement runtimeRequirement
 	// FlagBinder 只声明、完成并校验当前节点自己的业务 flags，不参与继承。
 	FlagBinder FlagBinder
-	// BeforeHooks 是当前节点追加的业务前置切面，执行时按 root 到叶子归并。
-	BeforeHooks []BeforeRunHook
-	// Workloads 是当前节点被选中时独占执行的主动工作负载，不参与继承。
-	Workloads []Workload
-	// WorkloadNames 用于在当前节点声明阶段拒绝重复名称。
-	WorkloadNames map[string]struct{}
+	// BeforeRunHooks 是仅在当前节点被选中时执行的局部业务运行前 Hook，不参与继承。
+	BeforeRunHooks []BeforeRunHook
+	// BeanDefinitions 是当前节点被选中时注册的完整 IOC Bean 声明，不参与继承。
+	BeanDefinitions []ioc.Definition
+	// Modules 是当前节点被选中时参与 Build 的局部模块，不参与继承。
+	Modules []Module
+	// ModuleNames 用于在当前节点声明阶段拒绝重复名称。
+	ModuleNames map[string]struct{}
 	// ShutdownHooks 是当前节点声明的高级关闭逃生动作。
 	ShutdownHooks []namedShutdownHook
 	// ShutdownHookNames 用于在当前节点声明阶段拒绝重复名称。
 	ShutdownHookNames map[string]struct{}
-	// DisableInheritedShutdownHooks 表示归并到此节点时清空祖先 Hook，随后仍可追加本节点 Hook。
-	DisableInheritedShutdownHooks bool
 	// ShutdownBudget 是当前节点按字段覆盖的关闭预算。
 	ShutdownBudget shutdownBudgetDeclaration
 	// Commands 是当前节点的直接子命令，允许递归构建命令树。
@@ -94,7 +96,7 @@ func newCommandConfiguration(use string, requirement runtimeRequirement) command
 	return commandConfiguration{
 		Use:                use,
 		RuntimeRequirement: requirement,
-		WorkloadNames:      make(map[string]struct{}),
+		ModuleNames:        make(map[string]struct{}),
 		ShutdownHookNames:  make(map[string]struct{}),
 	}
 }

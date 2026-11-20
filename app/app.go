@@ -15,6 +15,8 @@ import (
 type App struct {
 	// rootCommand 保存进程 root 节点声明，与子命令使用相同语义模型。
 	rootCommand commandConfiguration
+	// globalBeforeRunHooks 保存每次实际命令执行都调用的 App 级运行前 Hook。
+	globalBeforeRunHooks []BeforeRunHook
 	// version 是 --version 输出。
 	version string
 	// runtimeApplication 是 config/log/ioc 运行时构建蓝图。

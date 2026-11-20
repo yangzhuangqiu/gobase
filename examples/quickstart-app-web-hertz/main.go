@@ -149,8 +149,7 @@ func run() error {
 		// 第二阶段：Definition 发布组件语义，Module 在 IOC Init 聚合并构造 web.Server。
 		baseapp.WithBeanDefinitions(applicationDefinitions()...),
 		baseapp.WithModules(appwebhertz.NewModule()),
-		// 第三阶段：Workload 声明 Run/Shutdown 语义；app 等待 Server 收敛后再关闭 IOC Resource。
-		baseapp.WithWorkloads(appwebhertz.Workload()),
+		// Module 同时贡献 Workload；app 等待 Server 收敛后再关闭 IOC Resource。
 	)
 }
 

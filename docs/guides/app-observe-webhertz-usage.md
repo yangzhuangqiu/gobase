@@ -59,13 +59,13 @@ Tracing 默认关闭，因为 TracerProvider、Sampler、Exporter 和凭据都�
 
 ### 1.3 独立 Metrics Server
 
-`webhertzobserve.Workload()` 运行独立 Metrics HTTP Server。它与业务 Hertz Server
-是两个并列 Workload：
+`webhertzobserve.NewModule()` 自动贡献独立 Metrics HTTP Server Workload。它与业务
+Hertz Server 是两个并列 Workload：
 
-| Workload | 稳定名称 | 监听内容 |
+| Module | Workload 稳定名称 | 监听内容 |
 |---|---|---|
-| `appwebhertz.Workload()` | `web.hertz` | 业务路由 |
-| `webhertzobserve.Workload()` | `web.hertz.metrics` | 仅配置的 Metrics Path |
+| `appwebhertz.NewModule()` | `web.hertz` | 业务路由 |
+| `webhertzobserve.NewModule()` | `web.hertz.metrics` | 仅配置的 Metrics Path |
 
 默认端点是 `http://127.0.0.1:9099/metrics`。内建 Server 不开放 health、readiness、
 pprof 或业务路由，也不会把 `/metrics` 隐式挂到公网业务端口。
@@ -78,7 +78,7 @@ Module 在 IOC Init 预绑定 Metrics listener，因此端口冲突会阻止全�
 | 能力 | 默认状态 | 如何改变 |
 |---|---|---|
 | private Prometheus Registry 与 Observer | 启用 | `WithSharedPrometheus()` 改为 borrowed shared Registry |
-| Metrics Server Resource | 启用并在 IOC Init 预绑定 | 运行仍需显式加入 `webhertzobserve.Workload()` |
+| Metrics Server Resource | 启用并在 IOC Init 预绑定 | Module 自动贡献并运行 Workload |
 | OTel Server Span | 关闭 | `WithOpenTelemetry()` |
 | Formatter / Enricher | 默认安全实现 / 无 Enricher | 通过 `WithOpenTelemetry(...)` 的代码 Option 扩展 |
 
@@ -86,7 +86,7 @@ Module 在 IOC Init 预绑定 Metrics listener，因此端口冲突会阻止全�
 
 ### 2.1 最小安装：Prometheus + 独立 Metrics Server
 
-在应用中同时加入 observe Module 和 observe Workload：
+在应用中加入业务 Server 与 observe Module；两个 Module 自动贡献各自 Workload：
 
 ```go
 err := app.Run(
@@ -98,10 +98,6 @@ err := app.Run(
         appwebhertz.NewModule(),
         webhertzobserve.NewModule(),
     ),
-    app.WithWorkloads(
-        appwebhertz.Workload(),
-        webhertzobserve.Workload(),
-    ),
 )
 ```
 
@@ -111,8 +107,8 @@ err := app.Run(
 curl http://127.0.0.1:9099/metrics
 ```
 
-只注册 `NewModule()` 而不加入 `webhertzobserve.Workload()` 时，Observer 和 Handler
-会被装配，但独立 Metrics Server 不会主动运行。Module 不会在后台隐藏启动 goroutine。
+`Register` 和 IOC Init 只装配 Observer、Handler 并预绑定 listener，不会在后台隐藏启动
+goroutine；主动运行仍由 Module 贡献的 Workload 在 App 监督阶段执行。
 
 ### 2.2 安装 OpenTelemetry
 
@@ -137,10 +133,6 @@ err := app.Run(
         webhertzobserve.NewModule(
             webhertzobserve.WithOpenTelemetry(),
         ),
-    ),
-    app.WithWorkloads(
-        appwebhertz.Workload(),
-        webhertzobserve.Workload(),
     ),
 )
 ```
@@ -221,7 +213,7 @@ app.Run(
     app.WithConfig(
         config.File(config.FilePath("application.yaml")),
     ),
-    // Modules、Workloads 与其他应用声明……
+    // Modules 与其他应用声明；Workload 由对应 Module 自动贡献……
 )
 ```
 
@@ -379,7 +371,7 @@ Registry、TracerProvider 和 Propagator 都是 borrowed，模块不会替应用
 
 | 现象 | 检查点 |
 |---|---|
-| `/metrics` 无法连接 | 是否同时声明 `NewModule()` 和 `webhertzobserve.Workload()`；地址是否只监听 loopback |
+| `/metrics` 无法连接 | 是否在选中命令声明 `webhertzobserve.NewModule()`；地址是否只监听 loopback |
 | Metrics 没有业务样本 | 是否已经产生请求；是否同时安装 `appwebhertz.NewModule()` |
 | 指标 route 基数异常 | 业务路由是否提供稳定 FullPath；不要自行用原始 Path 创建 Label |
 | IOC Build 报 Metrics listen 失败 | 端口是否已被占用；listener 会在任一 Workload 启动前预绑定 |
@@ -408,7 +400,7 @@ Header、Cookie、Body 或完整 query。
 ## 6. 可运行示例与相关文档
 
 完整示例见 [quickstart-app-observe-webhertz](../../examples/quickstart-app-observe-webhertz/)；
-它演示 private Registry、应用 owned OTel Provider、统一 Config、两个 Workload 以及优雅关闭。
+它演示 private Registry、应用 owned OTel Provider、统一 Config、两个 Module-contributed Workload 以及优雅关闭。
 
 相关文档：
 

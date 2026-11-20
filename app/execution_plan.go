@@ -1,6 +1,10 @@
 package app
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/yangzhuangqiu/gobase/ioc"
+)
 
 // executionPlan 是选中命令从 root 到叶子完成字段级归并后的不可变执行快照。
 type executionPlan struct {
@@ -8,11 +12,13 @@ type executionPlan struct {
 	RuntimeRequirement runtimeRequirement
 	// FlagBinder 是选中节点局部绑定器；Flag 声明不继承。
 	FlagBinder FlagBinder
-	// BeforeHooks 是按 root 到叶子顺序追加的准备 Hook。
-	BeforeHooks []BeforeRunHook
-	// Workloads 是选中节点局部 Workload；执行单元不继承。
-	Workloads []Workload
-	// ShutdownHooks 是按继承清空规则归并后的高级关闭 Hook。
+	// BeforeRunHooks 是选中节点局部准备 Hook，不继承祖先声明。
+	BeforeRunHooks []BeforeRunHook
+	// BeanDefinitions 是选中节点局部完整 Bean 声明；对象图不继承。
+	BeanDefinitions []ioc.Definition
+	// Modules 是选中节点局部 Module；IOC 声明和主动执行单元都不继承。
+	Modules []Module
+	// ShutdownHooks 是选中节点局部高级关闭 Hook；资源补偿动作不继承。
 	ShutdownHooks []namedShutdownHook
 	// ShutdownBudget 是命令路径按字段最近声明优先归并后的预算。
 	ShutdownBudget shutdownBudgetDeclaration
@@ -24,26 +30,10 @@ type executionPlan struct {
 // 阶段角色：命令树构建期冻结回调所需计划，执行期不再读取可变节点状态。
 func buildExecutionPlan(path []commandConfiguration) executionPlan {
 	plan := executionPlan{RuntimeRequirement: runtimeRequirementRequired}
-	hookNames := make(map[string]struct{})
 	for _, node := range path {
-		// Runtime 需求、预算采用最近显式声明覆盖；Hook 和 Before 采用路径顺序累加。
+		// Runtime 需求和预算采用最近显式声明覆盖；其余执行对象只取选中节点。
 		if node.RuntimeRequirement != runtimeRequirementUnspecified {
 			plan.RuntimeRequirement = node.RuntimeRequirement
-		}
-		plan.BeforeHooks = append(plan.BeforeHooks, node.BeforeHooks...)
-		if node.DisableInheritedShutdownHooks {
-			plan.ShutdownHooks = nil
-			hookNames = make(map[string]struct{})
-		}
-		for _, hook := range node.ShutdownHooks {
-			if _, exists := hookNames[hook.Name]; exists {
-				plan.InputErr = errors.Join(plan.InputErr, errorForAppInternal(messagef(
-					"op=app.command result=failed stage=merge_shutdown_hooks reason=name_duplicate name=%s", hook.Name,
-				)))
-				continue
-			}
-			hookNames[hook.Name] = struct{}{}
-			plan.ShutdownHooks = append(plan.ShutdownHooks, hook)
 		}
 		if node.ShutdownBudget.WorkloadGracefulTimeoutSet {
 			plan.ShutdownBudget.WorkloadGracefulTimeout = node.ShutdownBudget.WorkloadGracefulTimeout
@@ -56,6 +46,14 @@ func buildExecutionPlan(path []commandConfiguration) executionPlan {
 	}
 	selected := path[len(path)-1]
 	plan.FlagBinder = selected.FlagBinder
-	plan.Workloads = append([]Workload{}, selected.Workloads...)
+	plan.BeforeRunHooks = append([]BeforeRunHook{}, selected.BeforeRunHooks...)
+	plan.BeanDefinitions = append([]ioc.Definition{}, selected.BeanDefinitions...)
+	plan.Modules = append([]Module{}, selected.Modules...)
+	plan.ShutdownHooks = append([]namedShutdownHook{}, selected.ShutdownHooks...)
+	if plan.RuntimeRequirement == runtimeRequirementDisabled && len(plan.BeanDefinitions) > 0 {
+		plan.InputErr = errors.Join(plan.InputErr, errorForAppInternal(messagef(
+			"op=app.command result=failed stage=merge_bean_definitions reason=bean_definitions_require_runtime",
+		)))
+	}
 	return plan
 }

@@ -58,11 +58,10 @@ app.Main(
 		appwebhertz.DefineNoMethodHandler(&JSONMethodNotAllowed{}),
 	),
 	app.WithModules(appwebhertz.NewModule()),
-	app.WithWorkloads(appwebhertz.Workload()),
 )
 ```
 
-默认 `web.hertz` config scope 缺失时，`NewModule()` 直接使用 `DefaultConfig()`，因此最小应用不需要配置文件。自定义配置路径使用 `WithConfigScope("services.api")`；该路径缺失时仍 fail-fast，避免部署拼写错误被默认值掩盖。`app` 拥有信号、Workload 收敛和 Runtime Close；`Workload()` 显式桥接唯一 Server 的 Run/Shutdown，因此无需额外 Shutdown Hook。本模块的公共边界是“每个 Runtime 一个业务 Hertz Server”；多 Server 应拆分 Runtime，或使用独立的专用 Workload/Resource，而不是重复安装本 Module。
+默认 `web.hertz` config scope 缺失时，`NewModule()` 直接使用 `DefaultConfig()`，因此最小应用不需要配置文件。自定义配置路径使用 `WithConfigScope("services.api")`；该路径缺失时仍 fail-fast，避免部署拼写错误被默认值掩盖。`app` 拥有信号、Workload 收敛和 Runtime Close；`NewModule()` 自动贡献唯一 Server 的 Run/Shutdown Workload，因此无需额外 Shutdown Hook。本模块的公共边界是“每个 Runtime 一个业务 Hertz Server”；多 Server 应拆分 Runtime，或使用独立的专用 Workload/Resource，而不是重复安装本 Module。
 
 ## 公共入口与合同
 
@@ -75,8 +74,6 @@ func DefineController(controller Controller, options ...ioc.RegisterOption) ioc.
 func DefineFilter(filter Filter, options ...ioc.RegisterOption) ioc.Definition
 func DefineNoRouteHandler(handler NoRouteHandler, options ...ioc.RegisterOption) ioc.Definition
 func DefineNoMethodHandler(handler NoMethodHandler, options ...ioc.RegisterOption) ioc.Definition
-func Workload() app.Workload
-
 func WithConfigScope(configScope string) Option
 func WithServerOptions(options ...webhertz.Option) Option
 func WithRoutePathStyle(style RoutePathStyle) Option
@@ -222,7 +219,7 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 1. IOC 依赖图保证 Controller/Filter/fallback handler 先初始化，托管 Server 后初始化。
 2. Instrumentation Bundle 由 IOC 先初始化，Server bean 再一次性冻结其原生 Option、Middleware 和可选 Trace ID 元数据桥接。
 3. Server bean 的 `Init` 只读取一次完整 Config，冻结标准链和路由计划后构造底层单周期 Server。
-4. Build 后由 `Workload()` Resolve 唯一 `web.Server` 并声明 `Run/Shutdown`；Module 不启动隐藏 goroutine。
+4. app 在 Build 前从 Module 收集 Workload；Build 后该 Workload Resolve 唯一 `web.Server` 并执行 `Run/Shutdown`，Module 不启动隐藏 goroutine。
 5. 同一 bean 同时发布 `web.StartupServer`；高级组合层可调用 `WaitStarted(ctx)` 等待首次启动成功或稳定失败。
 6. app 先等待 Workload Run 收敛，Container Close 再逆序释放 Server Resource 与 adapter/Provider owner；默认 `bestEffort` 保持有界尽力关闭，需要在 Hertz `exitWaitTime` 后继续等待 Handler 时显式选择 `required`。
 7. `config.Manager` 为 borrowed 依赖，Server bean 不关闭它。
@@ -232,7 +229,7 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 
 1. 使用 Controller/Filter 应用模型时通过 `NewModule` 进入 IOC；不使用 IOC 时直接使用 `web-hertz` 原生组装。
 2. 使用 `DefineController`、`DefineFilter`、`DefineNoRouteHandler` 和 `DefineNoMethodHandler`，不要在 composition root 重复 `WithDeclare`；分组 Filter 同样使用 `DefineFilter`。
-3. 当前 Runtime 使用唯一 `NewModule()` + `appwebhertz.Workload()`；第二个业务 Server 使用独立 Runtime 或专用适配模块。
+3. 当前 Runtime 使用唯一 `NewModule()`；第二个业务 Server 使用独立 Runtime 或专用适配模块。
 4. Hertz 应用使用 `apphlogzap.Wrap(applogzap.New(...))` 装饰应用 Logging，在 Container Build 前安装 hlog，在 Container Close 后恢复，日志 Provider 最后关闭。
 5. 自动方法名只承载稳定静态 URL；动态和兼容性敏感路由使用 `RegisterRoutes`。
 6. Request ID 默认不信任入站值；只有代理链已经验证来源时才开启 `trustIncoming`。
@@ -256,7 +253,7 @@ IOC Build 会在外层追加自身的依赖、循环或 Init 错误码；app-web
 7. `instrumentation_bundle.go`：后端无关的原子 Option/Middleware 插桩合同、校验与构造计划。
 8. `model.go`、`builder.go`、`options.go`：完整 IOC 组件快照、私有构造核心和策略 Option。
 9. `definition.go`：组件角色到 IOC Definition 的原子工厂。
-10. `module.go`：IOC Module 声明入口。
+10. `module.go`、`workload.go`：IOC Module 声明与其贡献的 Server Workload。
 11. `managed_server.go`、`managed_server_test.go`：IOC 注入、Init、Run/Shutdown、Close 适配及托管生命周期测试。
 12. `workload.go`：唯一 Server 的 Workload Run/Shutdown 适配。
 13. `errors.go`：稳定错误码和 cause 包装。

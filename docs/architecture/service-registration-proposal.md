@@ -206,14 +206,11 @@ app.New(
         appwebhertz.NewModule(),
         nacosregistry.NewModule(),
     ),
-    app.WithWorkloads(
-        appwebhertz.Workload(),
-    ),
 )
 ```
 
-用户不应再声明第二个“注册 Workload”，否则 app 并发 Shutdown 无法表达“先注销、再停止 Web”
-的内部顺序。注册协调应隐藏在同一个 Web Workload 中。
+`appwebhertz.NewModule()` 自动贡献 Web Workload。用户不应再声明第二个“注册 Workload”，否则
+app 并发 Shutdown 无法表达“先注销、再停止 Web”的内部顺序。注册协调应隐藏在同一个 Web Workload 中。
 
 候选启动快照：
 

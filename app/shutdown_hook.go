@@ -19,7 +19,7 @@ type ShutdownHook func(ctx context.Context, runtime Runtime, command CommandCont
 // WithShutdownHook 注册无法建模为 Workload/Resource 的高级关闭逃生口。
 //
 // 参数：
-// - name：当前节点内非空且唯一，并且在有效继承路径内不与祖先重复的稳定组件名称；
+// - name：当前节点内非空且唯一的稳定组件名称；不同命令节点相互隔离；
 // - hook：满足 graceful→force→wait 返回强契约的关闭函数。
 //
 // 说明：常规 Server/Consumer/Scheduler 应优先声明 Workload；常规资源应实现 Resource。
@@ -40,13 +40,5 @@ func WithShutdownHook(name string, hook ShutdownHook) NodeOption {
 		}
 		command.ShutdownHookNames[name] = struct{}{}
 		command.ShutdownHooks = append(command.ShutdownHooks, namedShutdownHook{Name: name, Hook: hook})
-	})
-}
-
-// WithoutInheritedShutdownHooks 清空当前子命令继承的祖先高级 Hook。
-// 说明：本节点通过 WithShutdownHook 声明的 Hook 仍会执行；Runtime Close 不受影响。
-func WithoutInheritedShutdownHooks() CommandOption {
-	return commandOptionFunc(func(command *commandConfiguration) {
-		command.DisableInheritedShutdownHooks = true
 	})
 }

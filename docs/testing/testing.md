@@ -126,18 +126,18 @@
    - `app/command_lifecycle_test.go:TestUseCaseRuntimeLivesThroughShutdownHooks`
    - `app/shutdown_execution_test.go:TestUseCaseHostCancellationRunsShutdownBeforeRunnerConverges`
 4. 失败场景：before hook 失败仍关闭 Runtime
-   - `app/command_lifecycle_test.go:TestUseCaseRuntimeClosesWhenBeforeHookFails`
+   - `app/command_lifecycle_test.go:TestUseCaseRuntimeClosesWhenBeforeRunHookFails`
 5. 子命令场景：`WithoutRuntime()` 不构建 app-runtime，`RequireRuntime()` 可在子树中恢复
    - `app/command_lifecycle_test.go:TestUseCaseWithoutRuntimeCommand`
    - `app/command_lifecycle_test.go:TestUseCaseRequireRuntimeRestoresDisabledSubtree`
-   - `app/shutdown_execution_test.go:TestUseCaseCommandCanDisableInheritedShutdownHooks`
+   - `app/shutdown_execution_test.go:TestUseCaseCommandUsesOnlyLocalShutdownHooks`
 6. 公共模型：输出与参数校验不依赖 Cobra 类型
    - `app/command_execution_test.go:TestUseCasePublicOutputWithoutCobraCommand`
    - `app/command_execution_test.go:TestUseCaseArgumentValidatorHidesCobra`
    - `app/flag_binder_test.go:TestUseCaseFlagBinderDeclaresCommandTreeOnce`
 7. 进程信号场景：保留具体信号身份、纯信号退出成功并恢复默认处理
    - `app/shutdown_execution_test.go:TestUseCaseRunTreatsSignalOnlyShutdownAsSuccess`
-   - `app/shutdown_execution_test.go:TestUseCaseSignalDuringBeforeHookIsNormalExit`
+   - `app/shutdown_execution_test.go:TestUseCaseSignalDuringBeforeRunHookIsNormalExit`
 8. OS 子进程信号场景：真实 SIGINT/SIGTERM 优雅退出，第二次 SIGTERM 强制退出（Unix）
    - `app/process_signal_integration_unix_test.go:TestProcessSignalsGracefullyExitSubprocess`
    - `app/process_signal_integration_unix_test.go:TestSecondProcessSignalForcesSubprocessExit`

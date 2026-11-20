@@ -86,7 +86,7 @@ func TestUseCaseFlagBinderDeclaresCommandTreeOnce(t *testing.T) {
 		WithFlagBinder(binder),
 		WithCommands(NewCommand("doctor",
 			WithoutRuntime(),
-			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error {
+			WithModules(Runner(func(context.Context, Runtime, CommandContext) error {
 				runCount++
 				return nil
 			})),
@@ -120,7 +120,7 @@ func TestUseCaseFlagBinderRulesStayInSelectedNode(t *testing.T) {
 		WithCommands(NewCommand("doctor",
 			WithoutRuntime(),
 			WithFlagBinder(commandBinder),
-			WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
+			WithModules(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
 		)),
 	)
 	for index := 0; index < 2; index++ {

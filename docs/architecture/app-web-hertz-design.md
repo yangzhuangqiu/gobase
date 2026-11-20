@@ -41,11 +41,11 @@ Controller/Filter/fallback handler 本来就是该模块的应用合同，自动
 
 这保持 app-runtime Module 的纯声明合同，使 Registry 失败没有外部资源需要回滚，Init 失败则由 IOC 统一回滚此前成功组件。
 
-### 3.4 Module 不自动 Run
+### 3.4 Module 贡献 Workload，但 Register/Init 不自动 Run
 
 `Run` 是阻塞型工作负载，错误需要进入应用主流程。若 Init 偷偷启动 goroutine，Build 无法表达监听失败，应用也无法统一协调多个工作负载。
 
-因此 Build 后由 composition root 通过 `Workload()` Resolve `web.Server`，并显式委托 Run/Shutdown。IOC 仍负责最终 Resource Close。
+因此 `NewModule()` 通过 `Workloads()` 返回纯内存适配器，由 app 在 Build 后 Resolve `web.Server` 并显式委托 Run/Shutdown。Register/Init 不隐藏启动 goroutine，IOC 仍负责最终 Resource Close。
 
 ### 3.5 hlog 属于 composition root
 

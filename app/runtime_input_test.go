@@ -21,7 +21,7 @@ func TestUseCaseCLIInputFlowsToRuntime(t *testing.T) {
 	application := New(
 		WithConfig(config.File(config.FileDisabled()), config.Defaults(defaultConfig)),
 		WithFlagBinder(flags),
-		WithWorkloads(Runner(func(_ context.Context, runtime Runtime, _ CommandContext) error {
+		WithModules(Runner(func(_ context.Context, runtime Runtime, _ CommandContext) error {
 			resolved := &commandRuntimeConfig{}
 			if err := runtime.ConfigManager().Current().Decode("", resolved); err != nil {
 				return err

@@ -7,7 +7,7 @@
 | 能力 | 解决的问题 | 启用入口 | 默认状态 | 业务入口 | 不适用场景 |
 |---|---|---|---|---|---|
 | IOC 自动装配 | 从依赖图聚合组件并统一关闭 | `NewModule` + `Register` | 需显式声明 | `ioc.ResolveAs[web.Server]` | Build 后动态加组件 |
-| App 生命周期整合 | 声明唯一 Server 的 Run/Shutdown，由 app 负责收敛与 Runtime Close | `appwebhertz.Workload()` | 需显式启用 | `app.WithWorkloads` | 无 IOC 的原生 Server |
+| App 生命周期整合 | Module 自动贡献唯一 Server 的 Run/Shutdown，由 app 负责收敛与 Runtime Close | `appwebhertz.NewModule()` | 随 Module 启用 | `app.WithModules` | 无 IOC 的原生 Server |
 | 自动路由 | 简单静态方法到 URL 映射 | Controller 导出方法 | Kebab | Hertz Handler | 动态路径或复杂链 |
 | 原生路由 | 保留 Hertz RouterGroup 完整能力 | `RouteRegistrar` | 可选 | `RegisterRoutes` | 框架无关路由 DSL |
 | 全局 Filter | 提供稳定 Middleware 顺序 | `Filter` 接口声明 | 无默认 Filter | `DoFilter` | 分组策略 |
@@ -132,9 +132,9 @@ if err != nil {
 return webServer.Run(runCtx)
 ```
 
-IOC 自动注入 `[]Controller`、`[]Filter`、`[]NoRouteHandler` 和 `[]NoMethodHandler`。切片候选按注册顺序稳定排列；Filter 和 fallback handler 随后分别按 Order 稳定排序。Module 不自动 Run，因为阻塞型工作负载应由应用入口协调 context、退出码和并发任务。
+IOC 自动注入 `[]Controller`、`[]Filter`、`[]NoRouteHandler` 和 `[]NoMethodHandler`。切片候选按注册顺序稳定排列；Filter 和 fallback handler 随后分别按 Order 稳定排序。Module 的 Register/Init 不自动 Run；它贡献的阻塞型 Workload 仍由应用入口协调 context、退出码和并发任务。
 
-使用 `app` 时，常规单 Server 应用只需要声明组件 Definitions、Server Module 和 Workload：
+使用 `app` 时，常规单 Server 应用只需要声明组件 Definitions 和 Server Module：
 
 ```go
 app.Main(
@@ -146,11 +146,10 @@ app.Main(
 		appwebhertz.DefineNoMethodHandler(&JSONMethodNotAllowed{}),
 	),
 	app.WithModules(appwebhertz.NewModule()),
-	app.WithWorkloads(appwebhertz.Workload()),
 )
 ```
 
-Runtime 已注册 borrowed `config.Manager`；未声明 `web.hertz` 时 Server 使用完整内建默认值。`appwebhertz.Workload()` 解析唯一 `web.Server`：app 并发执行 `Run`，关闭时调用 `Shutdown`，并继续等待 `Run` 真正返回，之后才关闭 IOC Runtime。本模块明确限定每个 Runtime 一个业务 Hertz Server；第二个 Server 应使用独立 Runtime 或专用 Workload/Resource。
+Runtime 已注册 borrowed `config.Manager`；未声明 `web.hertz` 时 Server 使用完整内建默认值。`NewModule()` 自动贡献解析唯一 `web.Server` 的 Workload：app 并发执行 `Run`，关闭时调用 `Shutdown`，并继续等待 `Run` 真正返回，之后才关闭 IOC Runtime。本模块明确限定每个 Runtime 一个业务 Hertz Server；第二个 Server 应使用独立 Runtime 或专用 Workload/Resource。
 
 同一托管 bean 还发布 `web.StartupServer`，服务注册等高级组合层可以等待首次启动结果：
 
@@ -382,9 +381,9 @@ web.Server Run 返回
 
 ### 7.1 单业务 Server 边界与独立诊断端口
 
-`NewModule()` 和 `Workload()` 共同表达当前 Runtime 的唯一业务 Server。该边界避免 config scope、
+`NewModule()` 同时表达当前 Runtime 的唯一业务 Server 与其 Workload。该边界避免 config scope、
 Controller 集合和按类型 IOC 解析在多实例下产生隐式选择。需要 Metrics 等独立诊断端口时，
-composition root 应使用专用且具有唯一名称的 Workload；不要重复注册 `app-web-hertz` Module。
+composition root 应使用专用且具有唯一名称的 WorkloadModule；不要重复注册 `app-web-hertz` Module。
 app 在任一 Workload 意外退出后关闭全组，并等待全部 Run/Shutdown 结果收敛。
 
 Metrics Handler、私有 ServeMux、listener 获取顺序和诊断端口安全策略见

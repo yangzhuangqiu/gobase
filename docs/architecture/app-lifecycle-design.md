@@ -5,6 +5,7 @@
 App 生命周期只使用三个一等概念：
 
 - `Workload`：主动运行单元，例如 HTTP Server、Consumer、Scheduler 或 one-shot Runner。
+- `Module`：命令节点的装配入口；可通过 `WorkloadModule` 在声明 Bean 的同时贡献主动单元。
 - `Resource`：被动依赖，例如连接池、Client、文件或租约，通常由 IOC 按依赖逆序关闭。
 - `Shutdown Policy`：主动工作收敛预算和 Runtime/Resource Close 预算。
 
@@ -16,8 +17,10 @@ App 生命周期只使用三个一等概念：
 
 ```text
 CLI parse / selected FlagBinder rules
-  -> Runtime Build
-  -> root-to-leaf BeforeRunHooks
+  -> collect selected-node Module Workloads
+  -> Runtime Build with selected-node Bean Definitions / Modules
+  -> App GlobalBeforeRunHooks
+  -> selected-node BeforeRunHooks
   -> selected-node Workloads Run
   -> shutdown trigger
   -> cancel run context
@@ -29,8 +32,8 @@ CLI parse / selected FlagBinder rules
 
 必须保持：
 
-1. Runtime Build 失败时不运行 Workload/Shutdown Hook。
-2. BeforeRunHook 失败时仍关闭已构建 Runtime，但不启动主动工作。
+1. Module Workload 收集或 Runtime Build 失败时不运行 Workload/Shutdown Hook。
+2. GlobalBeforeRunHook 或 BeforeRunHook 失败时仍关闭已构建 Runtime，但不启动主动工作。
 3. Workload 一旦启动，Runtime Close 必须等待其 Run 真正返回。
 4. graceful context 到期不允许框架遗弃仍运行的 goroutine 后提前销毁 Resource。
 5. Runtime Close 使用独立 context，不复用已经取消的 run context。
@@ -97,10 +100,11 @@ IOC Close timeout 是传给 Closer 的协作式预算，不是“超时后后台
 关闭动作属于命令计划：
 
 - Workload 只取选中节点，不继承 root 或父命令。
-- Shutdown Hook 默认 root→leaf 追加。
-- `WithoutInheritedShutdownHooks()` 清空到当前节点为止的祖先 Hook；当前节点随后声明的 Hook 仍执行。
+- Shutdown Hook 只取选中节点，不继承 root 或父命令。
+- GlobalBeforeRunHook 属于 App，对每次实际命令执行生效。
+- BeforeRunHook 只取选中节点，不继承 root 或父命令。
 - Workload graceful 和 Runtime close 两个预算分别按最近命令声明覆盖。
-- `WithoutRuntime()` 时不构建 Runtime，Hook/Workload 收到 nil Runtime；`RequireRuntime()` 可在子树中恢复。
+- `WithoutRuntime()` 时不构建 Runtime，GlobalBeforeRunHook、选中节点 Hook/Workload 收到 nil Runtime；`RequireRuntime()` 可在子树中恢复。
 
 这使 root、一级和多级子命令使用同一条生命周期路径，不存在独立的子命令 Runner 关闭协议。
 

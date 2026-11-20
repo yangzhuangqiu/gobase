@@ -8,6 +8,7 @@ import (
 	hertzapp "github.com/cloudwego/hertz/pkg/app"
 	hertzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/prometheus/client_golang/prometheus"
+	baseapp "github.com/yangzhuangqiu/gobase/app"
 	appwebhertz "github.com/yangzhuangqiu/gobase/app-web-hertz"
 	baseconfig "github.com/yangzhuangqiu/gobase/config"
 	"github.com/yangzhuangqiu/gobase/ioc"
@@ -49,12 +50,9 @@ type moduleOptions struct {
 	configScope string
 }
 
-// Module 定义按需注册 Metrics/Tracing 适配 bean 的合同。
+// Module 定义注册 Metrics/Tracing 适配 bean 并贡献 Metrics Server Workload 的两阶段合同。
 type Module interface {
-	// Name 返回应用运行时用于重复检测的稳定模块名。
-	Name() string
-	// Register 在 IOC Build 前声明适配 bean，不读取配置、不注册 Collector 或启动 Server。
-	Register(registry ioc.Registry) error
+	baseapp.WorkloadModule
 }
 
 // module 是可跨 Container 重放的纯声明对象。
@@ -124,9 +122,15 @@ func declarePrometheusModule(mode prometheusRegistryMode) ModuleOption {
 }
 
 // NewModule 创建默认启用 private Prometheus 与独立 Metrics Server 的可重放模块声明。
-// 典型调用场景：与 app-web-hertz Module 一起传给 app.WithModules；主动运行由两个独立 Workload 显式声明。
+// 典型调用场景：与 app-web-hertz Module 一起传给 app.WithModules，由各 Module 自动贡献独立 Workload。
 func NewModule(options ...ModuleOption) Module {
 	return &module{options: append([]ModuleOption{}, options...)}
+}
+
+// Workloads 返回独立 Metrics Server 的主动生命周期适配器。
+// 阶段角色：app 在 Runtime Build 前冻结执行集合，不在此阶段读取配置或绑定端口。
+func (this *module) Workloads() []baseapp.Workload {
+	return []baseapp.Workload{newMetricsWorkload()}
 }
 
 // Name 返回应用运行时识别的稳定模块名。

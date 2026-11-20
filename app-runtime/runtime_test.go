@@ -64,6 +64,18 @@ type runtimeTestBean struct {
 
 type runtimeTestPanicBean struct{}
 
+// runtimeBuildInputBean 记录单次 Build Definition 是否真实进入 IOC Init。
+type runtimeBuildInputBean struct {
+	// initCount 记录该 Definition 被本次 Runtime 初始化的次数。
+	initCount *int
+}
+
+// Init 记录单次 Build Definition 的初始化事件。
+func (this *runtimeBuildInputBean) Init(context.Context) error {
+	(*this.initCount)++
+	return nil
+}
+
 // Init 模拟业务初始化中的非预期 panic。
 func (this *runtimeTestPanicBean) Init(context.Context) error {
 	panic("runtime init panic")
@@ -650,5 +662,118 @@ func TestUseCaseBlueprintRejectsTypedNilDeclarations(t *testing.T) {
 		!errcode.IsCode[ErrorCode](err, ErrCodeModuleInvalid) ||
 		!errcode.IsCode[ErrorCode](err, ErrCodeLoggingInvalid) {
 		t.Fatalf("expected all typed nil declaration errors, got=%v", err)
+	}
+}
+
+// TestBuildInputModulesAreIsolatedPerBuild 验证单次 Build Module 不会写回可复用 Application 蓝图。
+//
+// 测试方法：第一次 BuildWithInput 注入计数 Module，关闭后使用同一 Application 普通 Build；
+// 断言两次构建都成功且 Register 只发生一次，证明本次注入没有污染后续 Runtime。
+func TestBuildInputModulesAreIsolatedPerBuild(t *testing.T) {
+	registerCount := 0
+	selectedModule := NewModule("selected", func(ioc.Registry) error {
+		registerCount++
+		return nil
+	})
+	application := New(WithConfig(config.File(config.FileDisabled())))
+
+	first, err := application.BuildWithInput(context.Background(), BuildInput{Modules: []Module{selectedModule}})
+	if err != nil {
+		t.Fatalf("build with selected module: %v", err)
+	}
+	if err = first.Close(context.Background()); err != nil {
+		t.Fatalf("close first runtime: %v", err)
+	}
+	second, err := application.Build(context.Background())
+	if err != nil {
+		t.Fatalf("build without selected module: %v", err)
+	}
+	if err = second.Close(context.Background()); err != nil {
+		t.Fatalf("close second runtime: %v", err)
+	}
+	if registerCount != 1 {
+		t.Fatalf("build-local module leaked into reusable blueprint: register_count=%d", registerCount)
+	}
+}
+
+// TestBuildInputBeanDefinitionsAreIsolatedPerBuild 验证单次 Definition 不会写回可复用 Application 蓝图。
+//
+// 测试方法：第一次 BuildWithInput 注入计数 Bean，关闭后使用同一 Application 普通 Build；
+// 断言两次构建成功且 Bean Init 只发生一次，证明局部对象图没有污染后续 Runtime。
+func TestBuildInputBeanDefinitionsAreIsolatedPerBuild(t *testing.T) {
+	// 第一阶段：仅在第一次 Build 输入中声明 Bean，并完成本次 Runtime 生命周期。
+	initCount := 0
+	application := New(WithConfig(config.File(config.FileDisabled())))
+	first, err := application.BuildWithInput(context.Background(), BuildInput{
+		BeanDefinitions: []ioc.Definition{ioc.Define(&runtimeBuildInputBean{initCount: &initCount})},
+	})
+	if err != nil {
+		t.Fatalf("build with selected definition: %v", err)
+	}
+	if err = first.Close(context.Background()); err != nil {
+		t.Fatalf("close first runtime: %v", err)
+	}
+	// 第二阶段：复用同一蓝图但不提供局部声明，验证对象图不会被历史输入污染。
+	second, err := application.Build(context.Background())
+	if err != nil {
+		t.Fatalf("build without selected definition: %v", err)
+	}
+	if err = second.Close(context.Background()); err != nil {
+		t.Fatalf("close second runtime: %v", err)
+	}
+	if initCount != 1 {
+		t.Fatalf("build-local definition leaked into reusable blueprint: init_count=%d", initCount)
+	}
+}
+
+// TestBuildInputBeanDefinitionsRejectNilBeforeModuleRegister 验证局部空 Bean 在任何 Module 注册前失败。
+//
+// 测试方法：同时注入空 Definition 与计数 Module，执行 BuildWithInput 后断言 bean.invalid，
+// 且 Register 计数为零，固定 Definition 校验先于本次 Module 和 Runtime 资源构建的顺序。
+func TestBuildInputBeanDefinitionsRejectNilBeforeModuleRegister(t *testing.T) {
+	// 第一阶段：构造同时包含无效 Definition 与可观测 Module 的单次输入。
+	registerCount := 0
+	module := NewModule("should-not-register", func(ioc.Registry) error {
+		registerCount++
+		return nil
+	})
+	application := New(WithConfig(config.File(config.FileDisabled())))
+	// 第二阶段：Build 必须在 Module 注册前返回稳定 Bean 声明错误。
+	_, err := application.BuildWithInput(context.Background(), BuildInput{
+		BeanDefinitions: []ioc.Definition{{}},
+		Modules:         []Module{module},
+	})
+	if !errcode.IsCode[ErrorCode](err, ErrCodeBeanInvalid) {
+		t.Fatalf("expected invalid build-local definition, got=%v", err)
+	}
+	if registerCount != 0 {
+		t.Fatalf("module registered before definition validation: count=%d", registerCount)
+	}
+}
+
+// TestBuildInputModulesRejectBlueprintNameConflict 验证稳定蓝图与单次 Module 使用同一身份时 fail-fast。
+//
+// 测试方法：蓝图和 BuildInput 分别声明同名计数 Module；执行 BuildWithInput 后断言返回
+// module.invalid 且两个 Register 均未调用，证明冲突在配置和 IOC 资源获取前完成校验。
+func TestBuildInputModulesRejectBlueprintNameConflict(t *testing.T) {
+	stableRegisterCount, localRegisterCount := 0, 0
+	stable := NewModule("duplicate", func(ioc.Registry) error {
+		stableRegisterCount++
+		return nil
+	})
+	local := NewModule("duplicate", func(ioc.Registry) error {
+		localRegisterCount++
+		return nil
+	})
+	application := New(
+		WithConfig(config.File(config.FileDisabled())),
+		WithModules(stable),
+	)
+	_, err := application.BuildWithInput(context.Background(), BuildInput{Modules: []Module{local}})
+	if !errcode.IsCode[ErrorCode](err, ErrCodeModuleInvalid) {
+		t.Fatalf("expected module identity conflict, got=%v", err)
+	}
+	if stableRegisterCount != 0 || localRegisterCount != 0 {
+		t.Fatalf("module registered before conflict validation: stable=%d local=%d", stableRegisterCount, localRegisterCount)
 	}
 }

@@ -66,7 +66,7 @@ func TestMetricsWorkloadServesAndStopsIndependentServer(t *testing.T) {
 	observer.Observe(context.Background(), webhertz.HTTPRequestObservation{
 		Method: "GET", RoutePattern: "/ready", Status: http.StatusOK, Outcome: webhertz.RequestOutcomeSuccess,
 	})
-	workload := Workload()
+	workload := newMetricsWorkload()
 	if workload.Name() != metricsWorkloadName {
 		t.Fatalf("unexpected workload name: %s", workload.Name())
 	}
@@ -164,7 +164,7 @@ func TestBusinessAndMetricsWorkloadsHaveIndependentIdentities(t *testing.T) {
 	// 两个 Workload 在声明期必须通过唯一名称校验；WithoutRuntime 只用于让执行快速进入依赖错误。
 	application := baseapp.New(
 		baseapp.WithoutRuntime(),
-		baseapp.WithWorkloads(appwebhertz.Workload(), Workload()),
+		baseapp.WithModules(appwebhertz.NewModule(), NewModule()),
 	)
 	err := application.ExecuteContext(context.Background(), nil)
 	if err == nil || !strings.Contains(err.Error(), "reason=runtime_required") {

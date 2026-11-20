@@ -45,17 +45,6 @@ func WithLogging(logging Logging) Option {
 	return WithRuntimeOptions(appruntime.WithLogging(logging))
 }
 
-// WithBeanDefinitions 注册携带接口、名称、注入与生命周期策略的完整 IOC bean 声明。
-// 典型调用场景：使用基础设施模块提供的 Definition 工厂声明 Controller、Filter 等语义角色。
-func WithBeanDefinitions(definitions ...ioc.Definition) Option {
-	return WithRuntimeOptions(appruntime.WithBeanDefinitions(definitions...))
-}
-
-// WithModules 注册可复用业务 bean 模块。
-func WithModules(modules ...Module) Option {
-	return WithRuntimeOptions(appruntime.WithModules(modules...))
-}
-
 // WithIOCOptions 设置 Runtime 创建 IOC Container 时应用的高级策略。
 func WithIOCOptions(options ...ioc.Option) Option {
 	return WithRuntimeOptions(appruntime.WithIOCOptions(options...))

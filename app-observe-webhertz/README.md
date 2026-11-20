@@ -11,13 +11,13 @@
 3. 发布不拥有 listener 的 `PrometheusHandler`。
 4. 通过 IOC Module 把 Observer 和可选 Instrumentation Bundle 声明给 `app-web-hertz`。
 5. 在 IOC Init 读取统一 Config 启动快照并预绑定独立 listener，使非法策略或端口冲突阻止全部 Workload 启动。
-6. 通过独立 Workload 只运行和关闭 Metrics Server，不接管业务 Hertz Server。
+6. Module 自动贡献独立 Workload，只运行和关闭 Metrics Server，不接管业务 Hertz Server。
 
 ### Out of Scope
 
 1. 不处理 Access Log、Request ID、Recovery、CORS 或 Gzip。
 2. 不创建或关闭 shared Registry、OTel Provider、Exporter 或 Sampler。
-3. Module Init 不启动 HTTP Server 或 goroutine；主动运行只发生在显式 Workload。
+3. Module Init 不启动 HTTP Server 或 goroutine；主动运行只发生在其贡献的 Workload。
 4. 不访问 `prometheus.DefaultRegistry`，不修改 Hertz 全局 hlog。
 5. Metrics Server 不隐式开放 health、ready、pprof 或业务路由。
 
@@ -33,8 +33,8 @@
 | `MetricsServerConfig` | 统一快照中的独立抓取端口策略 |
 | `TracerProvider` | Provider owner 发布给 adapter 的 borrowed 引用 |
 | `InstrumentationBundle` | 成对提供 Hertz internal tracer 与 Server Middleware |
-| `Module` | 原子注册 adapter，并预绑定 Metrics Server Resource |
-| `Workload` | 只运行和关闭独立 Metrics Server Resource |
+| `Module` | 原子注册 adapter、预绑定 Metrics Server Resource，并贡献主动 Workload |
+| `Workload` | Module 内部贡献，只运行和关闭独立 Metrics Server Resource |
 
 ## 公共入口与合同
 
@@ -46,19 +46,15 @@ err := app.Run(
         appwebhertz.NewModule(),
         webhertzobserve.NewModule(),
     ),
-    app.WithWorkloads(
-        appwebhertz.Workload(),
-        webhertzobserve.Workload(),
-    ),
 )
 ```
 
-两个 Workload 对应两个主动 Server：
+两个 Module 分别贡献一个主动 Server Workload：
 
-| Workload | 稳定名称 | 所有权 |
+| Module | Workload 稳定名称 | 所有权 |
 |---|---|---|
-| `appwebhertz.Workload()` | `web.hertz` | 业务 Hertz Server |
-| `webhertzobserve.Workload()` | `web.hertz.metrics` | 独立 Metrics HTTP Server |
+| `appwebhertz.NewModule()` | `web.hertz` | 业务 Hertz Server |
+| `webhertzobserve.NewModule()` | `web.hertz.metrics` | 独立 Metrics HTTP Server |
 
 任一 Workload 返回都会触发 App 的统一关闭。App 并发调用两个 `Shutdown`，等待两个 `Run` 真实返回后才释放 IOC Resource。
 
@@ -130,8 +126,8 @@ Prometheus 默认名称：
 
 ## 运行时与所有权语义
 
-1. Module 是被动装配边界：读取配置、注册 Collector、预绑定 listener，但不启动 goroutine。
-2. `appwebhertz.Workload` 只拥有业务 Server；`webhertzobserve.Workload` 只拥有 Metrics Server。
+1. Module 的 `Register` 是被动装配边界：读取配置、注册 Collector、预绑定 listener，但不启动 goroutine；`Workloads` 只返回纯内存适配器。
+2. `appwebhertz` Module 的 Workload 只拥有业务 Server；`webhertzobserve` Module 的 Workload 只拥有 Metrics Server。
 3. private Runtime 拥有私有 Registry；shared Runtime 借用 Registry，但拥有自身 Collector registration。
 4. OTel adapter 借用 Provider/Propagator，只创建无资源 Bundle。
 5. Metrics Workload 使用 App 传入的 graceful context 执行 `Shutdown`，必要时 force close，并等待 `Run` 返回。

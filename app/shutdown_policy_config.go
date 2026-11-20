@@ -40,7 +40,7 @@ func (this shutdownConfiguration) executionPolicy(budget shutdownBudgetDeclarati
 }
 
 // resolveExecutionShutdownPolicy 从 ConfigManager 启动快照补齐未显式声明的时间预算。
-// 阶段角色：Runtime Build 成功后、BeforeRunHook/Workload 启动前冻结本次执行策略。
+// 阶段角色：Runtime Build 成功后、GlobalBeforeRunHook/BeforeRunHook/Workload 启动前冻结本次执行策略。
 func (this *App) resolveExecutionShutdownPolicy(
 	runtime Runtime,
 	budget shutdownBudgetDeclaration,

@@ -20,7 +20,7 @@ type workloadCallResult struct {
 }
 
 // executeManagedWorkloads 统一协调 Workload、退出触发源和应用 Shutdown actions。
-// 阶段角色：BeforeRunHook 成功后启动业务，等待 Workload 与高级 Hooks 完全收敛。
+// 阶段角色：GlobalBeforeRunHook/BeforeRunHook 成功后启动业务，等待 Workload 与高级 Hooks 完全收敛。
 func (this *App) executeManagedWorkloads(
 	session *executionSession,
 	parent context.Context,

@@ -47,8 +47,8 @@ application → app-web-hertz → config / ioc / log / web-hertz
 2. Runtime 关闭顺序：`ioc → log → config`。
 3. bean 依赖图是 Init/Close 顺序的唯一事实源。
 4. borrowed 基础对象使用 `ioc.WithBorrowed()`，默认不注入字段且不由 IOC 执行 `Init/Close`。
-5. Module 只通过 Registry 注册 bean，不定义第二套 Start/Stop。
-6. app 的 Shutdown Hooks 与 Runner 全部收敛后才执行 Runtime Close；app 不感知 Runtime 内部 IOC 资源。
+5. `app-runtime.Module.Register` 只通过 Registry 注册 bean；`app.WorkloadModule` 可另行贡献由 app 统一监督的主动单元，不定义隐藏 Start/Stop。
+6. app 的 Workloads、Shutdown Hooks 全部收敛后才执行 Runtime Close；app 不感知 Runtime 内部 IOC 资源。
 
 ## Configuration Semantics
 

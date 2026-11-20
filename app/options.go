@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	appruntime "github.com/yangzhuangqiu/gobase/app-runtime"
+	"github.com/yangzhuangqiu/gobase/ioc"
 )
 
 // appOptionFunc 适配只作用于 App 的构建函数。
@@ -109,43 +110,80 @@ func RequireRuntime() NodeOption {
 	})
 }
 
-// WithWorkloads 声明当前节点被选中时由 app 统一监督的主动工作负载。
-func WithWorkloads(workloads ...Workload) NodeOption {
-	return nodeOptionFunc(func(command *commandConfiguration) { command.addWorkloads(workloads...) })
+// WithBeanDefinitions 声明当前节点被选中时注册的私有 IOC Bean。
+//
+// 语义：
+// - root 与子命令共享本入口；
+// - Definition 不沿命令路径继承，只使用最终选中节点的声明；
+// - 真正的进程级高级声明使用 WithRuntimeOptions(appruntime.WithBeanDefinitions(...))。
+func WithBeanDefinitions(definitions ...ioc.Definition) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) { command.addBeanDefinitions(definitions...) })
 }
 
-// addWorkloads 校验并追加当前节点局部 Workload。
-// 阶段角色：Option 构建期拒绝 nil、空名与节点内重名。
-func (this *commandConfiguration) addWorkloads(workloads ...Workload) {
-	if len(workloads) == 0 {
-		this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=workloads_empty")))
+// addBeanDefinitions 校验、复制并追加当前节点局部 Definition。
+// 阶段角色：Option 构建期拒绝空列表、nil 与 typed nil Bean，避免无效对象进入 Runtime Build。
+func (this *commandConfiguration) addBeanDefinitions(definitions ...ioc.Definition) {
+	// 阶段一：空声明通常表示 composition root 装配遗漏，不静默退化为无对象图。
+	if len(definitions) == 0 {
+		this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_bean_definitions reason=definitions_empty")))
 		return
 	}
-	for index, workload := range workloads {
-		if isNilWorkload(workload) {
-			this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=workload_is_nil index=%d", index)))
+	// 阶段二：逐项校验 Bean，并复制模块拥有的注册策略，隔离调用方后续修改。
+	for index, definition := range definitions {
+		if isNilValue(definition.Bean) {
+			this.recordInputError(errorForAppInternal(messagef(
+				"op=app.option result=failed stage=with_bean_definitions reason=bean_is_nil index=%d",
+				index,
+			)))
 			continue
 		}
-		name := strings.TrimSpace(workload.Name())
-		if name == "" {
-			this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=name_empty index=%d", index)))
-			continue
-		}
-		if _, exists := this.WorkloadNames[name]; exists {
-			this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_workloads reason=name_duplicate name=%s", name)))
-			continue
-		}
-		this.WorkloadNames[name] = struct{}{}
-		this.Workloads = append(this.Workloads, workload)
+		definition.Options = append([]ioc.RegisterOption{}, definition.Options...)
+		this.BeanDefinitions = append(this.BeanDefinitions, definition)
 	}
 }
 
-// isNilWorkload 识别接口中的 typed nil，避免把声明错误推迟为执行期 panic。
-func isNilWorkload(workload Workload) bool {
-	if workload == nil {
+// WithModules 声明当前节点被选中时参与 Runtime Build 的局部 Module。
+//
+// 语义：
+// - root 与子命令共享本入口；
+// - Module 不沿命令路径继承，只使用最终选中节点的声明；
+// - 实现 WorkloadModule 的 Module 还会在 Runtime Build 前贡献主动 Workload。
+func WithModules(modules ...Module) NodeOption {
+	return nodeOptionFunc(func(command *commandConfiguration) { command.addModules(modules...) })
+}
+
+// addModules 校验并追加当前节点局部 Module。
+// 阶段角色：Option 构建期拒绝 nil、空名与节点内重名；Workload 合同延迟到执行计划解析。
+func (this *commandConfiguration) addModules(modules ...Module) {
+	if len(modules) == 0 {
+		this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_modules reason=modules_empty")))
+		return
+	}
+	for index, module := range modules {
+		if isNilValue(module) {
+			this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_modules reason=module_is_nil index=%d", index)))
+			continue
+		}
+		name := strings.TrimSpace(module.Name())
+		if name == "" {
+			this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_modules reason=name_empty index=%d", index)))
+			continue
+		}
+		if _, exists := this.ModuleNames[name]; exists {
+			this.recordInputError(errorForAppInternal(messagef("op=app.option result=failed stage=with_modules reason=name_duplicate name=%s", name)))
+			continue
+		}
+		this.ModuleNames[name] = struct{}{}
+		this.Modules = append(this.Modules, module)
+	}
+}
+
+// isNilValue 识别 interface 中携带的 nil 或 typed nil，避免声明错误推迟为执行期 panic。
+func isNilValue(target any) bool {
+	if target == nil {
 		return true
 	}
-	value := reflect.ValueOf(workload)
+	value := reflect.ValueOf(target)
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return value.IsNil()
@@ -164,11 +202,22 @@ func WithCommands(commands ...Command) NodeOption {
 	return nodeOptionFunc(func(command *commandConfiguration) { command.addCommands(commands...) })
 }
 
-// WithBeforeRunHook 注册当前节点 Runtime Build 后、Workload 前的准备 Hook。
+// WithGlobalBeforeRunHook 注册当前 App 每次实际命令执行都调用的运行前 Hook。
+// 说明：按声明顺序执行；help/version 等未进入实际命令执行管线的操作不会调用。
+func WithGlobalBeforeRunHook(hook BeforeRunHook) Option {
+	return appOptionFunc(func(app *App) {
+		if hook != nil {
+			app.globalBeforeRunHooks = append(app.globalBeforeRunHooks, hook)
+		}
+	})
+}
+
+// WithBeforeRunHook 注册仅在当前命令节点被选中时调用的局部运行前 Hook。
+// 说明：节点 Hook 不继承；WithoutRuntime 命令仍调用 Hook，但传入 nil Runtime。
 func WithBeforeRunHook(hook BeforeRunHook) NodeOption {
 	return nodeOptionFunc(func(command *commandConfiguration) {
 		if hook != nil {
-			command.BeforeHooks = append(command.BeforeHooks, hook)
+			command.BeforeRunHooks = append(command.BeforeRunHooks, hook)
 		}
 	})
 }

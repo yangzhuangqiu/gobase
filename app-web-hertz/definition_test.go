@@ -210,7 +210,7 @@ func TestWorkloadResolvesRunsAndShutsDownUniqueServer(t *testing.T) {
 	}
 	defer func() { _ = container.Close(context.Background()) }()
 
-	workload := Workload()
+	workload := newServerWorkload()
 	if workload.Name() != workloadName {
 		t.Fatalf("unexpected workload name: %s", workload.Name())
 	}

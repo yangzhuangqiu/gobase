@@ -63,8 +63,8 @@ trace span="GET /api/orders/:id" trace_id=... span_id=... status=Unset
    `InstrumentationBundle`，同时用私有 Registry 发布 `RequestObserver` 与
    `PrometheusHandler`。
 4. `app-web-hertz` 从 IOC 聚合 Bundle 和 Observer，一次性组装唯一业务 Server。
-5. observe Module 在 IOC Build 预绑定 Metrics 端口；`appwebhertz.Workload()` 与
-   `webhertzobserve.Workload()` 分别运行唯一业务 Server 和独立 Metrics Server。
+5. observe Module 在 IOC Build 预绑定 Metrics 端口；两个 Module 分别贡献并运行
+   唯一业务 Server 和独立 Metrics Server Workload。
 6. `/healthz` 被 Access Log 和 Trace 忽略；Metrics 是否忽略应由 Collector 策略
    单独决定，本示例仍统计它。
 

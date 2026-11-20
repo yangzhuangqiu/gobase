@@ -20,9 +20,9 @@ type metricsWorkload struct{}
 
 var _ baseapp.Workload = (*metricsWorkload)(nil)
 
-// Workload 返回独立 Prometheus HTTP Server 的声明式生命周期适配器。
-// 典型调用场景：与 appwebhertz.Workload 一起传给 app.WithWorkloads，使两个 Server 由 app 统一监督。
-func Workload() baseapp.Workload {
+// newMetricsWorkload 创建独立 Prometheus HTTP Server 的纯内存生命周期适配器。
+// 阶段角色：Module.Workloads 收集阶段，不解析 IOC 或绑定诊断端口。
+func newMetricsWorkload() baseapp.Workload {
 	return &metricsWorkload{}
 }
 

@@ -8,22 +8,28 @@ import (
 // TestOptionsHelpers 验证简单 Option setter 与生命周期 hooks 注册语义。
 //
 // 测试方法：
-// 1. 通过 WithDescription/WithVersion/WithBeforeRunHook/WithShutdownHook 构造应用；
-// 2. 断言字段与 hooks 数量正确；
+// 1. 通过 WithDescription/WithVersion/WithGlobalBeforeRunHook/WithBeforeRunHook/WithShutdownHook 构造应用；
+// 2. 断言 App 全局、root 局部与关闭 hooks 分别进入正确作用域；
 func TestOptionsHelpers(t *testing.T) {
 	before := func(ctx context.Context, runtime Runtime, command CommandContext) error { return nil }
 	shutdown := func(ctx context.Context, runtime Runtime, command CommandContext) error { return nil }
 	application := New(
 		WithDescription("demo desc"),
 		WithVersion("v1.0.0"),
+		WithGlobalBeforeRunHook(before),
 		WithBeforeRunHook(before),
 		WithShutdownHook("server", shutdown),
 	)
 	if application.rootCommand.Short != "demo desc" || application.version != "v1.0.0" {
 		t.Fatalf("unexpected description/version: %+v", application)
 	}
-	if len(application.rootCommand.BeforeHooks) != 1 || len(application.rootCommand.ShutdownHooks) != 1 {
-		t.Fatalf("unexpected hooks count: before=%d shutdown=%d", len(application.rootCommand.BeforeHooks), len(application.rootCommand.ShutdownHooks))
+	if len(application.globalBeforeRunHooks) != 1 || len(application.rootCommand.BeforeRunHooks) != 1 || len(application.rootCommand.ShutdownHooks) != 1 {
+		t.Fatalf(
+			"unexpected hooks count: global_before=%d before=%d shutdown=%d",
+			len(application.globalBeforeRunHooks),
+			len(application.rootCommand.BeforeRunHooks),
+			len(application.rootCommand.ShutdownHooks),
+		)
 	}
 }
 

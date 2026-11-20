@@ -74,7 +74,7 @@ func TestHTTPServerGracefulShutdownIntegration(t *testing.T) {
 	hostCause := errors.New("host stopping")
 	// 第二阶段：Workload Run 阻塞 Serve，Shutdown 执行 graceful→必要时 force，app 负责最终 wait。
 	application := New(
-		WithWorkloads(&httpServerWorkload{server: server, listener: listener, shutdownCalled: &shutdownCalled}),
+		WithModules(newTestWorkloadModule("http-server", &httpServerWorkload{server: server, listener: listener, shutdownCalled: &shutdownCalled})),
 		WithShutdownPolicy(ShutdownPolicy{WorkloadGracefulTimeout: time.Second}),
 	)
 	result := make(chan error, 1)

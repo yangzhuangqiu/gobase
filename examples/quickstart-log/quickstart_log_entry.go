@@ -34,7 +34,7 @@ func runQuickstartLog() error {
 		app.WithVersion("v0.1.0"),
 		app.WithLogging(applogzap.New(applogzap.WithConfigScope("log"))),
 		app.WithConfig(config.Defaults(defaultQuickstartLogMinimalConfig())),
-		app.WithWorkloads(app.Runner(runQuickstartLogMinimal)),
+		app.WithModules(app.Runner(runQuickstartLogMinimal)),
 	)
 }
 

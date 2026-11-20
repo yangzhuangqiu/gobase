@@ -16,7 +16,7 @@ import (
 func TestUseCaseNilRuntimeDeclarationFailsFast(t *testing.T) {
 	application := New(
 		WithRuntime(nil),
-		WithWorkloads(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
+		WithModules(Runner(func(context.Context, Runtime, CommandContext) error { return nil })),
 	)
 	if err := application.ExecuteContext(context.Background(), nil); err == nil {
 		t.Fatalf("nil runtime declaration must fail")
